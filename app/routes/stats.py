@@ -1,0 +1,176 @@
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+
+from app.auth_middleware import require_any_auth
+from app.database.database import SessionLocal, SessionLocalObraSocial
+
+
+router = APIRouter(prefix="/stats", tags=["Statistics"], dependencies=[Depends(require_any_auth)])
+
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+def get_stats_db():
+    db = SessionLocalObraSocial()
+    try:
+        yield db
+    finally:
+        db.close()
+def calculate_productivity_scores(stats_db: Session) -> dict[str, float]:
+    query = text("""
+        DECLARE @timeout_min INT = 10;
+        DECLARE @cooldown_sec INT = 3;
+
+        ;WITH LogsFiltrados AS (
+            SELECT l.idUsuario, l.creado
+            FROM [ObraSocial].[dbo].[UsuarioAccesoLogs] l
+            WHERE l.creado >= DATEADD(MONTH, -12, GETDATE())
+        ),
+        Ordenados AS (
+            SELECT *, LAG(creado) OVER (PARTITION BY idUsuario ORDER BY creado) AS prev_time
+            FROM LogsFiltrados
+        ),
+        SinSpam AS (
+            SELECT *
+            FROM Ordenados
+            WHERE prev_time IS NULL OR DATEDIFF(SECOND, prev_time, creado) >= @cooldown_sec
+        ),
+        DetectarSesiones AS (
+            SELECT *,
+                CASE
+                    WHEN prev_time IS NULL THEN 1
+                    WHEN DATEDIFF(MINUTE, prev_time, creado) > @timeout_min THEN 1
+                    ELSE 0
+                END AS nueva_sesion
+            FROM SinSpam
+        ),
+        SesionesAgrupadas AS (
+            SELECT *,
+                SUM(nueva_sesion) OVER (
+                    PARTITION BY idUsuario
+                    ORDER BY creado
+                    ROWS UNBOUNDED PRECEDING
+                ) AS session_id
+            FROM DetectarSesiones
+        ),
+        Sesiones AS (
+            SELECT idUsuario, session_id, COUNT(*) AS eventos
+            FROM SesionesAgrupadas
+            GROUP BY idUsuario, session_id
+        )
+        SELECT
+            idUsuario,
+            CAST(AVG(CAST(eventos AS FLOAT)) AS DECIMAL(10,2)) AS productivityScore
+        FROM Sesiones
+        GROUP BY idUsuario
+    """)
+    rows = stats_db.execute(query).mappings().all()
+    return {str(row["idUsuario"]).lower(): float(row["productivityScore"]) for row in rows}
+
+
+def sync_productivity_scores(db: Session, stats_db: Session) -> None:
+    scores_by_user = calculate_productivity_scores(stats_db)
+
+    users_query = text("""
+        SELECT id, employeeId
+        FROM [User]
+        WHERE employeeId IS NOT NULL
+    """)
+    users = db.execute(users_query).mappings().all()
+
+    for user in users:
+        user_id = str(user["id"]).lower()
+        score = scores_by_user.get(user_id, 0.0)
+
+        db.execute(
+            text("UPDATE Employee SET productivityScore = :score WHERE id = :id"),
+            {"score": score, "id": user["employeeId"]}
+        )
+
+    db.commit()
+
+
+def fetch_all_employees_data(db: Session):
+    emp_query = text("""
+        SELECT
+            e.id,
+            e.name,
+            e.productivityScore,
+            d.nombre AS department_name,
+            o.nombre AS office_name,
+            c.categoria,
+            c.tipoContrato
+        FROM Employee e
+        LEFT JOIN Department d ON e.departmentId = d.id
+        LEFT JOIN Office o ON e.officeId = o.id
+        LEFT JOIN CondicionLaboral c ON c.employeeId = e.id
+    """)
+    return db.execute(emp_query).mappings().all()
+
+
+@router.get("/dashboard")
+def get_dashboard(db: Session = Depends(get_db), stats_db: Session = Depends(get_stats_db)):
+    try:
+        sync_productivity_scores(db, stats_db)
+
+        employees_raw = fetch_all_employees_data(db)
+
+        data = [
+            {
+                "id": emp["id"],
+                "name": emp["name"],
+                "productivityScore": emp["productivityScore"],
+                "department": emp["department_name"],
+                "office": emp["office_name"],
+                "categoria": emp["categoria"],
+                "tipoContrato": emp["tipoContrato"],
+            }
+            for emp in employees_raw
+        ]
+
+        return {"success": True, "data": data}
+
+    except Exception as e:
+        print(f"Error en dashboard: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
+@router.get("/metadata")
+def get_metadata(db: Session = Depends(get_db)):
+    try:
+        dept_query = text("SELECT id, nombre FROM Department ORDER BY nombre")
+        departments = [dict(r) for r in db.execute(dept_query).mappings().all()]
+
+        office_query = text("SELECT nombre, departmentId FROM Office ORDER BY nombre")
+        offices = [dict(r) for r in db.execute(office_query).mappings().all()]
+
+        dept_list = []
+        for d in departments:
+            dept_list.append(d["nombre"])
+            for o in offices:
+                if o["departmentId"] == d["id"]:
+                    # Keep ASCII-only bullet to avoid encoding issues in some clients.
+                    dept_list.append(f"   - {o['nombre']}")
+
+        contratos_query = text(
+            "SELECT DISTINCT tipoContrato FROM CondicionLaboral WHERE tipoContrato IS NOT NULL"
+        )
+        contratos = [r["tipoContrato"] for r in db.execute(contratos_query).mappings().all()]
+
+        positions_query = text(
+            "SELECT DISTINCT position FROM CondicionLaboral WHERE position IS NOT NULL"
+        )
+        positions = [r["position"] for r in db.execute(positions_query).mappings().all()]
+
+        return {"success": True, "data": {"departments": dept_list, "employmentStatuses": contratos, "activityTypes": positions}}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
