@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from app.cors_config import setup_cors
-from app.routes import employee, user, auth, role, active, rrhh, departments, tests, feedback, licenses, obrasocial, stats
+from app.routes import employee, user, auth, role, active, rrhh, departments, tests, feedback, licenses, obrasocial, stats, configtest
 from app.routes.auth import init_blacklist
 
 app = FastAPI(title="Backend RRHH", version="1.0")
@@ -27,6 +27,7 @@ app.include_router(feedback.router)
 app.include_router(licenses.router)
 app.include_router(obrasocial.router)
 app.include_router(stats.router)
+app.include_router(configtest.router)
 
 @app.get("/")
 def root():
