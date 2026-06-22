@@ -101,7 +101,14 @@ def fetch_all_employees_data(db: Session):
 @router.get("/dashboard")
 def get_dashboard(db: Session = Depends(get_db), stats_db: Session = Depends(get_stats_db)):
     try:
-        sync_productivity_scores(db, stats_db)
+        try:
+            sync_productivity_scores(db, stats_db)
+        except Exception as sync_error:
+            # La base ObraSocial es una fuente secundaria (calcula el score de
+            # productividad a partir de logs de acceso). Si no está disponible,
+            # el dashboard debe seguir funcionando con el último score guardado
+            # en Employee.productivityScore en vez de caer entero.
+            print(f"Aviso: no se pudo sincronizar productividad desde ObraSocial: {sync_error}")
         employees_raw = fetch_all_employees_data(db)
         data = [
             {
