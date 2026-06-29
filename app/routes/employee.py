@@ -713,8 +713,8 @@ def update_employee(employee_id: int, data: dict = Body(...), db: Session = Depe
 
             for record in certifications_data:
                 db.execute(text("""
-                    INSERT INTO Certification (employeeId, name, institution, issueDate, validUntil, activo, attachment)
-                    VALUES (:employeeId, :name, :institution, :issueDate, :validUntil, :activo, :attachment)
+                    INSERT INTO Certification (employeeId, name, institution, issueDate, validUntil, activo, attachment, createdAt, updatedAt)
+                    VALUES (:employeeId, :name, :institution, :issueDate, :validUntil, :activo, :attachment, :createdAt, :updatedAt)
                 """), {
                     "employeeId":  employee_id,
                     "name":        record.get("name"),
@@ -723,6 +723,8 @@ def update_employee(employee_id: int, data: dict = Body(...), db: Session = Depe
                     "validUntil":  record.get("validUntil") or None,
                     "activo":      1,
                     "attachment":  record.get("attachment"),
+                    "createdAt":   datetime.utcnow(),
+                    "updatedAt":   datetime.utcnow(),
                 })
 
         # 🔹 6️⃣ Actualizar Habilidades Técnicas (EmployeeTechnicalSkill)
