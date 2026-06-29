@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from app.database.database import SessionLocal
-from app.auth_middleware import require_roles, require_any_auth, ROLE_ADMIN
+from app.auth_middleware import require_roles, require_any_auth, ROLE_ADMIN, get_current_user
 from datetime import datetime
 router = APIRouter()
 
@@ -599,8 +599,11 @@ def get_employee_details(employee_id: int, db: Session = Depends(get_db)):
 
 
 
-@router.put("/{employee_id}", dependencies=[Depends(require_roles(ROLE_ADMIN))])
-def update_employee(employee_id: int, data: dict = Body(...), db: Session = Depends(get_db)):
+@router.put("/{employee_id}", dependencies=[Depends(require_any_auth)])
+def update_employee(employee_id: int, data: dict = Body(...), db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
+    if current_user["employeeId"] != employee_id and current_user["roleId"] != ROLE_ADMIN:
+        raise HTTPException(status_code=403, detail="No tenés permiso para editar este empleado")
+
     print("🟢 Datos recibidos para actualizar empleado:", {k: v for k, v in data.items() if k != "photo"})
 
     # Verificar existencia del empleado
