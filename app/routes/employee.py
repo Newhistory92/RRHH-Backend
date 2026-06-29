@@ -667,8 +667,8 @@ def update_employee(employee_id: int, data: dict = Body(...), db: Session = Depe
 
             for record in work_experience_data:
                 db.execute(text("""
-                    INSERT INTO WorkExperience (employeeId, position, company, industry, location, startDate, endDate, isCurrent, activo, contractType)
-                    VALUES (:employeeId, :position, :company, :industry, :location, :startDate, :endDate, :isCurrent, :activo, :contractType)
+                    INSERT INTO WorkExperience (employeeId, position, company, industry, location, startDate, endDate, isCurrent, activo, contractType, createdAt, updatedAt)
+                    VALUES (:employeeId, :position, :company, :industry, :location, :startDate, :endDate, :isCurrent, :activo, :contractType, :createdAt, :updatedAt)
                 """), {
                     "employeeId":   employee_id,
                     "position":     record.get("position"),
@@ -680,6 +680,8 @@ def update_employee(employee_id: int, data: dict = Body(...), db: Session = Depe
                     "isCurrent":    bool(record.get("isCurrent")),
                     "activo":       1,
                     "contractType": record.get("contractType"),
+                    "createdAt":    datetime.utcnow(),
+                    "updatedAt":    datetime.utcnow(),
                 })
 
         # 🔹 4️⃣ Actualizar Idiomas (Language)
@@ -690,8 +692,8 @@ def update_employee(employee_id: int, data: dict = Body(...), db: Session = Depe
 
             for record in languages_data:
                 db.execute(text("""
-                    INSERT INTO Language (employeeId, language, level, certification, activo, attachment)
-                    VALUES (:employeeId, :language, :level, :certification, :activo, :attachment)
+                    INSERT INTO Language (employeeId, language, level, certification, activo, attachment, createdAt, updatedAt)
+                    VALUES (:employeeId, :language, :level, :certification, :activo, :attachment, :createdAt, :updatedAt)
                 """), {
                     "employeeId":   employee_id,
                     "language":     record.get("language"),
@@ -699,6 +701,8 @@ def update_employee(employee_id: int, data: dict = Body(...), db: Session = Depe
                     "certification": record.get("certification"),
                     "activo":       1,
                     "attachment":   record.get("attachment"),
+                    "createdAt":    datetime.utcnow(),
+                    "updatedAt":    datetime.utcnow(),
                 })
 
         # 🔹 5️⃣ Actualizar Certificaciones (Certification)
@@ -748,12 +752,13 @@ def update_employee(employee_id: int, data: dict = Body(...), db: Session = Depe
 
             for soft_skill_id in soft_skills_array:
                 db.execute(text("""
-                    INSERT INTO EmployeeSoftSkill (employeeId, softSkillId, level, skillStatusId, createdAt)
-                    VALUES (:employeeId, :softSkillId, NULL, NULL, :createdAt)
+                    INSERT INTO EmployeeSoftSkill (employeeId, softSkillId, level, skillStatusId, createdAt, updatedAt)
+                    VALUES (:employeeId, :softSkillId, NULL, NULL, :createdAt, :updatedAt)
                 """), {
                     "employeeId":  employee_id,
                     "softSkillId": soft_skill_id,
                     "createdAt":   datetime.utcnow(),
+                    "updatedAt":   datetime.utcnow(),
                 })
 
         db.commit()
