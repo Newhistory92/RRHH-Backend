@@ -729,13 +729,15 @@ def update_employee(employee_id: int, data: dict = Body(...), db: Session = Depe
 
             for record in technical_skills_data:
                 db.execute(text("""
-                    INSERT INTO EmployeeTechnicalSkill (employeeId, technicalSkillId, level, certified)
-                    VALUES (:employeeId, :technicalSkillId, :level, :certified)
+                    INSERT INTO EmployeeTechnicalSkill (employeeId, technicalSkillId, level, certified, createdAt, updatedAt)
+                    VALUES (:employeeId, :technicalSkillId, :level, :certified, :createdAt, :updatedAt)
                 """), {
                     "employeeId":       employee_id,
                     "technicalSkillId": record.get("technicalSkillId"),
                     "level":            record.get("level"),
                     "certified":        bool(record.get("certified")),
+                    "createdAt":        datetime.utcnow(),
+                    "updatedAt":        datetime.utcnow(),
                 })
 
         # 🔹 7️⃣ Actualizar Habilidades Blandas seleccionadas (EmployeeSoftSkill)
@@ -746,11 +748,12 @@ def update_employee(employee_id: int, data: dict = Body(...), db: Session = Depe
 
             for soft_skill_id in soft_skills_array:
                 db.execute(text("""
-                    INSERT INTO EmployeeSoftSkill (employeeId, softSkillId, level, skillStatusId)
-                    VALUES (:employeeId, :softSkillId, NULL, NULL)
+                    INSERT INTO EmployeeSoftSkill (employeeId, softSkillId, level, skillStatusId, createdAt)
+                    VALUES (:employeeId, :softSkillId, NULL, NULL, :createdAt)
                 """), {
                     "employeeId":  employee_id,
                     "softSkillId": soft_skill_id,
+                    "createdAt":   datetime.utcnow(),
                 })
 
         db.commit()
