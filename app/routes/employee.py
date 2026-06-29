@@ -659,6 +659,100 @@ def update_employee(employee_id: int, data: dict = Body(...), db: Session = Depe
                     "updatedAt":  datetime.utcnow(),
                 })
 
+        # 🔹 3️⃣ Actualizar Experiencia Laboral (WorkExperience)
+        work_experience_data = data.get("workExperience", [])
+        if work_experience_data:
+            print(f"💼 Actualizando {len(work_experience_data)} experiencias laborales...")
+            db.execute(text("DELETE FROM WorkExperience WHERE employeeId = :id"), {"id": employee_id})
+
+            for record in work_experience_data:
+                db.execute(text("""
+                    INSERT INTO WorkExperience (employeeId, position, company, industry, location, startDate, endDate, isCurrent, activo, contractType)
+                    VALUES (:employeeId, :position, :company, :industry, :location, :startDate, :endDate, :isCurrent, :activo, :contractType)
+                """), {
+                    "employeeId":   employee_id,
+                    "position":     record.get("position"),
+                    "company":      record.get("company"),
+                    "industry":     record.get("industry"),
+                    "location":     record.get("location"),
+                    "startDate":    record.get("startDate"),
+                    "endDate":      record.get("endDate") or None,
+                    "isCurrent":    bool(record.get("isCurrent")),
+                    "activo":       1,
+                    "contractType": record.get("contractType"),
+                })
+
+        # 🔹 4️⃣ Actualizar Idiomas (Language)
+        languages_data = data.get("languages", [])
+        if languages_data:
+            print(f"🗣️ Actualizando {len(languages_data)} idiomas...")
+            db.execute(text("DELETE FROM Language WHERE employeeId = :id"), {"id": employee_id})
+
+            for record in languages_data:
+                db.execute(text("""
+                    INSERT INTO Language (employeeId, language, level, certification, activo, attachment)
+                    VALUES (:employeeId, :language, :level, :certification, :activo, :attachment)
+                """), {
+                    "employeeId":   employee_id,
+                    "language":     record.get("language"),
+                    "level":        record.get("level"),
+                    "certification": record.get("certification"),
+                    "activo":       1,
+                    "attachment":   record.get("attachment"),
+                })
+
+        # 🔹 5️⃣ Actualizar Certificaciones (Certification)
+        certifications_data = data.get("certifications", [])
+        if certifications_data:
+            print(f"📜 Actualizando {len(certifications_data)} certificaciones...")
+            db.execute(text("DELETE FROM Certification WHERE employeeId = :id"), {"id": employee_id})
+
+            for record in certifications_data:
+                db.execute(text("""
+                    INSERT INTO Certification (employeeId, name, institution, issueDate, validUntil, activo, attachment)
+                    VALUES (:employeeId, :name, :institution, :issueDate, :validUntil, :activo, :attachment)
+                """), {
+                    "employeeId":  employee_id,
+                    "name":        record.get("name"),
+                    "institution": record.get("institution"),
+                    "issueDate":   record.get("date"),
+                    "validUntil":  record.get("validUntil") or None,
+                    "activo":      1,
+                    "attachment":  record.get("attachment"),
+                })
+
+        # 🔹 6️⃣ Actualizar Habilidades Técnicas (EmployeeTechnicalSkill)
+        technical_skills_data = data.get("technicalSkills", [])
+        if technical_skills_data:
+            print(f"🛠️ Actualizando {len(technical_skills_data)} habilidades técnicas...")
+            db.execute(text("DELETE FROM EmployeeTechnicalSkill WHERE employeeId = :id"), {"id": employee_id})
+
+            for record in technical_skills_data:
+                db.execute(text("""
+                    INSERT INTO EmployeeTechnicalSkill (employeeId, technicalSkillId, level, certified)
+                    VALUES (:employeeId, :technicalSkillId, :level, :certified)
+                """), {
+                    "employeeId":       employee_id,
+                    "technicalSkillId": record.get("technicalSkillId"),
+                    "level":            record.get("level"),
+                    "certified":        bool(record.get("certified")),
+                })
+
+        # 🔹 7️⃣ Actualizar Habilidades Blandas seleccionadas (EmployeeSoftSkill)
+        soft_skills_array = data.get("softSkillsArray", [])
+        if soft_skills_array:
+            print(f"🤝 Actualizando {len(soft_skills_array)} habilidades blandas seleccionadas...")
+            db.execute(text("DELETE FROM EmployeeSoftSkill WHERE employeeId = :id"), {"id": employee_id})
+
+            for soft_skill_id in soft_skills_array:
+                db.execute(text("""
+                    INSERT INTO EmployeeSoftSkill (employeeId, softSkillId, level, skillStatusId)
+                    VALUES (:employeeId, :softSkillId, NULL, NULL)
+                """), {
+                    "employeeId":  employee_id,
+                    "softSkillId": soft_skill_id,
+                })
+
         db.commit()
     except Exception as e:
         db.rollback()
