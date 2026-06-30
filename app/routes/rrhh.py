@@ -16,6 +16,13 @@ from app.database.database import SessionLocal
 from app.auth_middleware import require_roles, ROLE_ADMIN, ROLE_USER
 from datetime import datetime
 from collections import defaultdict
+from app.database.employee_documents import (
+    ensure_table as ensure_employee_document_table,
+    get_documents as get_employee_documents,
+    get_document as get_employee_document,
+    save_document as save_employee_document,
+    delete_document as delete_employee_document,
+)
 
 router = APIRouter(prefix="/rrhh", tags=["Employees"])
 
@@ -746,3 +753,63 @@ def get_org_analysis_data(db: Session = Depends(get_db)):
         })
 
     return {"employees": employees, "departments": departments}
+
+
+# ---------------------------------------------------------------------------
+# Documentos adjuntos del legajo de un empleado
+# ---------------------------------------------------------------------------
+@router.get("/employee/{employee_id}/documents", dependencies=[Depends(require_roles(ROLE_ADMIN, ROLE_RRHH))])
+def list_employee_documents(employee_id: int, db: Session = Depends(get_db)):
+    """Lista los documentos activos de un empleado (sin fileData)."""
+    ensure_employee_document_table(db)
+    try:
+        return {"documents": get_employee_documents(db, employee_id)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al obtener documentos: {str(e)}")
+
+
+@router.post("/employee/{employee_id}/documents", dependencies=[Depends(require_roles(ROLE_ADMIN, ROLE_RRHH))])
+def upload_employee_document(employee_id: int, data: dict = Body(...), db: Session = Depends(get_db)):
+    """Carga un nuevo documento para el empleado."""
+    ensure_employee_document_table(db)
+    tipo = data.get("tipo")
+    file_name = data.get("fileName")
+    mime_type = data.get("mimeType")
+    file_data = data.get("fileData")
+    descripcion = data.get("descripcion")
+
+    if not tipo or not file_name or not mime_type or not file_data:
+        raise HTTPException(status_code=400, detail="tipo, fileName, mimeType y fileData son requeridos")
+
+    try:
+        new_id = save_employee_document(db, employee_id, tipo, descripcion, file_name, mime_type, file_data)
+        return {"success": True, "id": new_id}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error al guardar documento: {str(e)}")
+
+
+@router.get("/employee/{employee_id}/documents/{document_id}/download", dependencies=[Depends(require_roles(ROLE_ADMIN, ROLE_RRHH))])
+def download_employee_document(employee_id: int, document_id: int, db: Session = Depends(get_db)):
+    """Devuelve un documento completo (incluyendo fileData) para ver/descargar."""
+    ensure_employee_document_table(db)
+    doc = get_employee_document(db, employee_id, document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Documento no encontrado")
+    return doc
+
+
+@router.delete("/employee/{employee_id}/documents/{document_id}", dependencies=[Depends(require_roles(ROLE_ADMIN, ROLE_RRHH))])
+def delete_employee_document_endpoint(employee_id: int, document_id: int, db: Session = Depends(get_db)):
+    """Soft delete de un documento del empleado."""
+    ensure_employee_document_table(db)
+    try:
+        deleted = delete_employee_document(db, employee_id, document_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Documento no encontrado")
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error al eliminar documento: {str(e)}")
