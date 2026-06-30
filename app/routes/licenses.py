@@ -386,10 +386,15 @@ def create_license_request(data: dict = Body(...), db: Session = Depends(get_db)
             
     # C. Roles RRHH para licencias médicas pesadas
     rrhh_only_types = ["lesiones de largo tratamiento", "lar", "accidente de trabajo", "enfermedad profesional", "enfermedad de miembros del grupo", "guarda o tenencia", "lic por enfermedad", "licencia sin goce de haberes", "fallecimiento en parto"]
-    caller_role = (current_user.get("role") or "").lower()
-    
-    if any(t in type_lower for t in rrhh_only_types) and caller_role not in ["RRHH", "ADMIN"]:
+    is_caller_rrhh = current_user.get("roleId") == ROLE_ADMIN
+
+    if any(t in type_lower for t in rrhh_only_types) and not is_caller_rrhh:
         raise HTTPException(status_code=403, detail="Esta licencia solo puede ser tramitada por un administrador de RRHH.")
+
+    # F. employeeId solo puede diferir del usuario autenticado si quien llama es RRHH/Admin
+    # (evita que un empleado solicite licencias a nombre de otro)
+    if int(employee_id) != current_user.get("employeeId") and not is_caller_rrhh:
+        raise HTTPException(status_code=403, detail="No podés solicitar una licencia a nombre de otro empleado.")
 
     # D. Vacaciones: Ventana Oct-Abr
     if "vacaciones" in type_lower:
@@ -744,10 +749,16 @@ def _sync_employee_status(db: Session, employee_id: int):
 # PATCH /licenses/requests/{id}/status — Aprobación/Rechazo transaccional
 # ---------------------------------------------------------------------------
 @router.patch("/requests/{license_id}/status", dependencies=[Depends(require_any_auth)])
-def update_license_status(license_id: int, data: dict = Body(...), db: Session = Depends(get_db)):
+def update_license_status(license_id: int, data: dict = Body(...), db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
     status = data.get("status")
     observacion = data.get("observacion", "")
     supervisor_emp_id = data.get("supervisorId")
+
+    # Quien aprueba/rechaza debe ser el supervisor indicado (su propio employeeId)
+    # o un usuario RRHH/Admin -- evita que cualquier empleado autenticado apruebe
+    # o rechace licencias ajenas llamando al endpoint directamente.
+    if supervisor_emp_id and supervisor_emp_id != current_user.get("employeeId") and current_user.get("roleId") != ROLE_ADMIN:
+        raise HTTPException(status_code=403, detail="No tenés permiso para gestionar esta solicitud de licencia.")
 
     print(f"console.log: Transaction Started for License: {license_id}, status={status}, supervisor={supervisor_emp_id}")
 
