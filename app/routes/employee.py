@@ -447,6 +447,7 @@ def get_employee_details(employee_id: int, db: Session = Depends(get_db)):
                 "nombre": skill["nombre"],
             } for skill in soft_skills
         ],
+        "softSkillsArray": [skill["softSkillId"] for skill in soft_skills],
         "certifications": [
             {
                 "id": cert["id"],
