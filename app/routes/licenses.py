@@ -146,12 +146,13 @@ def get_tipos_disponibles(employee_id: int, db: Session = Depends(get_db)):
         # de forma temporal al renderizar y trasladado al frontend con isRRHHComponent, 
         # permitiendo que la API devuelva todo el catálogo según contrato independientemente de quién sea el target.
 
-        # Calcular días disponibles (inyectar vacaciones dinámicas)
+        # Calcular días disponibles (inyectar vacaciones dinámicas si no está explícitamente configurada en la BD)
         dias_totales = row["diasTotales"]
         if "vacaciones" in nombre_lower:
-            dias_vac = calcular_dias_vacaciones(tipo_contrato, fecha_ingreso)
-            if dias_vac > 0:
-                dias_totales = dias_vac
+            if dias_totales == 0:
+                dias_vac = calcular_dias_vacaciones(tipo_contrato, fecha_ingreso)
+                if dias_vac > 0:
+                    dias_totales = dias_vac
 
         consumidos = row["consumidos"]
         disponibles = max(0, dias_totales - consumidos)
@@ -675,72 +676,6 @@ def get_license_saldos(
 
     return {"balances": balances}
 # ---------------------------------------------------------------------------
-# GET /licenses/balance — Nueva lógica de resolución relacional
-# ---------------------------------------------------------------------------
-@router.get("/saldos", dependencies=[Depends(require_any_auth)])
-def get_dynamic_license_balance(
-    employee_id: int, 
-    anio: Optional[int] = None, 
-    db: Session = Depends(get_db)
-):
-    if not anio:
-        anio = date.today().year
-
-    # 1. Obtener tipoContrato desde CondicionLaboral
-    cl = db.execute(text("""
-        SELECT tipoContrato 
-        FROM CondicionLaboral 
-        WHERE employeeId = :empId
-    """), {"empId": employee_id}).mappings().first()
-
-    if not cl:
-        raise HTTPException(status_code=404, detail="Condición laboral no encontrada para el empleado")
-
-    tipo_contrato = cl["tipoContrato"]
-
-    # 2. Consultar ConfiguracionLicencias y unir con ConsumoLicencias
-    # Relación: CondicionLaboral.tipoContrato == ConfiguracionLicencias.categoria
-    # Relación: ConfiguracionLicencias.tipo == ConsumoLicencias.tipo (Nombre de Licencia)
-    query = text("""
-        SELECT 
-            :anio_selected as anio,
-            c.tipo as tipo,
-            c.diasTotales as diasTotales,
-            COALESCE(SUM(cons.diasConsumidos), 0) as consumidos,
-            (c.diasTotales - COALESCE(SUM(cons.diasConsumidos), 0)) as disponibles
-        FROM ConfiguracionLicencias c
-        LEFT JOIN (
-            SELECT cl_i.tipo, cl_i.diasConsumidos
-            FROM ConsumoLicencias cl_i
-            INNER JOIN License l_i ON cl_i.licenseId = l_i.id
-            WHERE l_i.employeeId = :empId AND cl_i.anio = :anio_selected
-        ) cons ON cons.tipo = c.tipo
-        WHERE c.categoria = :tipoContrato AND c.anio = :anio
-        GROUP BY c.tipo, c.diasTotales
-    """)
-
-    results = db.execute(query, {
-        "empId": employee_id,
-        "anio_selected": anio,
-        "tipoContrato": tipo_contrato
-    }).mappings().all()
-
-    if not results:
-        # Si no hay configuración, devolvemos un mensaje controlado como solicitó el usuario
-        return {
-            "balances": [],
-            "message": "No se encontró una configuración de licencias para este tipo de contrato o año.",
-            "total_available": 0
-        }
-
-    return {
-        "employeeId": employee_id,
-        "anio": anio,
-        "tipoContrato": tipo_contrato,
-        "balances": [dict(r) for r in results]
-    }
-
-# ---------------------------------------------------------------------------
 # GET /licenses/requests (Historial)
 # ---------------------------------------------------------------------------
 @router.get("/requests", dependencies=[Depends(require_any_auth)])
@@ -886,8 +821,10 @@ def update_license_status(license_id: int, data: dict = Body(...), db: Session =
                 })
                 print(f"console.log: Message del supervisor {supervisor_emp_id} archivado")
 
-        # ── Paso E: Si se aprueba, registrar consumo ──
-        if status == "Aprobada" and lic['duracion']:
+        # ── Paso E: Si se aprueba, registrar consumo (solo si no estaba ya Aprobada,
+        # para que una segunda llamada al mismo license_id -- doble click, reintento de
+        # red -- no duplique el ConsumoLicencias) ──
+        if status == "Aprobada" and lic['duracion'] and lic['status'] != "Aprobada":
             if isinstance(lic['startDate'], str):
                 anio_consumo = int(lic['startDate'][:4])
             else:
