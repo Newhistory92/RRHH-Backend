@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from app.database.database import SessionLocal
 from app.auth_middleware import require_roles, require_any_auth, ROLE_ADMIN, get_current_user
 from datetime import datetime
+from app.database.employee_documents import get_documents as get_employee_documents_data, get_document as get_employee_document_data
 router = APIRouter()
 
 def get_db():
@@ -802,4 +803,25 @@ def delete_academic_record(record_id: int, db: Session = Depends(get_db)):
 
     return {"message": "Registro académico eliminado correctamente", "id": record_id}
 
+
+@router.get("/{employee_id}/documents", dependencies=[Depends(require_any_auth)])
+def list_my_documents(employee_id: int, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
+    """Lista los documentos del propio empleado (o cualquiera, si es Admin). Solo lectura."""
+    if current_user["employeeId"] != employee_id and current_user["roleId"] != ROLE_ADMIN:
+        raise HTTPException(status_code=403, detail="No tenés permiso para ver estos documentos")
+    try:
+        return {"documents": get_employee_documents_data(db, employee_id)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al obtener documentos: {str(e)}")
+
+
+@router.get("/{employee_id}/documents/{document_id}/download", dependencies=[Depends(require_any_auth)])
+def download_my_document(employee_id: int, document_id: int, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
+    """Devuelve un documento completo (incluyendo fileData) para ver/descargar. Solo lectura."""
+    if current_user["employeeId"] != employee_id and current_user["roleId"] != ROLE_ADMIN:
+        raise HTTPException(status_code=403, detail="No tenés permiso para ver este documento")
+    doc = get_employee_document_data(db, employee_id, document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Documento no encontrado")
+    return doc
 
