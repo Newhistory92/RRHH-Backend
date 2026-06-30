@@ -3,6 +3,12 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from app.database.database import SessionLocal
 from app.auth_middleware import require_admin, require_any_auth
+from app.database.academic_title_mapping import (
+    ensure_table as ensure_academic_title_mapping_table,
+    get_active_mappings,
+    save_mapping,
+    delete_mapping,
+)
 import json
 
 router = APIRouter(prefix="/configtest", tags=["ConfigTest"])
@@ -352,3 +358,48 @@ def delete_soft_skill(skill_id: int, db: Session = Depends(get_db)):
     )
     db.commit()
     return {"success": True}
+
+
+@router.get("/academic-title-mappings", dependencies=[Depends(require_any_auth)])
+def get_academic_title_mappings(db: Session = Depends(get_db)):
+    """Lista los mapeos titulo academico -> profesion activos."""
+    ensure_academic_title_mapping_table(db)
+    try:
+        return {"mappings": get_active_mappings(db)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al obtener mapeos: {str(e)}")
+
+
+@router.post("/academic-title-mappings", dependencies=[Depends(require_admin)])
+def save_academic_title_mapping(data: dict = Body(...), db: Session = Depends(get_db)):
+    """Crea o actualiza un mapeo titulo academico -> profesion."""
+    ensure_academic_title_mapping_table(db)
+    titulo = data.get("tituloAcademico")
+    profession = data.get("profession")
+    mapping_id = data.get("id")
+
+    if not titulo or not profession:
+        raise HTTPException(status_code=400, detail="tituloAcademico y profession son requeridos")
+
+    try:
+        save_mapping(db, titulo, profession, mapping_id)
+        return {"success": True}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error al guardar mapeo: {str(e)}")
+
+
+@router.delete("/academic-title-mappings/{mapping_id}", dependencies=[Depends(require_admin)])
+def delete_academic_title_mapping(mapping_id: int, db: Session = Depends(get_db)):
+    """Soft delete de un mapeo titulo academico -> profesion."""
+    ensure_academic_title_mapping_table(db)
+    try:
+        deleted = delete_mapping(db, mapping_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Mapeo no encontrado")
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error al eliminar mapeo: {str(e)}")
