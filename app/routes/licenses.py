@@ -5,6 +5,12 @@ from app.database.database import SessionLocal
 from app.auth_middleware import require_any_auth, require_roles, ROLE_ADMIN, get_current_user
 from datetime import datetime, date, timedelta
 from typing import Optional
+from app.database.feriados import (
+    ensure_table as ensure_feriado_table,
+    get_feriados as get_feriados_data,
+    save_feriado as save_feriado_data,
+    delete_feriado as delete_feriado_data,
+)
 
 def get_db():
     db = SessionLocal()
@@ -953,4 +959,51 @@ def rrhh_apply_license(data: dict = Body(...), db: Session = Depends(get_db)):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Feriados de empresa (configurables por RRHH)
+# ---------------------------------------------------------------------------
+@router.get("/feriados", dependencies=[Depends(require_any_auth)])
+def list_feriados(db: Session = Depends(get_db)):
+    """Lista los feriados de empresa activos."""
+    ensure_feriado_table(db)
+    try:
+        return {"feriados": get_feriados_data(db)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al obtener feriados: {str(e)}")
+
+
+@router.post("/feriados", dependencies=[Depends(require_rrhh_auth)])
+def create_feriado(data: dict = Body(...), db: Session = Depends(get_db)):
+    """Crea un feriado de empresa."""
+    ensure_feriado_table(db)
+    fecha = data.get("fecha")
+    nombre = data.get("nombre")
+
+    if not fecha or not nombre:
+        raise HTTPException(status_code=400, detail="fecha y nombre son requeridos")
+
+    try:
+        new_id = save_feriado_data(db, fecha, nombre)
+        return {"success": True, "id": new_id}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error al guardar feriado: {str(e)}")
+
+
+@router.delete("/feriados/{feriado_id}", dependencies=[Depends(require_rrhh_auth)])
+def delete_feriado_endpoint(feriado_id: int, db: Session = Depends(get_db)):
+    """Soft delete de un feriado de empresa."""
+    ensure_feriado_table(db)
+    try:
+        deleted = delete_feriado_data(db, feriado_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Feriado no encontrado")
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error al eliminar feriado: {str(e)}")
 
