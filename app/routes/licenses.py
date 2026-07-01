@@ -455,24 +455,15 @@ def create_license_request(data: dict = Body(...), db: Session = Depends(get_db)
                 sup_emp_id = sup_emp["employeeId"]
 
                 # Insert into Aprobaciones
+                # (La notificación al supervisor se resuelve vía el panel de
+                # "Pendientes de mi aprobación" en Gestión de Licencias, que lee
+                # de esta tabla — no se crea un Message duplicado en el panel de RRHH.)
                 db.execute(text("""
                     INSERT INTO Aprobaciones (licenseId, supervisorId, fecha, accion, observacion, updatedAt)
                     VALUES (:licId, :supId, GETDATE(), 'Pendiente', NULL, GETDATE())
                 """), {
                     "licId": new_lic_id,
                     "supId": sup_emp_id
-                })
-
-                # Insert into Message for the supervisor's inbox
-                db.execute(text("""
-                    INSERT INTO Message (employeeId, text, days, startDate, endDate, status, createdAt)
-                    VALUES (:supId, :msg, :dur, :start, :end, 'active', GETDATE())
-                """), {
-                    "supId": sup_emp_id,
-                    "msg": f"Nueva solicitud de licencia de {emp_data.get('employee_name', 'Empleado')}: {message}"[:250],
-                    "dur": duration,
-                    "start": start_date,
-                    "end": end_date
                 })
 
         db.commit()
@@ -817,11 +808,11 @@ def update_license_status(license_id: int, data: dict = Body(...), db: Session =
                 """), {"licId": license_id, "sigSupId": siguiente_supervisor_id})
                 print(f"console.log: Derivada a siguiente supervisor {siguiente_supervisor_id}")
 
-            # ── Paso D: Notificación al solicitante + Limpieza del Message del supervisor ──
+            # ── Paso D: Notificación al solicitante ──
             if status in ["Aprobada", "Rechazada"]:
                 sup_name_row = db.execute(text("SELECT name FROM Employee WHERE id = :supId"), {"supId": supervisor_emp_id}).mappings().first()
                 sup_name = sup_name_row["name"] if sup_name_row else "Supervisor"
-                
+
                 start_str = lic['startDate'][:10] if isinstance(lic['startDate'], str) else lic['startDate'].strftime('%Y-%m-%d')
                 msg_text = f"Su solicitud de {lic['type']} para la fecha {start_str} ha sido {status} por {sup_name}"
 
@@ -837,19 +828,6 @@ def update_license_status(license_id: int, data: dict = Body(...), db: Session =
                     "end": lic["endDate"]
                 })
                 print(f"console.log: Notificación enviada al empleado {lic['employeeId']}")
-
-                # Archivar el Message que notificó al supervisor (cambiar status a 'archived')
-                db.execute(text("""
-                    UPDATE Message SET status = 'archived'
-                    WHERE employeeId = :supId 
-                      AND startDate = :start AND endDate = :end
-                      AND status = 'active'
-                """), {
-                    "supId": supervisor_emp_id,
-                    "start": lic["startDate"],
-                    "end": lic["endDate"]
-                })
-                print(f"console.log: Message del supervisor {supervisor_emp_id} archivado")
 
         # ── Paso E: Si se aprueba, registrar consumo (solo si no estaba ya Aprobada,
         # para que una segunda llamada al mismo license_id -- doble click, reintento de
