@@ -20,6 +20,7 @@ from sqlalchemy import text
 from app.database.database import SessionLocal
 from app.auth_middleware import require_any_auth, get_current_user
 from datetime import datetime, timezone
+from app.database.feedback_preguntas import ensure_table as ensure_preguntas_table, get_preguntas
 
 router = APIRouter(prefix="/feedback", tags=["Feedback"])
 
@@ -325,3 +326,18 @@ def get_received_feedback(employee_id: int, db: Session = Depends(get_db)):
             for r in rows
         ]
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GET /feedback/preguntas — Banco de preguntas de Feedback 360
+# ─────────────────────────────────────────────────────────────────────────────
+@router.get("/preguntas", dependencies=[Depends(require_any_auth)])
+def list_preguntas(
+    soloLiderazgo: bool | None = None,
+    esAmbienteGeneral: bool | None = None,
+    db: Session = Depends(get_db),
+):
+    """Lista el banco de preguntas activas, con filtros opcionales."""
+    ensure_preguntas_table(db)
+    preguntas = get_preguntas(db, solo_liderazgo=soloLiderazgo, es_ambiente_general=esAmbienteGeneral)
+    return {"preguntas": preguntas}
