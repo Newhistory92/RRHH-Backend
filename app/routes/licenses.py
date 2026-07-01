@@ -731,6 +731,25 @@ def get_license_requests(status: Optional[str] = None, employee_id: Optional[int
     return {"requests": requests}
 
 # ---------------------------------------------------------------------------
+# GET /licenses/notificaciones — Mensajes activos de un empleado (campanita)
+# ---------------------------------------------------------------------------
+@router.get("/notificaciones", dependencies=[Depends(require_any_auth)])
+def get_notificaciones(employee_id: int, db: Session = Depends(get_db)):
+    rows = db.execute(text("""
+        SELECT id, text, createdAt
+        FROM Message
+        WHERE employeeId = :empId AND status = 'active'
+        ORDER BY createdAt DESC
+    """), {"empId": employee_id}).mappings().all()
+
+    return {
+        "notifications": [
+            {"id": r["id"], "text": r["text"], "time": r["createdAt"], "status": "nueva"}
+            for r in rows
+        ]
+    }
+
+# ---------------------------------------------------------------------------
 # Helper: Sincronizar Employee.status según licencias activas
 # ---------------------------------------------------------------------------
 def _sync_employee_status(db: Session, employee_id: int):
@@ -935,7 +954,24 @@ def rrhh_apply_license(data: dict = Body(...), db: Session = Depends(get_db)):
             """), {"msgId": message_id})
             print(f"console.log: Message {message_id} archivado")
 
-        # ── Paso 4: Sincronizar Employee.status del EMPLEADO REAL (no del supervisor) ──
+        # ── Paso 4: Notificar al empleado real que su licencia fue aplicada por RRHH ──
+        if isinstance(start_date, str):
+            start_str = start_date[:10]
+        else:
+            start_str = start_date.strftime('%Y-%m-%d')
+        db.execute(text("""
+            INSERT INTO Message (employeeId, text, days, startDate, endDate, status, createdAt)
+            VALUES (:empId, :msg, :dur, :start, :end, 'active', GETDATE())
+        """), {
+            "empId": real_employee_id,
+            "msg": f"Tu licencia de {lic_type} para la fecha {start_str} fue aprobada y aplicada por RRHH.",
+            "dur": days,
+            "start": start_date,
+            "end": end_date
+        })
+        print(f"console.log: Notificación enviada al empleado {real_employee_id} (licencia aplicada por RRHH)")
+
+        # ── Paso 5: Sincronizar Employee.status del EMPLEADO REAL (no del supervisor) ──
         _sync_employee_status(db, real_employee_id)
 
         db.commit()
