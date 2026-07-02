@@ -18,11 +18,20 @@ from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from app.database.database import SessionLocal
-from app.auth_middleware import require_any_auth, get_current_user
+from app.auth_middleware import require_any_auth, get_current_user, require_roles, ROLE_ADMIN
 from datetime import datetime, timezone
 from app.database.feedback_preguntas import ensure_table as ensure_preguntas_table, get_preguntas
+from app.database.feedback_config import (
+    ensure_table as ensure_config_table,
+    get_periodicidad,
+    set_periodicidad,
+    get_periodo_actual,
+)
 
 router = APIRouter(prefix="/feedback", tags=["Feedback"])
+
+ROLE_RRHH = ROLE_ADMIN
+require_rrhh_auth = require_roles(ROLE_ADMIN, ROLE_RRHH)
 
 
 def get_db():
@@ -33,23 +42,29 @@ def get_db():
         db.close()
 
 
+def _is_jerarquico(db: Session, employee_id: int) -> bool:
+    """True si el empleado es jefe de algun departamento o tiene reportes directos."""
+    row = db.execute(text("""
+        SELECT
+            (SELECT COUNT(*) FROM Department WHERE jefeId = :id) AS deptos_a_cargo,
+            (SELECT COUNT(*) FROM Employee WHERE managerId = :id) AS reportes_directos
+    """), {"id": employee_id}).mappings().first()
+    return bool(row and (row["deptos_a_cargo"] > 0 or row["reportes_directos"] > 0))
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # GET /feedback/peers/{employee_id}
 # ─────────────────────────────────────────────────────────────────────────────
-from fastapi import APIRouter, HTTPException, Depends
-from sqlalchemy.orm import Session
-from sqlalchemy import text
-
 @router.get("/peers/{employee_id}", dependencies=[Depends(require_any_auth)])
 def get_evaluable_peers(employee_id: int, db: Session = Depends(get_db)):
     """
-    Retorna los compañeros del mismo departamento u oficina que el empleado puede evaluar,
-    junto con sus habilidades blandas.
+    Devuelve el pool de personas que el empleado puede evaluar: companeros
+    del mismo departamento/oficina + su superior directo (managerId), cada
+    uno con el flag esJerarquico (determina si se le muestran preguntas de
+    liderazgo).
     """
-
-    # 1. Obtener evaluador
     evaluator = db.execute(text("""
-        SELECT e.id, e.name, e.departmentId, e.officeId, d.nombre AS deptName
+        SELECT e.id, e.name, e.departmentId, e.officeId, e.managerId, d.nombre AS deptName
         FROM Employee e
         LEFT JOIN Department d ON d.id = e.departmentId
         WHERE e.id = :id
@@ -58,18 +73,12 @@ def get_evaluable_peers(employee_id: int, db: Session = Depends(get_db)):
     if not evaluator:
         raise HTTPException(status_code=404, detail="Empleado no encontrado")
 
-    dept_id   = evaluator["departmentId"]
+    dept_id = evaluator["departmentId"]
     office_id = evaluator["officeId"]
+    manager_id = evaluator["managerId"]
 
-    # 2. Obtener peers (FIX: CAST para evitar error con TEXT)
     peers = db.execute(text("""
-        SELECT DISTINCT
-            e.id,
-            e.name,
-            e.email,
-            CAST(e.photo AS NVARCHAR(MAX)) AS photo,
-            d.nombre AS department,
-            o.nombre AS office
+        SELECT DISTINCT e.id, e.name, d.nombre AS department, o.nombre AS office
         FROM Employee e
         LEFT JOIN Department d ON d.id = e.departmentId
         LEFT JOIN Office o ON o.id = e.officeId
@@ -85,81 +94,36 @@ def get_evaluable_peers(employee_id: int, db: Session = Depends(get_db)):
         "office_id": office_id
     }).mappings().all()
 
-    if not peers:
-        return {
-            "evaluatorId": employee_id,
-            "department": evaluator["deptName"],
-            "peers": [],
+    evaluables_by_id: dict[int, dict] = {}
+    for p in peers:
+        evaluables_by_id[p["id"]] = {
+            "id": p["id"], "name": p["name"],
+            "department": p["department"], "office": p["office"],
         }
 
-    # 3. Obtener IDs seguros
-    peer_ids = [p["id"] for p in peers]
+    if manager_id and manager_id not in evaluables_by_id:
+        manager = db.execute(text("""
+            SELECT e.id, e.name, d.nombre AS department, o.nombre AS office
+            FROM Employee e
+            LEFT JOIN Department d ON d.id = e.departmentId
+            LEFT JOIN Office o ON o.id = e.officeId
+            WHERE e.id = :id
+        """), {"id": manager_id}).mappings().first()
+        if manager:
+            evaluables_by_id[manager["id"]] = {
+                "id": manager["id"], "name": manager["name"],
+                "department": manager["department"], "office": manager["office"],
+            }
 
-    # Generar parámetros dinámicos seguros
-    ids_params = {f"id_{i}": pid for i, pid in enumerate(peer_ids)}
-    ids_placeholders = ", ".join(f":id_{i}" for i in range(len(peer_ids)))
-
-    # 4. Obtener habilidades blandas (FIX: query segura)
-    soft_skills = db.execute(text(f"""
-        SELECT es.employeeId, ss.id AS skillId, ss.nombre, ss.description
-        FROM EmployeeSoftSkill es
-        INNER JOIN SoftSkill ss ON ss.id = es.softSkillId
-        WHERE es.employeeId IN ({ids_placeholders})
-          AND ss.activo = 1
-        ORDER BY ss.nombre ASC
-    """), ids_params).mappings().all()
-
-    # Mapear skills por empleado
-    skills_by_peer = {}
-    for sk in soft_skills:
-        skills_by_peer.setdefault(sk["employeeId"], []).append({
-            "skillId": sk["skillId"],
-            "nombre": sk["nombre"],
-            "description": sk["description"],
-        })
-
-    # 5. Evaluaciones ya realizadas
-    already_evaluated = db.execute(text("""
-        SELECT DISTINCT f.evaluatedEmployeeId, f.softSkillId
-        FROM FeedbackEvaluacion f
-        WHERE f.evaluatorEmployeeId = :evaluator
-          AND f.cycleStart = (
-            SELECT MAX(cycleStart)
-            FROM FeedbackEvaluacion
-            WHERE evaluatorEmployeeId = :evaluator
-          )
-    """), {"evaluator": employee_id}).mappings().all()
-
-    evaluated_set = {
-        (row["evaluatedEmployeeId"], row["softSkillId"])
-        for row in already_evaluated
-    }
-
-    # 6. Armar respuesta
-    result_peers = []
-    for p in peers:
-        pid = p["id"]
-        skills = skills_by_peer.get(pid, [])
-
-        skills_with_status = [
-            {**sk, "evaluated": (pid, sk["skillId"]) in evaluated_set}
-            for sk in skills
-        ]
-
-        result_peers.append({
-            "id": pid,
-            "name": p["name"],
-            "email": p["email"],
-            "photo": p["photo"],
-            "department": p["department"],
-            "office": p["office"],
-            "softSkills": skills_with_status,
-        })
+    evaluables = []
+    for ev in evaluables_by_id.values():
+        ev["esJerarquico"] = _is_jerarquico(db, ev["id"])
+        evaluables.append(ev)
 
     return {
         "evaluatorId": employee_id,
         "department": evaluator["deptName"],
-        "peers": result_peers,
+        "evaluables": evaluables,
     }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -341,3 +305,25 @@ def list_preguntas(
     ensure_preguntas_table(db)
     preguntas = get_preguntas(db, solo_liderazgo=soloLiderazgo, es_ambiente_general=esAmbienteGeneral)
     return {"preguntas": preguntas}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GET / PUT /feedback/config — Periodicidad del ciclo de evaluacion
+# ─────────────────────────────────────────────────────────────────────────────
+@router.get("/config", dependencies=[Depends(require_any_auth)])
+def get_feedback_config(db: Session = Depends(get_db)):
+    ensure_config_table(db)
+    periodicidad = get_periodicidad(db)
+    periodo = get_periodo_actual(db)
+    return {"periodicidad": periodicidad, "periodoActual": periodo.isoformat()}
+
+
+@router.put("/config", dependencies=[Depends(require_rrhh_auth)])
+def update_feedback_config(data: dict = Body(...), db: Session = Depends(get_db)):
+    ensure_config_table(db)
+    periodicidad = data.get("periodicidad")
+    try:
+        set_periodicidad(db, periodicidad)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"periodicidad": periodicidad}
