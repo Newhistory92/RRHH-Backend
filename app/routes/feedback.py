@@ -456,3 +456,50 @@ def verificar_reglas(db: Session = Depends(get_db)):
     })
 
     return {"reglas": reglas}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GET /feedback/estadisticas-globales — radar y rankings por departamento
+# ─────────────────────────────────────────────────────────────────────────────
+@router.get("/estadisticas-globales", dependencies=[Depends(require_any_auth)])
+def get_estadisticas_globales(departmentId: int, db: Session = Depends(get_db)):
+    """
+    Radar de habilidades (promedio del departamento seleccionado vs.
+    promedio institucional, por categoria) y ranking de fortalezas/
+    debilidades del departamento seleccionado.
+    """
+    rows = db.execute(text("""
+        SELECT
+            p.categoria,
+            AVG(CASE WHEN rf.departmentId = :deptId THEN CAST(rf.valorEscala AS FLOAT) END) AS promedio_area,
+            AVG(CAST(rf.valorEscala AS FLOAT)) AS promedio_institucional
+        FROM RespuestaFeedback rf
+        INNER JOIN Pregunta p ON p.id = rf.preguntaId
+        WHERE p.tipo = 'escala' AND p.esAmbienteGeneral = 0
+        GROUP BY p.categoria
+        ORDER BY p.categoria ASC
+    """), {"deptId": departmentId}).mappings().all()
+
+    radar = []
+    ranking_area = []
+    for r in rows:
+        promedio_area = round(r["promedio_area"], 2) if r["promedio_area"] is not None else None
+        promedio_institucional = round(r["promedio_institucional"], 2) if r["promedio_institucional"] is not None else None
+        radar.append({
+            "categoria": r["categoria"],
+            "promedioArea": promedio_area,
+            "promedioInstitucional": promedio_institucional,
+        })
+        if promedio_area is not None:
+            ranking_area.append({"categoria": r["categoria"], "promedio": promedio_area})
+
+    ranking_area_desc = sorted(ranking_area, key=lambda x: x["promedio"], reverse=True)
+    fortalezas_area = ranking_area_desc[:5]
+    debilidades_area = list(reversed(ranking_area_desc))[:5]
+
+    return {
+        "departmentId": departmentId,
+        "radar": radar,
+        "fortalezasArea": fortalezas_area,
+        "debilidadesArea": debilidades_area,
+    }
