@@ -27,6 +27,7 @@ from app.database.feedback_config import (
     get_periodicidad,
     set_periodicidad,
     get_periodo_actual,
+    get_periodo_anterior,
 )
 
 router = APIRouter(prefix="/feedback", tags=["Feedback"])
@@ -312,41 +313,66 @@ def get_feedback_status(employee_id: int, db: Session = Depends(get_db)):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# GET /feedback/received/{employee_id} — resultados recibidos por el empleado
+# GET /feedback/received/{employee_id} — indicadores para RRHH
 # ─────────────────────────────────────────────────────────────────────────────
 @router.get("/received/{employee_id}", dependencies=[Depends(require_any_auth)])
 def get_received_feedback(employee_id: int, db: Session = Depends(get_db)):
-    """Retorna el feedback recibido con conteos agregados por habilidad blanda."""
-    rows = db.execute(text("""
-        SELECT
-            f.id AS feedbackId,
-            f.cycleStart,
-            ss.id   AS skillId,
-            ss.nombre AS skillName,
-            r.malo, r.bueno, r.excelente
-        FROM Feedback f
-        INNER JOIN SoftSkill ss ON ss.id = f.skillId
-        LEFT JOIN Respuesta r ON r.feedbackId = f.id
-        WHERE f.userId = :emp
-        ORDER BY f.cycleStart DESC, ss.nombre ASC
+    """
+    Indicadores de Feedback 360 recibidos por el empleado: fortalezas y
+    debilidades Top 5 por categoria (promedio historico de valorEscala),
+    y evolucion del promedio general entre el periodo actual y el anterior.
+    """
+    ensure_config_table(db)
+
+    categorias = db.execute(text("""
+        SELECT p.categoria, AVG(CAST(rf.valorEscala AS FLOAT)) AS promedio
+        FROM RespuestaFeedback rf
+        INNER JOIN Pregunta p ON p.id = rf.preguntaId
+        WHERE rf.evaluadoEmployeeId = :emp
+          AND p.tipo = 'escala'
+          AND p.esAmbienteGeneral = 0
+        GROUP BY p.categoria
+        ORDER BY promedio DESC
     """), {"emp": employee_id}).mappings().all()
+
+    ranking = [{"categoria": c["categoria"], "promedio": round(c["promedio"], 2)} for c in categorias]
+    fortalezas = ranking[:5]
+    debilidades = list(reversed(ranking))[:5]
+
+    periodo_actual = get_periodo_actual(db)
+    periodo_anterior = get_periodo_anterior(db)
+
+    def promedio_periodo(periodo):
+        row = db.execute(text("""
+            SELECT AVG(CAST(rf.valorEscala AS FLOAT)) AS promedio
+            FROM RespuestaFeedback rf
+            INNER JOIN Pregunta p ON p.id = rf.preguntaId
+            WHERE rf.evaluadoEmployeeId = :emp
+              AND p.tipo = 'escala'
+              AND p.esAmbienteGeneral = 0
+              AND rf.periodo = :periodo
+        """), {"emp": employee_id, "periodo": periodo}).mappings().first()
+        return round(row["promedio"], 2) if row and row["promedio"] is not None else None
+
+    promedio_actual = promedio_periodo(periodo_actual)
+    promedio_anterior = promedio_periodo(periodo_anterior)
+    diferencia = (
+        round(promedio_actual - promedio_anterior, 2)
+        if promedio_actual is not None and promedio_anterior is not None
+        else None
+    )
 
     return {
         "employeeId": employee_id,
-        "feedback": [
-            {
-                "feedbackId":  r["feedbackId"],
-                "cycleStart":  r["cycleStart"],
-                "skillId":     r["skillId"],
-                "skillName":   r["skillName"],
-                "results": {
-                    "malo":      r["malo"] or 0,
-                    "bueno":     r["bueno"] or 0,
-                    "excelente": r["excelente"] or 0,
-                }
-            }
-            for r in rows
-        ]
+        "fortalezas": fortalezas,
+        "debilidades": debilidades,
+        "evolucion": {
+            "periodoActual": periodo_actual.isoformat(),
+            "promedioActual": promedio_actual,
+            "periodoAnterior": periodo_anterior.isoformat(),
+            "promedioAnterior": promedio_anterior,
+            "diferencia": diferencia,
+        },
     }
 
 

@@ -73,3 +73,25 @@ def get_periodo_actual(db: Session) -> date:
         return date(today.year, mes, 1)
     mes = ((today.month - 1) // 3) * 3 + 1
     return date(today.year, mes, 1)
+
+
+def get_periodo_anterior(db: Session) -> date:
+    """Calcula el inicio del ciclo inmediatamente anterior al actual,
+    restando una unidad de periodicidad (trimestral: -3 meses,
+    semestral: -6 meses, anual: -1 anio) a get_periodo_actual.
+    """
+    periodicidad = get_periodicidad(db)
+    actual = get_periodo_actual(db)
+
+    if periodicidad == "anual":
+        return date(actual.year - 1, 1, 1)
+    if periodicidad == "semestral":
+        if actual.month == 1:
+            return date(actual.year - 1, 7, 1)
+        return date(actual.year, 1, 1)
+    mes = actual.month - 3
+    anio = actual.year
+    if mes <= 0:
+        mes += 12
+        anio -= 1
+    return date(anio, mes, 1)
