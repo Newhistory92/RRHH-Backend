@@ -54,17 +54,25 @@ def _is_jerarquico(db: Session, employee_id: int) -> bool:
     return bool(row and (row["deptos_a_cargo"] > 0 or row["reportes_directos"] > 0))
 
 
+def _check_self_or_admin(employee_id: int, current_user: dict) -> None:
+    """Evita que un empleado actue (o lea el estado) en nombre de otro."""
+    if employee_id != current_user.get("employeeId") and current_user.get("roleId") != ROLE_ADMIN:
+        raise HTTPException(status_code=403, detail="No tenes permiso para acceder a esta informacion.")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # GET /feedback/peers/{employee_id}
 # ─────────────────────────────────────────────────────────────────────────────
 @router.get("/peers/{employee_id}", dependencies=[Depends(require_any_auth)])
-def get_evaluable_peers(employee_id: int, db: Session = Depends(get_db)):
+def get_evaluable_peers(employee_id: int, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
     """
     Devuelve el pool de personas que el empleado puede evaluar: companeros
     del mismo departamento/oficina + su superior directo (managerId), cada
     uno con el flag esJerarquico (determina si se le muestran preguntas de
     liderazgo).
     """
+    _check_self_or_admin(employee_id, current_user)
+
     evaluator = db.execute(text("""
         SELECT e.id, e.name, e.departmentId, e.officeId, e.managerId, d.nombre AS deptName
         FROM Employee e
@@ -132,16 +140,18 @@ def get_evaluable_peers(employee_id: int, db: Session = Depends(get_db)):
 # GET /feedback/siguiente/{employee_id}
 # ─────────────────────────────────────────────────────────────────────────────
 @router.get("/siguiente/{employee_id}", dependencies=[Depends(require_any_auth)])
-def get_siguiente_pregunta(employee_id: int, db: Session = Depends(get_db)):
+def get_siguiente_pregunta(employee_id: int, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
     """
     Elige al azar un par (evaluado, pregunta) pendiente del ciclo activo
     para que este empleado evalue. Devuelve pregunta null si no quedan
     pendientes.
     """
+    _check_self_or_admin(employee_id, current_user)
+
     ensure_preguntas_table(db)
     ensure_config_table(db)
 
-    peers_response = get_evaluable_peers(employee_id, db)
+    peers_response = get_evaluable_peers(employee_id, db, current_user)
     evaluables = peers_response["evaluables"]
     preguntas = get_preguntas(db)
     periodo = get_periodo_actual(db)
@@ -187,7 +197,7 @@ def get_siguiente_pregunta(employee_id: int, db: Session = Depends(get_db)):
 # POST /feedback/submit
 # ─────────────────────────────────────────────────────────────────────────────
 @router.post("/submit", dependencies=[Depends(require_any_auth)])
-def submit_feedback(data: dict = Body(...), db: Session = Depends(get_db)):
+def submit_feedback(data: dict = Body(...), db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
     """
     Guarda una respuesta individual en RespuestaFeedback (escala 1-5 o
     texto libre segun el tipo de la pregunta).
@@ -210,6 +220,8 @@ def submit_feedback(data: dict = Body(...), db: Session = Depends(get_db)):
     if not evaluador_id or not pregunta_id:
         raise HTTPException(status_code=400, detail="Faltan campos requeridos")
 
+    _check_self_or_admin(evaluador_id, current_user)
+
     ensure_preguntas_table(db)
     ensure_config_table(db)
 
@@ -231,7 +243,7 @@ def submit_feedback(data: dict = Body(...), db: Session = Depends(get_db)):
             raise HTTPException(status_code=403, detail="Esta pregunta solo aplica a evaluados con cargo jerarquico")
 
     if evaluado_id:
-        valid_ids = {ev["id"] for ev in get_evaluable_peers(evaluador_id, db)["evaluables"]}
+        valid_ids = {ev["id"] for ev in get_evaluable_peers(evaluador_id, db, current_user)["evaluables"]}
         if evaluado_id not in valid_ids:
             raise HTTPException(status_code=403, detail="Solo podes evaluar companeros de tu area o tu superior directo")
 
@@ -280,12 +292,14 @@ def submit_feedback(data: dict = Body(...), db: Session = Depends(get_db)):
 # GET /feedback/status/{employee_id}  — progreso del evaluador
 # ─────────────────────────────────────────────────────────────────────────────
 @router.get("/status/{employee_id}", dependencies=[Depends(require_any_auth)])
-def get_feedback_status(employee_id: int, db: Session = Depends(get_db)):
+def get_feedback_status(employee_id: int, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
     """Progreso del ciclo activo: pares totales aplicables vs. respondidos."""
+    _check_self_or_admin(employee_id, current_user)
+
     ensure_preguntas_table(db)
     ensure_config_table(db)
 
-    evaluables = get_evaluable_peers(employee_id, db)["evaluables"]
+    evaluables = get_evaluable_peers(employee_id, db, current_user)["evaluables"]
     preguntas = get_preguntas(db)
     periodo = get_periodo_actual(db)
 
