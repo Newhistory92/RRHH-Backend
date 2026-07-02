@@ -280,20 +280,34 @@ def submit_feedback(data: dict = Body(...), db: Session = Depends(get_db)):
 # ─────────────────────────────────────────────────────────────────────────────
 @router.get("/status/{employee_id}", dependencies=[Depends(require_any_auth)])
 def get_feedback_status(employee_id: int, db: Session = Depends(get_db)):
-    """Estado del ciclo actual del evaluador: cuántas evaluaciones completó vs. total."""
-    now         = datetime.now(timezone.utc).replace(tzinfo=None)
-    cycle_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    """Progreso del ciclo activo: pares totales aplicables vs. respondidos."""
+    ensure_preguntas_table(db)
+    ensure_config_table(db)
 
-    completed = db.execute(text("""
-        SELECT COUNT(*) AS cnt
-        FROM FeedbackEvaluacion
-        WHERE evaluatorEmployeeId = :emp AND cycleStart = :cycle
-    """), {"emp": employee_id, "cycle": cycle_start}).mappings().first()
+    evaluables = get_evaluable_peers(employee_id, db)["evaluables"]
+    preguntas = get_preguntas(db)
+    periodo = get_periodo_actual(db)
+
+    total = 0
+    for pregunta in preguntas:
+        if pregunta["esAmbienteGeneral"]:
+            total += 1
+            continue
+        for ev in evaluables:
+            if pregunta["soloLiderazgo"] and not ev["esJerarquico"]:
+                continue
+            total += 1
+
+    completadas_row = db.execute(text("""
+        SELECT COUNT(*) AS c FROM RespuestaFeedback
+        WHERE evaluadorEmployeeId = :emp AND periodo = :periodo
+    """), {"emp": employee_id, "periodo": periodo}).mappings().first()
 
     return {
-        "evaluatorId":       employee_id,
-        "cycleStart":        cycle_start.isoformat(),
-        "completedEvaluations": completed["cnt"] if completed else 0,
+        "evaluatorId": employee_id,
+        "periodo": periodo.isoformat(),
+        "total": total,
+        "completadas": completadas_row["c"],
     }
 
 
@@ -371,3 +385,48 @@ def update_feedback_config(data: dict = Body(...), db: Session = Depends(get_db)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"periodicidad": periodicidad}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# POST /feedback/verificar — Boton temporal "Verificar Evaluacion de Equipo"
+# ─────────────────────────────────────────────────────────────────────────────
+@router.post("/verificar", dependencies=[Depends(require_rrhh_auth)])
+def verificar_reglas(db: Session = Depends(get_db)):
+    """Corre chequeos de reglas de negocio sobre los datos reales de RespuestaFeedback."""
+    ensure_preguntas_table(db)
+    ensure_config_table(db)
+    periodo = get_periodo_actual(db)
+
+    duplicados = db.execute(text("""
+        SELECT preguntaId, evaluadorEmployeeId, evaluadoEmployeeId, COUNT(*) AS c
+        FROM RespuestaFeedback
+        WHERE periodo = :periodo
+        GROUP BY preguntaId, evaluadorEmployeeId, evaluadoEmployeeId
+        HAVING COUNT(*) > 1
+    """), {"periodo": periodo}).mappings().all()
+
+    reglas = [{
+        "regla": "Sin repeticion de pregunta/evaluador/evaluado en el periodo activo",
+        "cumple": len(duplicados) == 0,
+        "detalle": f"{len(duplicados)} duplicados encontrados",
+    }]
+
+    liderazgo_rows = db.execute(text("""
+        SELECT DISTINCT rf.evaluadoEmployeeId
+        FROM RespuestaFeedback rf
+        INNER JOIN Pregunta p ON p.id = rf.preguntaId
+        WHERE p.soloLiderazgo = 1 AND rf.periodo = :periodo AND rf.evaluadoEmployeeId IS NOT NULL
+    """), {"periodo": periodo}).mappings().all()
+
+    invalidos = [r["evaluadoEmployeeId"] for r in liderazgo_rows if not _is_jerarquico(db, r["evaluadoEmployeeId"])]
+
+    reglas.append({
+        "regla": "Preguntas de liderazgo solo a evaluados jerarquicos",
+        "cumple": len(invalidos) == 0,
+        "detalle": (
+            f"{len(invalidos)} respuestas de liderazgo sobre evaluados sin cargo jerarquico (ids {invalidos})"
+            if invalidos else "0 infracciones encontradas"
+        ),
+    })
+
+    return {"reglas": reglas}
