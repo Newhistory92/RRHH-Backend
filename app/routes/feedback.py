@@ -20,6 +20,7 @@ from sqlalchemy import text
 from app.database.database import SessionLocal
 from app.auth_middleware import require_any_auth, get_current_user, require_roles, ROLE_ADMIN
 from datetime import datetime, timezone
+import random
 from app.database.feedback_preguntas import ensure_table as ensure_preguntas_table, get_preguntas
 from app.database.feedback_config import (
     ensure_table as ensure_config_table,
@@ -127,108 +128,151 @@ def get_evaluable_peers(employee_id: int, db: Session = Depends(get_db)):
     }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# GET /feedback/siguiente/{employee_id}
+# ─────────────────────────────────────────────────────────────────────────────
+@router.get("/siguiente/{employee_id}", dependencies=[Depends(require_any_auth)])
+def get_siguiente_pregunta(employee_id: int, db: Session = Depends(get_db)):
+    """
+    Elige al azar un par (evaluado, pregunta) pendiente del ciclo activo
+    para que este empleado evalue. Devuelve pregunta null si no quedan
+    pendientes.
+    """
+    ensure_preguntas_table(db)
+    ensure_config_table(db)
+
+    peers_response = get_evaluable_peers(employee_id, db)
+    evaluables = peers_response["evaluables"]
+    preguntas = get_preguntas(db)
+    periodo = get_periodo_actual(db)
+
+    ya_respondidas = db.execute(text("""
+        SELECT preguntaId, evaluadoEmployeeId
+        FROM RespuestaFeedback
+        WHERE evaluadorEmployeeId = :emp AND periodo = :periodo
+    """), {"emp": employee_id, "periodo": periodo}).mappings().all()
+    respondidas_set = {(r["preguntaId"], r["evaluadoEmployeeId"]) for r in ya_respondidas}
+
+    candidatos = []
+    for pregunta in preguntas:
+        if pregunta["esAmbienteGeneral"]:
+            if (pregunta["id"], None) not in respondidas_set:
+                candidatos.append({"evaluado": None, "pregunta": pregunta})
+            continue
+        for ev in evaluables:
+            if pregunta["soloLiderazgo"] and not ev["esJerarquico"]:
+                continue
+            if (pregunta["id"], ev["id"]) in respondidas_set:
+                continue
+            candidatos.append({"evaluado": ev, "pregunta": pregunta})
+
+    if not candidatos:
+        return {"evaluado": None, "pregunta": None}
+
+    elegido = random.choice(candidatos)
+    evaluado_out = (
+        {"id": elegido["evaluado"]["id"], "name": elegido["evaluado"]["name"]}
+        if elegido["evaluado"] else None
+    )
+    pregunta_out = {
+        "id": elegido["pregunta"]["id"],
+        "texto": elegido["pregunta"]["texto"],
+        "tipo": elegido["pregunta"]["tipo"],
+        "opcionesEscala": elegido["pregunta"]["opcionesEscala"],
+    }
+    return {"evaluado": evaluado_out, "pregunta": pregunta_out}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # POST /feedback/submit
 # ─────────────────────────────────────────────────────────────────────────────
 @router.post("/submit", dependencies=[Depends(require_any_auth)])
 def submit_feedback(data: dict = Body(...), db: Session = Depends(get_db)):
     """
-    Guarda una evaluación de habilidad blanda.
+    Guarda una respuesta individual en RespuestaFeedback (escala 1-5 o
+    texto libre segun el tipo de la pregunta).
 
     Body:
     {
-      "evaluatorId":   1,       ← quien evalúa (sus datos NO se guardan vinculados al resultado)
-      "evaluatedId":   2,       ← quien es evaluado
-      "softSkillId":   5,       ← habilidad evaluada
-      "result":        "Bueno"  ← "Malo" | "Bueno" | "Excelente"
+      "evaluadorId": 5,
+      "evaluadoId":  12,        ← null para preguntas de ambiente general
+      "preguntaId":  7,
+      "valorEscala": 4,         ← requerido si la pregunta es de tipo 'escala'
+      "textoLibre":  null       ← requerido si la pregunta es de tipo 'texto_libre'
     }
-
-    El resultado incremente el conteo (malo/bueno/excelente) en la tabla Respuesta,
-    que es el campo que impacta en las estadísticas internas.
-    La FeedbackEvaluacion solo guarda que evaluatorId evaluó a evaluatedId+skillId (sin ligar result).
     """
-    evaluator_id  = data.get("evaluatorId")
-    evaluated_id  = data.get("evaluatedId")
-    soft_skill_id = data.get("softSkillId")
-    result        = data.get("result")
+    evaluador_id = data.get("evaluadorId")
+    evaluado_id = data.get("evaluadoId")
+    pregunta_id = data.get("preguntaId")
+    valor_escala = data.get("valorEscala")
+    texto_libre = data.get("textoLibre")
 
-    if not all([evaluator_id, evaluated_id, soft_skill_id, result]):
+    if not evaluador_id or not pregunta_id:
         raise HTTPException(status_code=400, detail="Faltan campos requeridos")
 
-    valid_results = {"Malo", "Bueno", "Excelente"}
-    if result not in valid_results:
-        raise HTTPException(status_code=400, detail=f"result debe ser uno de: {valid_results}")
+    ensure_preguntas_table(db)
+    ensure_config_table(db)
 
-    # Verificar que evaluado y evaluador son compañeros del mismo área
-    same_area = db.execute(text("""
-        SELECT 1
-        FROM Employee e1, Employee e2
-        WHERE e1.id = :ev AND e2.id = :ed
-          AND (e1.departmentId = e2.departmentId OR e1.officeId = e2.officeId)
-          AND e1.id != e2.id
-    """), {"ev": evaluator_id, "ed": evaluated_id}).first()
+    pregunta = db.execute(text("""
+        SELECT id, tipo, soloLiderazgo FROM Pregunta WHERE id = :id AND activo = 1
+    """), {"id": pregunta_id}).mappings().first()
+    if not pregunta:
+        raise HTTPException(status_code=404, detail="Pregunta no encontrada")
 
-    if not same_area:
-        raise HTTPException(status_code=403, detail="Solo podés evaluar compañeros de tu mismo departamento u oficina")
-
-    # Determinar ciclo actual (fecha de inicio del ciclo — usamos el mes/año actual)
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
-    cycle_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-
-    # Verificar si ya evaluó esta habilidad de este compañero en el ciclo actual
-    already = db.execute(text("""
-        SELECT id FROM FeedbackEvaluacion
-        WHERE evaluatorEmployeeId = :ev
-          AND evaluatedEmployeeId = :ed
-          AND softSkillId = :sk
-          AND cycleStart = :cycle
-    """), {"ev": evaluator_id, "ed": evaluated_id, "sk": soft_skill_id, "cycle": cycle_start}).first()
-
-    if already:
-        raise HTTPException(status_code=409, detail="Ya evaluaste esta habilidad de este compañero en el ciclo actual")
-
-    # Buscar o crear Feedback + Respuesta para el evaluado+habilidad en este ciclo
-    feedback_row = db.execute(text("""
-        SELECT f.id
-        FROM Feedback f
-        WHERE f.userId = :evaluated_id AND f.skillId = :skill_id
-          AND f.cycleStart = :cycle
-    """), {"evaluated_id": evaluated_id, "skill_id": soft_skill_id, "cycle": cycle_start}).first()
-
-    if not feedback_row:
-        # Crear feedback para este ciclo
-        feedback_result = db.execute(text("""
-            INSERT INTO Feedback (userId, skillId, cycleStart, createdAt, activo)
-            OUTPUT INSERTED.id
-            VALUES (:user_id, :skill_id, :cycle, :now, 1)
-        """), {"user_id": evaluated_id, "skill_id": soft_skill_id, "cycle": cycle_start, "now": now})
-        feedback_id = feedback_result.fetchone()[0]
-
-        # Crear Respuesta con conteos en 0
-        db.execute(text("""
-            INSERT INTO Respuesta (feedbackId, malo, bueno, excelente)
-            VALUES (:fid, 0, 0, 0)
-        """), {"fid": feedback_id})
+    if pregunta["tipo"] == "escala":
+        if valor_escala is None or not (1 <= int(valor_escala) <= 5):
+            raise HTTPException(status_code=400, detail="valorEscala debe estar entre 1 y 5")
     else:
-        feedback_id = feedback_row[0]
+        if not texto_libre or not str(texto_libre).strip():
+            raise HTTPException(status_code=400, detail="textoLibre no puede estar vacio")
 
-    # Incrementar el contador correspondiente en Respuesta
-    column_map = {"Malo": "malo", "Bueno": "bueno", "Excelente": "excelente"}
-    col = column_map[result]
-    db.execute(text(f"""
-        UPDATE Respuesta SET {col} = {col} + 1
-        WHERE feedbackId = :fid
-    """), {"fid": feedback_id})
+    if pregunta["soloLiderazgo"]:
+        if not evaluado_id or not _is_jerarquico(db, evaluado_id):
+            raise HTTPException(status_code=403, detail="Esta pregunta solo aplica a evaluados con cargo jerarquico")
 
-    # Registrar que el evaluador completó esta evaluación (para progreso y anti-repetición)
+    if evaluado_id:
+        valid_ids = {ev["id"] for ev in get_evaluable_peers(evaluador_id, db)["evaluables"]}
+        if evaluado_id not in valid_ids:
+            raise HTTPException(status_code=403, detail="Solo podes evaluar companeros de tu area o tu superior directo")
+
+    periodo = get_periodo_actual(db)
+
+    ya_existe = db.execute(text("""
+        SELECT id FROM RespuestaFeedback
+        WHERE evaluadorEmployeeId = :ev
+          AND preguntaId = :pregunta
+          AND periodo = :periodo
+          AND (
+            (:evaluado IS NULL AND evaluadoEmployeeId IS NULL)
+            OR evaluadoEmployeeId = :evaluado
+          )
+    """), {"ev": evaluador_id, "pregunta": pregunta_id, "periodo": periodo, "evaluado": evaluado_id}).first()
+    if ya_existe:
+        raise HTTPException(status_code=409, detail="Ya respondiste esta pregunta en el periodo actual")
+
+    office_id = None
+    department_id = None
+    if evaluado_id:
+        snap = db.execute(text("""
+            SELECT officeId, departmentId FROM Employee WHERE id = :id
+        """), {"id": evaluado_id}).mappings().first()
+        if snap:
+            office_id = snap["officeId"]
+            department_id = snap["departmentId"]
+
     db.execute(text("""
-        INSERT INTO FeedbackEvaluacion
-            (evaluatorEmployeeId, evaluatedEmployeeId, softSkillId, cycleStart, createdAt)
-        VALUES (:ev, :ed, :sk, :cycle, :now)
-    """), {"ev": evaluator_id, "ed": evaluated_id, "sk": soft_skill_id, "cycle": cycle_start, "now": now})
-
+        INSERT INTO RespuestaFeedback
+            (preguntaId, evaluadorEmployeeId, evaluadoEmployeeId, officeId, departmentId, periodo, valorEscala, textoLibre, createdAt)
+        VALUES
+            (:pregunta, :evaluador, :evaluado, :office, :department, :periodo, :valor, :texto, :now)
+    """), {
+        "pregunta": pregunta_id, "evaluador": evaluador_id, "evaluado": evaluado_id,
+        "office": office_id, "department": department_id, "periodo": periodo,
+        "valor": int(valor_escala) if valor_escala is not None else None,
+        "texto": texto_libre, "now": datetime.utcnow(),
+    })
     db.commit()
 
-    return {"message": "Feedback registrado correctamente", "feedbackId": feedback_id}
+    return {"message": "Respuesta registrada correctamente"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
