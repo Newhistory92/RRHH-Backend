@@ -15,14 +15,14 @@ engine_obrasocial = create_engine(OBRASOCIAL_DATABASE_URL, pool_pre_ping=True, p
 SessionLocalObraSocial = sessionmaker(autocommit=False, autoflush=False, bind=engine_obrasocial)
 
 # --- DEBUG: Probar conexión a ObraSocial al arrancar ---
-print("⚙️ Configurando conexión a ObraSocial...")
+print("[*] Configurando conexion a ObraSocial...")
 try:
     # Mostramos la URL sin el password para verificar el host/db
     safe_url = OBRASOCIAL_DATABASE_URL.split("@")[-1]
-    print(f"🔗 URL (host/db): {safe_url}")
-    
+    print(f"[+] URL (host/db): {safe_url}")
+
     with engine_obrasocial.connect() as conn:
-        print("✅ Conexión exitosa a la base de datos ObraSocial.")
+        print("[OK] Conexion exitosa a la base de datos ObraSocial.")
 except Exception as e:
-    print(f"❌ Error crítico de conexión a ObraSocial: {e}")
+    print(f"[ERROR] Conexion critica a ObraSocial: {e}")
 # -------------------------------------------------------

@@ -10,9 +10,9 @@ setup_cors(app)
 # Inicializar tabla TokenBlacklist en DB al arrancar
 @app.on_event("startup")
 def startup():
-    print("🚀 Iniciando app...")
+    print("[*] Iniciando app...")
     init_blacklist()
-    print("✅ init_blacklist ejecutado")
+    print("[OK] init_blacklist ejecutado")
 
 # Registrar los routers
 app.include_router(employee.router)
@@ -35,7 +35,7 @@ app.include_router(reubicacion.router)
 
 @app.get("/")
 def root():
-    return {"message": "Bienvenido a la API RRHH 🚀"}
+    return {"message": "Bienvenido a la API RRHH"}
 
 
 # python -m uvicorn app.main:app --reload
