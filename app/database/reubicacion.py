@@ -40,6 +40,11 @@ VALID_TIPOS = {
 
 
 def ensure_table(db: Session) -> None:
-    """Crea SolicitudReubicacion si no existe."""
+    """Crea SolicitudReubicacion si no existe, y agrega la columna
+    observacion si la tabla ya existia sin ella (idempotente)."""
     db.execute(text(CREATE_TABLE_SQL))
+    db.execute(text("""
+        IF COL_LENGTH('SolicitudReubicacion', 'observacion') IS NULL
+            ALTER TABLE SolicitudReubicacion ADD observacion NVARCHAR(MAX) NULL;
+    """))
     db.commit()
