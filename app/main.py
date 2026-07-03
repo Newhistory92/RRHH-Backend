@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from app.cors_config import setup_cors
-from app.routes import employee, user, auth, role, active, rrhh, departments, tests, feedback, licenses, obrasocial, stats, configtest, contracts, professions, schedules
+from app.routes import employee, user, auth, role, active, rrhh, departments, tests, feedback, licenses, obrasocial, stats, configtest, contracts, professions, schedules, reubicacion
 from app.routes.auth import init_blacklist
 
 app = FastAPI(title="Backend RRHH", version="1.0")
@@ -31,6 +31,7 @@ app.include_router(configtest.router)
 app.include_router(contracts.router)
 app.include_router(professions.router)
 app.include_router(schedules.router)
+app.include_router(reubicacion.router)
 
 @app.get("/")
 def root():
