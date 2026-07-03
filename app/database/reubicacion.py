@@ -40,11 +40,28 @@ VALID_TIPOS = {
 
 
 def ensure_table(db: Session) -> None:
-    """Crea SolicitudReubicacion si no existe, y agrega la columna
-    observacion si la tabla ya existia sin ella (idempotente)."""
+    """Crea SolicitudReubicacion si no existe, y agrega las columnas de
+    observacion y recomendacion IA si la tabla ya existia sin ellas
+    (idempotente)."""
     db.execute(text(CREATE_TABLE_SQL))
     db.execute(text("""
         IF COL_LENGTH('SolicitudReubicacion', 'observacion') IS NULL
             ALTER TABLE SolicitudReubicacion ADD observacion NVARCHAR(MAX) NULL;
+        IF COL_LENGTH('SolicitudReubicacion', 'officeIdSugerido') IS NULL
+            ALTER TABLE SolicitudReubicacion ADD officeIdSugerido INT NULL;
+        IF COL_LENGTH('SolicitudReubicacion', 'departmentIdSugerido') IS NULL
+            ALTER TABLE SolicitudReubicacion ADD departmentIdSugerido INT NULL;
+        IF COL_LENGTH('SolicitudReubicacion', 'scoreCompatibilidad') IS NULL
+            ALTER TABLE SolicitudReubicacion ADD scoreCompatibilidad INT NULL;
+        IF COL_LENGTH('SolicitudReubicacion', 'explicacionIA') IS NULL
+            ALTER TABLE SolicitudReubicacion ADD explicacionIA NVARCHAR(MAX) NULL;
+        IF COL_LENGTH('SolicitudReubicacion', 'beneficios') IS NULL
+            ALTER TABLE SolicitudReubicacion ADD beneficios NVARCHAR(MAX) NULL;
+        IF COL_LENGTH('SolicitudReubicacion', 'riesgos') IS NULL
+            ALTER TABLE SolicitudReubicacion ADD riesgos NVARCHAR(MAX) NULL;
+        IF COL_LENGTH('SolicitudReubicacion', 'officeIdDestino') IS NULL
+            ALTER TABLE SolicitudReubicacion ADD officeIdDestino INT NULL;
+        IF COL_LENGTH('SolicitudReubicacion', 'departmentIdDestino') IS NULL
+            ALTER TABLE SolicitudReubicacion ADD departmentIdDestino INT NULL;
     """))
     db.commit()

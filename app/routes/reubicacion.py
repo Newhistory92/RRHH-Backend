@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from datetime import datetime
 from typing import Optional
+import json
 from app.database.database import SessionLocal
 from app.auth_middleware import require_any_auth, get_current_user, require_roles, ROLE_ADMIN
 from app.database.reubicacion import ensure_table, VALID_TIPOS
@@ -16,6 +17,17 @@ router = APIRouter(prefix="/reubicacion", tags=["Reubicacion"])
 
 ROLE_RRHH = ROLE_ADMIN
 require_rrhh_auth = require_roles(ROLE_ADMIN, ROLE_RRHH)
+
+
+def _parse_json_list(value) -> list:
+    """Parsea un campo NVARCHAR con un JSON array; devuelve [] si es NULL o invalido."""
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+        return parsed if isinstance(parsed, list) else []
+    except (json.JSONDecodeError, TypeError):
+        return []
 
 
 def get_db():
@@ -141,11 +153,17 @@ def get_solicitudes(
             sr.tipo, sr.motivo, sr.estado, sr.observacion,
             sr.officeIdActual, o.nombre AS officeName,
             sr.departmentIdActual, d.nombre AS departmentName,
+            sr.officeIdSugerido, os.nombre AS officeSugeridoName,
+            sr.departmentIdSugerido, ds.nombre AS departmentSugeridoName,
+            sr.scoreCompatibilidad, sr.explicacionIA, sr.beneficios, sr.riesgos,
+            sr.officeIdDestino, sr.departmentIdDestino,
             sr.createdAt, sr.updatedAt
         FROM SolicitudReubicacion sr
         LEFT JOIN Employee e ON e.id = sr.employeeId
         LEFT JOIN Office o ON o.id = sr.officeIdActual
         LEFT JOIN Department d ON d.id = sr.departmentIdActual
+        LEFT JOIN Office os ON os.id = sr.officeIdSugerido
+        LEFT JOIN Department ds ON ds.id = sr.departmentIdSugerido
         WHERE 1=1
     """
     params = {}
@@ -183,6 +201,16 @@ def get_solicitudes(
                 "officeName": r["officeName"],
                 "departmentIdActual": r["departmentIdActual"],
                 "departmentName": r["departmentName"],
+                "officeIdSugerido": r["officeIdSugerido"],
+                "officeSugeridoName": r["officeSugeridoName"],
+                "departmentIdSugerido": r["departmentIdSugerido"],
+                "departmentSugeridoName": r["departmentSugeridoName"],
+                "scoreCompatibilidad": r["scoreCompatibilidad"],
+                "explicacionIA": r["explicacionIA"],
+                "beneficios": _parse_json_list(r["beneficios"]),
+                "riesgos": _parse_json_list(r["riesgos"]),
+                "officeIdDestino": r["officeIdDestino"],
+                "departmentIdDestino": r["departmentIdDestino"],
                 "createdAt": r["createdAt"].isoformat() if r["createdAt"] else None,
                 "updatedAt": r["updatedAt"].isoformat() if r["updatedAt"] else None,
             }
@@ -199,6 +227,8 @@ def update_estado(solicitud_id: int, data: dict = Body(...), db: Session = Depen
     """Aprueba o rechaza una solicitud de reubicacion, notificando al empleado."""
     estado = data.get("estado")
     observacion = data.get("observacion")
+    office_id_destino = data.get("officeIdDestino")
+    department_id_destino = data.get("departmentIdDestino")
 
     if estado not in ("Aprobada", "Rechazada"):
         raise HTTPException(status_code=400, detail="estado debe ser 'Aprobada' o 'Rechazada'")
@@ -214,9 +244,15 @@ def update_estado(solicitud_id: int, data: dict = Body(...), db: Session = Depen
     now = datetime.utcnow()
     db.execute(text("""
         UPDATE SolicitudReubicacion
-        SET estado = :estado, observacion = :observacion, updatedAt = :now
+        SET estado = :estado, observacion = :observacion,
+            officeIdDestino = :officeIdDestino, departmentIdDestino = :departmentIdDestino,
+            updatedAt = :now
         WHERE id = :id
-    """), {"estado": estado, "observacion": observacion, "now": now, "id": solicitud_id})
+    """), {
+        "estado": estado, "observacion": observacion,
+        "officeIdDestino": office_id_destino, "departmentIdDestino": department_id_destino,
+        "now": now, "id": solicitud_id,
+    })
 
     msg_text = f"Tu solicitud de reubicación ({solicitud['tipo']}) fue {estado} por RRHH."
     if observacion:
@@ -230,3 +266,97 @@ def update_estado(solicitud_id: int, data: dict = Body(...), db: Session = Depen
     db.commit()
 
     return {"message": "Solicitud actualizada", "estado": estado}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# POST /reubicacion/analizar/iniciar — marca Pendiente/En análisis como
+# En análisis y las devuelve para que el orquestador (Next.js) las procese.
+# ─────────────────────────────────────────────────────────────────────────────
+@router.post("/analizar/iniciar", dependencies=[Depends(require_rrhh_auth)])
+def iniciar_analisis(db: Session = Depends(get_db)):
+    """Marca las solicitudes Pendiente o En análisis como En análisis y las devuelve."""
+    ensure_table(db)
+
+    now = datetime.utcnow()
+    db.execute(text("""
+        UPDATE SolicitudReubicacion
+        SET estado = 'En análisis', updatedAt = :now
+        WHERE estado IN ('Pendiente', 'En análisis')
+    """), {"now": now})
+    db.commit()
+
+    rows = db.execute(text("""
+        SELECT sr.id, sr.employeeId, e.name AS employeeName, sr.tipo, sr.motivo,
+               sr.officeIdActual, sr.departmentIdActual
+        FROM SolicitudReubicacion sr
+        LEFT JOIN Employee e ON e.id = sr.employeeId
+        WHERE sr.estado = 'En análisis'
+        ORDER BY sr.createdAt ASC
+    """)).mappings().all()
+
+    solicitudes = [
+        {
+            "id": r["id"],
+            "employeeId": r["employeeId"],
+            "employeeName": r["employeeName"],
+            "tipo": r["tipo"],
+            "motivo": r["motivo"],
+            "officeIdActual": r["officeIdActual"],
+            "departmentIdActual": r["departmentIdActual"],
+        }
+        for r in rows
+    ]
+
+    return {"solicitudes": solicitudes, "count": len(solicitudes)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PATCH /reubicacion/{solicitud_id}/recomendacion — guarda la recomendacion
+# del motor de IA y pasa la solicitud a 'Recomendada'.
+# ─────────────────────────────────────────────────────────────────────────────
+@router.patch("/{solicitud_id}/recomendacion", dependencies=[Depends(require_rrhh_auth)])
+def guardar_recomendacion(solicitud_id: int, data: dict = Body(...), db: Session = Depends(get_db)):
+    """Guarda la recomendacion de IA (destino, score, explicacion) y pasa a Recomendada."""
+    office_id_sugerido = data.get("officeIdSugerido")
+    department_id_sugerido = data.get("departmentIdSugerido")
+    score = data.get("scoreCompatibilidad")
+    explicacion = data.get("explicacionIA")
+    beneficios = data.get("beneficios") or []
+    riesgos = data.get("riesgos") or []
+
+    if score is None or not isinstance(score, (int, float)):
+        raise HTTPException(status_code=400, detail="scoreCompatibilidad es requerido y debe ser numerico")
+
+    ensure_table(db)
+
+    solicitud = db.execute(text("""
+        SELECT id FROM SolicitudReubicacion WHERE id = :id
+    """), {"id": solicitud_id}).mappings().first()
+    if not solicitud:
+        raise HTTPException(status_code=404, detail="Solicitud no encontrada")
+
+    now = datetime.utcnow()
+    db.execute(text("""
+        UPDATE SolicitudReubicacion
+        SET estado = 'Recomendada',
+            officeIdSugerido = :officeIdSugerido,
+            departmentIdSugerido = :departmentIdSugerido,
+            scoreCompatibilidad = :score,
+            explicacionIA = :explicacion,
+            beneficios = :beneficios,
+            riesgos = :riesgos,
+            updatedAt = :now
+        WHERE id = :id
+    """), {
+        "officeIdSugerido": office_id_sugerido,
+        "departmentIdSugerido": department_id_sugerido,
+        "score": int(score),
+        "explicacion": explicacion,
+        "beneficios": json.dumps(beneficios, ensure_ascii=False),
+        "riesgos": json.dumps(riesgos, ensure_ascii=False),
+        "now": now,
+        "id": solicitud_id,
+    })
+    db.commit()
+
+    return {"message": "Recomendación guardada", "estado": "Recomendada"}
