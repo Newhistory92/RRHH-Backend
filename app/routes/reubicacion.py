@@ -360,3 +360,66 @@ def guardar_recomendacion(solicitud_id: int, data: dict = Body(...), db: Session
     db.commit()
 
     return {"message": "Recomendación guardada", "estado": "Recomendada"}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PATCH /reubicacion/{solicitud_id}/ejecutar — mueve al empleado en el
+# organigrama (Employee.officeId/departmentId/managerId) y pasa a 'Ejecutada'.
+# ─────────────────────────────────────────────────────────────────────────────
+@router.patch("/{solicitud_id}/ejecutar", dependencies=[Depends(require_rrhh_auth)])
+def ejecutar_solicitud(solicitud_id: int, data: dict = Body(...), db: Session = Depends(get_db)):
+    """Ejecuta una solicitud Aprobada: mueve al empleado en el organigrama y notifica."""
+    office_id = data.get("officeId")
+
+    ensure_table(db)
+
+    solicitud = db.execute(text("""
+        SELECT id, employeeId, estado FROM SolicitudReubicacion WHERE id = :id
+    """), {"id": solicitud_id}).mappings().first()
+    if not solicitud:
+        raise HTTPException(status_code=404, detail="Solicitud no encontrada")
+
+    if solicitud["estado"] != "Aprobada":
+        raise HTTPException(status_code=400, detail="Solo se pueden ejecutar solicitudes en estado 'Aprobada'")
+
+    if not office_id:
+        raise HTTPException(status_code=400, detail="Debe indicar la oficina destino para ejecutar")
+
+    office = db.execute(text("""
+        SELECT id, departmentId, jefeId, nombre FROM Office WHERE id = :id
+    """), {"id": office_id}).mappings().first()
+    if not office:
+        raise HTTPException(status_code=404, detail="Oficina no encontrada")
+
+    employee_id = solicitud["employeeId"]
+    jefe_id = office["jefeId"]
+    manager_id = jefe_id if jefe_id and jefe_id != employee_id else None
+
+    db.execute(text("""
+        UPDATE Employee
+        SET officeId = :officeId, departmentId = :departmentId, managerId = :managerId
+        WHERE id = :employeeId
+    """), {
+        "officeId": office["id"], "departmentId": office["departmentId"],
+        "managerId": manager_id, "employeeId": employee_id,
+    })
+
+    now = datetime.utcnow()
+    db.execute(text("""
+        UPDATE SolicitudReubicacion
+        SET estado = 'Ejecutada', officeIdDestino = :officeId, departmentIdDestino = :departmentId, updatedAt = :now
+        WHERE id = :id
+    """), {
+        "officeId": office["id"], "departmentId": office["departmentId"],
+        "now": now, "id": solicitud_id,
+    })
+
+    msg_text = f"Tu reubicación fue ejecutada. Nueva oficina: {office['nombre']}."
+    db.execute(text("""
+        INSERT INTO Message (employeeId, text, days, startDate, endDate, status, createdAt)
+        VALUES (:empId, :msg, 0, :now, :now, 'active', GETDATE())
+    """), {"empId": employee_id, "msg": msg_text, "now": now})
+
+    db.commit()
+
+    return {"message": "Reubicación ejecutada", "estado": "Ejecutada"}
