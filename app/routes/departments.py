@@ -17,6 +17,48 @@ def get_db():
         db.close()
 
 
+def ensure_capacity_columns(db: Session) -> None:
+    """Agrega capacidadRequerida a Department y Office si no existe (idempotente)."""
+    db.execute(text("""
+        IF COL_LENGTH('Department', 'capacidadRequerida') IS NULL
+            ALTER TABLE Department ADD capacidadRequerida INT NULL;
+        IF COL_LENGTH('Office', 'capacidadRequerida') IS NULL
+            ALTER TABLE Office ADD capacidadRequerida INT NULL;
+    """))
+    db.commit()
+
+
+def validar_tope_departamento(
+    db: Session,
+    dep_id: int,
+    capacidad_depto: Optional[int],
+    capacidad_oficina_nueva: int = 0,
+    office_id_excluir: Optional[int] = None,
+) -> None:
+    """Valida que la suma de capacidadRequerida de las oficinas del departamento
+    (incluyendo la nueva/editada, excluyendo la propia si se esta editando) no
+    supere la capacidad del departamento. Si el departamento no tiene capacidad
+    definida (NULL, legacy), no hay tope que validar."""
+    if capacidad_depto is None:
+        return
+
+    query = """
+        SELECT COALESCE(SUM(capacidadRequerida), 0) FROM Office
+        WHERE departmentId = :dep_id AND capacidadRequerida IS NOT NULL
+    """
+    params = {"dep_id": dep_id}
+    if office_id_excluir is not None:
+        query += " AND id != :office_id_excluir"
+        params["office_id_excluir"] = office_id_excluir
+
+    suma_actual = db.execute(text(query), params).scalar() or 0
+    suma_total = suma_actual + capacidad_oficina_nueva
+
+    if suma_total > capacidad_depto:
+        raise HTTPException(
+            status_code=400,
+            detail=f"La suma de las oficinas ({suma_total}) supera la capacidad del departamento ({capacidad_depto})"
+        )
 
 
 # 🟢 GET: Traer todos los departamentos con sus oficinas, empleados y habilidades
@@ -26,17 +68,19 @@ def get_departments_with_employees_and_offices(db: Session = Depends(get_db)):
     Devuelve una lista de departamentos con sus oficinas, empleados y habilidades asignadas.
     Si no existen departamentos, devuelve un array vacío (status 200).
     """
+    ensure_capacity_columns(db)
 
     # 🔹 Traer todos los departamentos
     departments = db.execute(text("""
-        SELECT 
-            d.id, 
-            d.nombre, 
-            d.description, 
-            d.jefeId, 
+        SELECT
+            d.id,
+            d.nombre,
+            d.description,
+            d.jefeId,
             d.nivelJerarquico,
             d.parentId,
-            d.createdAt, 
+            d.capacidadRequerida,
+            d.createdAt,
             d.updatedAt
         FROM Department d
         ORDER BY d.nombre
@@ -47,12 +91,13 @@ def get_departments_with_employees_and_offices(db: Session = Depends(get_db)):
     for dep in departments:
         # 🔹 Oficinas del departamento
         offices = db.execute(text("""
-            SELECT 
+            SELECT
                 o.id,
                 o.nombre,
                 o.description,
                 o.jefeId,
                 o.parentDepartmentId,
+                o.capacidadRequerida,
                 o.createdAt,
                 o.updatedAt
             FROM Office o
@@ -97,6 +142,8 @@ def get_departments_with_employees_and_offices(db: Session = Depends(get_db)):
                 "description": office.description,
                 "jefeId": office.jefeId,
                 "parentDepartmentId": office.parentDepartmentId,
+                "capacidadRequerida": office.capacidadRequerida,
+                "asignados": len(office_employees),
                 "createdAt": office.createdAt,
                 "updatedAt": office.updatedAt,
                 "habilidades_requeridas": [
@@ -135,7 +182,7 @@ def get_departments_with_employees_and_offices(db: Session = Depends(get_db)):
 
         # 🔹 Empleados del departamento (sin oficina)
         dept_employees = db.execute(text("""
-            SELECT 
+            SELECT
                 e.id,
                 e.name,
                 e.dni,
@@ -149,6 +196,11 @@ def get_departments_with_employees_and_offices(db: Session = Depends(get_db)):
             ORDER BY e.name
         """), {"dep_id": dep.id}).fetchall()
 
+        # 🔹 Total de asignados al departamento (con o sin oficina)
+        dept_total_asignados = db.execute(text("""
+            SELECT COUNT(*) FROM Employee WHERE departmentId = :dep_id
+        """), {"dep_id": dep.id}).scalar() or 0
+
         # 🔹 Construir resultado
         result.append({
             "id": dep.id,
@@ -157,6 +209,8 @@ def get_departments_with_employees_and_offices(db: Session = Depends(get_db)):
             "nivelJerarquico": dep.nivelJerarquico,
             "jefeId": dep.jefeId,
             "parentId": dep.parentId,
+            "capacidadRequerida": dep.capacidadRequerida,
+            "asignados": dept_total_asignados,
             "createdAt": dep.createdAt,
             "updatedAt": dep.updatedAt,
             "habilidades_requeridas": [
@@ -194,6 +248,7 @@ async def create_department(request: Request, db: Session = Depends(get_db)):
     """
     Crea un nuevo departamento, registra sus habilidades (Skill) y asigna empleados.
     """
+    ensure_capacity_columns(db)
     data = await request.json()
     print("📦 Datos recibidos para crear departamento:", data)
 
@@ -202,24 +257,34 @@ async def create_department(request: Request, db: Session = Depends(get_db)):
     nivel_jerarquico = data.get("nivel_jerarquico")
     jefe_id = data.get("jefeId")
     parent_id = data.get("parentId")
+    capacidad_requerida = data.get("capacidadRequerida")
     habilidades = data.get("habilidades_requeridas", [])
     empleados_ids = data.get("empleadosIds", [])
 
     if not nombre:
         raise HTTPException(status_code=400, detail="El campo 'nombre' es obligatorio")
 
+    if (
+        capacidad_requerida is None
+        or isinstance(capacidad_requerida, bool)
+        or not isinstance(capacidad_requerida, (int, float))
+        or capacidad_requerida < 0
+    ):
+        raise HTTPException(status_code=400, detail="La capacidad requerida es obligatoria")
+
     try:
         # 🔹 Crear el departamento (sin habilidades_requeridas, ya que va en Skill)
         result = db.execute(text("""
-            INSERT INTO Department (nombre, description, nivelJerarquico, jefeId, parentId, updatedAt, createdAt)
+            INSERT INTO Department (nombre, description, nivelJerarquico, jefeId, parentId, capacidadRequerida, updatedAt, createdAt)
             OUTPUT INSERTED.id
-            VALUES (:nombre, :descripcion, :nivel_jerarquico, :jefe_id, :parent_id, :updatedAt, :createdAt)
+            VALUES (:nombre, :descripcion, :nivel_jerarquico, :jefe_id, :parent_id, :capacidad_requerida, :updatedAt, :createdAt)
         """), {
             "nombre": nombre,
             "descripcion": descripcion,
             "nivel_jerarquico": nivel_jerarquico,
             "jefe_id": jefe_id,
             "parent_id": parent_id,
+            "capacidad_requerida": capacidad_requerida,
             "createdAt": datetime.utcnow(),
             "updatedAt": datetime.utcnow()
         }).fetchone()
@@ -292,15 +357,20 @@ class UpdateDepartmentRequest(BaseModel):
     nivel_jerarquico: Optional[int] = None
     jefeId: Optional[int] = None
     parentId: Optional[int] = None
+    capacidadRequerida: Optional[int] = None
     empleadosIds: Optional[List[int]] = None
     habilidades_requeridas: Optional[List[Any]] = None
 
 # --- PUT: Actualizar un departamento ---
 @router.put("/{dep_id}", dependencies=[Depends(require_roles(ROLE_ADMIN))])
 def update_department(dep_id: int, payload: UpdateDepartmentRequest, db: Session = Depends(get_db)):
+    ensure_capacity_columns(db)
     result = db.execute(text("SELECT id FROM Department WHERE id = :id"), {"id": dep_id}).fetchone()
     if not result:
         raise HTTPException(status_code=404, detail="Departamento no encontrado")
+
+    if payload.capacidadRequerida is not None:
+        validar_tope_departamento(db, dep_id, payload.capacidadRequerida)
 
     try:
         db.execute(text("""
@@ -310,6 +380,7 @@ def update_department(dep_id: int, payload: UpdateDepartmentRequest, db: Session
                 nivelJerarquico = COALESCE(:nivel_jerarquico, nivelJerarquico),
                 jefeId = :jefeId,
                 parentId = :parentId,
+                capacidadRequerida = COALESCE(:capacidadRequerida, capacidadRequerida),
                 updatedAt = CURRENT_TIMESTAMP
             WHERE id = :dep_id
         """), {
@@ -318,7 +389,8 @@ def update_department(dep_id: int, payload: UpdateDepartmentRequest, db: Session
             "description": payload.descripcion,
             "nivel_jerarquico": payload.nivel_jerarquico,
             "jefeId": payload.jefeId,
-            "parentId": payload.parentId
+            "parentId": payload.parentId,
+            "capacidadRequerida": payload.capacidadRequerida
         })
 
         # Process Employee assignments: Clean previous associations and link new ones
@@ -394,6 +466,7 @@ async def create_office(dep_id: int, request: Request, db: Session = Depends(get
     Crea una nueva oficina dentro de un departamento.
     Además, inserta las habilidades relacionadas en la tabla Skill.
     """
+    ensure_capacity_columns(db)
     data = await request.json()
     print("📥 Datos recibidos:", data)
 
@@ -401,28 +474,40 @@ async def create_office(dep_id: int, request: Request, db: Session = Depends(get
     description = data.get("description")
     jefeId = data.get("jefeId")
     parentDepartmentId = data.get("parentDepartmentId")
+    capacidad_requerida = data.get("capacidadRequerida")
     habilidades_requeridas = data.get("habilidades_requeridas", [])
+
+    if (
+        capacidad_requerida is None
+        or isinstance(capacidad_requerida, bool)
+        or not isinstance(capacidad_requerida, (int, float))
+        or capacidad_requerida < 0
+    ):
+        raise HTTPException(status_code=400, detail="La capacidad requerida es obligatoria")
 
     # 🔹 Verificar que exista el departamento
     dep_exists = db.execute(
-        text("SELECT id FROM Department WHERE id = :id"),
+        text("SELECT id, capacidadRequerida FROM Department WHERE id = :id"),
         {"id": dep_id}
-    ).fetchone()
+    ).mappings().first()
 
     if not dep_exists:
         raise HTTPException(status_code=404, detail="Departamento no encontrado")
 
+    validar_tope_departamento(db, dep_id, dep_exists["capacidadRequerida"], capacidad_oficina_nueva=capacidad_requerida)
+
     # 🔹 Insertar la nueva oficina con parentDepartmentId
     office_result = db.execute(text("""
-        INSERT INTO Office (nombre, description, departmentId, jefeId, parentDepartmentId, createdAt, updatedAt)
+        INSERT INTO Office (nombre, description, departmentId, jefeId, parentDepartmentId, capacidadRequerida, createdAt, updatedAt)
         OUTPUT INSERTED.id
-        VALUES (:nombre, :description, :dep_id, :jefeId, :parentDepartmentId, GETDATE(), GETDATE())
+        VALUES (:nombre, :description, :dep_id, :jefeId, :parentDepartmentId, :capacidadRequerida, GETDATE(), GETDATE())
     """), {
         "nombre": nombre,
         "description": description,
         "dep_id": dep_id,
         "jefeId": jefeId,
-        "parentDepartmentId": parentDepartmentId
+        "parentDepartmentId": parentDepartmentId,
+        "capacidadRequerida": capacidad_requerida
     })
 
     office_id = office_result.fetchone()[0]
@@ -484,13 +569,26 @@ def assign_employee_to_office(office_id: int, emp_id: int, db: Session = Depends
 # 🟢 PUT: Actualizar oficina
 @router.put("/office/{office_id}", dependencies=[Depends(require_roles(ROLE_ADMIN))])
 async def update_office(office_id: int, request: Request, db: Session = Depends(get_db)):
+    ensure_capacity_columns(db)
     data = await request.json()
-    
+
     # Verificar existencia
-    office = db.execute(text("SELECT id, departmentId FROM Office WHERE id = :id"), {"id": office_id}).fetchone()
+    office = db.execute(text("SELECT id, departmentId, capacidadRequerida FROM Office WHERE id = :id"), {"id": office_id}).fetchone()
     if not office:
         raise HTTPException(status_code=404, detail="Oficina no encontrada")
-        
+
+    nueva_capacidad = data.get("capacidadRequerida")
+    if nueva_capacidad is not None:
+        dep_row = db.execute(
+            text("SELECT capacidadRequerida FROM Department WHERE id = :id"),
+            {"id": office["departmentId"]}
+        ).mappings().first()
+        capacidad_depto = dep_row["capacidadRequerida"] if dep_row else None
+        validar_tope_departamento(
+            db, office["departmentId"], capacidad_depto,
+            capacidad_oficina_nueva=nueva_capacidad, office_id_excluir=office_id
+        )
+
     try:
         db.execute(text("""
             UPDATE Office
@@ -498,6 +596,7 @@ async def update_office(office_id: int, request: Request, db: Session = Depends(
                 description = COALESCE(:description, description),
                 jefeId = :jefeId,
                 parentDepartmentId = :parentDepartmentId,
+                capacidadRequerida = COALESCE(:capacidadRequerida, capacidadRequerida),
                 updatedAt = GETDATE()
             WHERE id = :office_id
         """), {
@@ -505,7 +604,8 @@ async def update_office(office_id: int, request: Request, db: Session = Depends(
             "nombre": data.get("nombre"),
             "description": data.get("descripcion"),
             "jefeId": data.get("jefeId"),
-            "parentDepartmentId": data.get("parentDepartmentId")
+            "parentDepartmentId": data.get("parentDepartmentId"),
+            "capacidadRequerida": nueva_capacidad
         })
         
         # Manejar actualización de empleados asignados
