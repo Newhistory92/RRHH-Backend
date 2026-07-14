@@ -14,6 +14,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 from app.database.database import SessionLocal
 from app.auth_middleware import require_roles, ROLE_ADMIN, ROLE_USER
+from app.routes.departments import ensure_capacity_columns
 from datetime import datetime
 from collections import defaultdict
 from app.database.employee_documents import (
@@ -641,9 +642,19 @@ def get_org_analysis_data(db: Session = Depends(get_db)):
     for a in absences_bulk:
         absences_by_emp[a["employeeId"]][str(a["anio"])] = a["total"]
 
+    # ── Conteo de asignados por departamento/oficina (para capacidad) ────────
+    ensure_capacity_columns(db)
+    dept_employee_count = defaultdict(int)
+    office_employee_count = defaultdict(int)
+    for emp in employees_result:
+        if emp["departmentId"]:
+            dept_employee_count[emp["departmentId"]] += 1
+        if emp["officeId"]:
+            office_employee_count[emp["officeId"]] += 1
+
     # ── 6. Departamentos con habilidades requeridas ──────────────────────────
     departments_result = db.execute(text("""
-        SELECT id, nombre, description, jefeId, nivelJerarquico, parentId
+        SELECT id, nombre, description, jefeId, nivelJerarquico, parentId, capacidadRequerida
         FROM Department
         ORDER BY nombre
     """)).mappings().all()
@@ -667,7 +678,7 @@ def get_org_analysis_data(db: Session = Depends(get_db)):
 
         # Oficinas con habilidades
         offices_bulk = db.execute(text(f"""
-            SELECT o.id, o.nombre, o.departmentId, o.jefeId
+            SELECT o.id, o.nombre, o.departmentId, o.jefeId, o.capacidadRequerida
             FROM Office o
             WHERE o.departmentId IN ({dept_ids_param})
             ORDER BY o.nombre
@@ -691,6 +702,8 @@ def get_org_analysis_data(db: Session = Depends(get_db)):
                 "id": o["id"],
                 "nombre": o["nombre"],
                 "jefeId": o["jefeId"],
+                "capacidadRequerida": o["capacidadRequerida"],
+                "asignados": office_employee_count.get(o["id"], 0),
                 "habilidades_requeridas": office_skills_map.get(o["id"], [])
             })
 
@@ -748,6 +761,8 @@ def get_org_analysis_data(db: Session = Depends(get_db)):
             "jefeId": d["jefeId"],
             "nivelJerarquico": d["nivelJerarquico"],
             "parentId": d["parentId"],
+            "capacidadRequerida": d["capacidadRequerida"],
+            "asignados": dept_employee_count.get(d["id"], 0),
             "habilidades_requeridas": dept_skills.get(d["id"], []),
             "offices": office_data.get(d["id"], []),
         })
