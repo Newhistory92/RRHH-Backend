@@ -368,8 +368,16 @@ def guardar_recomendacion(solicitud_id: int, data: dict = Body(...), db: Session
 # ─────────────────────────────────────────────────────────────────────────────
 @router.patch("/{solicitud_id}/ejecutar", dependencies=[Depends(require_rrhh_auth)])
 def ejecutar_solicitud(solicitud_id: int, data: dict = Body(...), db: Session = Depends(get_db)):
-    """Ejecuta una solicitud Aprobada: mueve al empleado en el organigrama y notifica."""
+    """Ejecuta una solicitud Aprobada: mueve al empleado en el organigrama y notifica.
+
+    El destino puede ser una oficina (officeId) o directamente un departamento
+    (departmentId) cuando ese departamento no tiene oficinas cargadas. Si se
+    indica officeId, el departamento y el jefe se derivan de la oficina; si solo
+    se indica departmentId, la oficina del empleado queda NULL y el jefe se toma
+    del departamento.
+    """
     office_id = data.get("officeId")
+    department_id = data.get("departmentId")
 
     ensure_table(db)
 
@@ -382,17 +390,34 @@ def ejecutar_solicitud(solicitud_id: int, data: dict = Body(...), db: Session = 
     if solicitud["estado"] != "Aprobada":
         raise HTTPException(status_code=400, detail="Solo se pueden ejecutar solicitudes en estado 'Aprobada'")
 
-    if not office_id:
-        raise HTTPException(status_code=400, detail="Debe indicar la oficina destino para ejecutar")
-
-    office = db.execute(text("""
-        SELECT id, departmentId, jefeId, nombre FROM Office WHERE id = :id
-    """), {"id": office_id}).mappings().first()
-    if not office:
-        raise HTTPException(status_code=404, detail="Oficina no encontrada")
+    if not office_id and not department_id:
+        raise HTTPException(status_code=400, detail="Debe indicar la oficina o el departamento destino para ejecutar")
 
     employee_id = solicitud["employeeId"]
-    jefe_id = office["jefeId"]
+
+    if office_id:
+        # Destino por oficina: departamento y jefe se derivan de la oficina.
+        office = db.execute(text("""
+            SELECT id, departmentId, jefeId, nombre FROM Office WHERE id = :id
+        """), {"id": office_id}).mappings().first()
+        if not office:
+            raise HTTPException(status_code=404, detail="Oficina no encontrada")
+        dest_office_id = office["id"]
+        dest_department_id = office["departmentId"]
+        jefe_id = office["jefeId"]
+        destino_texto = f"Nueva oficina: {office['nombre']}."
+    else:
+        # Destino por departamento: sin oficina, jefe se toma del departamento.
+        department = db.execute(text("""
+            SELECT id, jefeId, nombre FROM Department WHERE id = :id
+        """), {"id": department_id}).mappings().first()
+        if not department:
+            raise HTTPException(status_code=404, detail="Departamento no encontrado")
+        dest_office_id = None
+        dest_department_id = department["id"]
+        jefe_id = department["jefeId"]
+        destino_texto = f"Nuevo departamento: {department['nombre']}."
+
     manager_id = jefe_id if jefe_id and jefe_id != employee_id else None
 
     db.execute(text("""
@@ -400,7 +425,7 @@ def ejecutar_solicitud(solicitud_id: int, data: dict = Body(...), db: Session = 
         SET officeId = :officeId, departmentId = :departmentId, managerId = :managerId
         WHERE id = :employeeId
     """), {
-        "officeId": office["id"], "departmentId": office["departmentId"],
+        "officeId": dest_office_id, "departmentId": dest_department_id,
         "managerId": manager_id, "employeeId": employee_id,
     })
 
@@ -410,11 +435,11 @@ def ejecutar_solicitud(solicitud_id: int, data: dict = Body(...), db: Session = 
         SET estado = 'Ejecutada', officeIdDestino = :officeId, departmentIdDestino = :departmentId, updatedAt = :now
         WHERE id = :id
     """), {
-        "officeId": office["id"], "departmentId": office["departmentId"],
+        "officeId": dest_office_id, "departmentId": dest_department_id,
         "now": now, "id": solicitud_id,
     })
 
-    msg_text = f"Tu reubicación fue ejecutada. Nueva oficina: {office['nombre']}."
+    msg_text = f"Tu reubicación fue ejecutada. {destino_texto}"
     db.execute(text("""
         INSERT INTO Message (employeeId, text, days, startDate, endDate, status, createdAt)
         VALUES (:empId, :msg, 0, :now, :now, 'active', GETDATE())
