@@ -234,3 +234,153 @@ def delete_publication(publication_id: int, db: Session = Depends(get_db)):
     """), {"now": datetime.utcnow(), "id": publication_id})
     db.commit()
     return {"message": "Publicacion eliminada"}
+
+
+def _targets_de(db: Session, publication_id: int) -> list:
+    """Devuelve los destinos de una publicacion."""
+    rows = db.execute(text("""
+        SELECT scope, departmentId, officeId
+        FROM PublicationTarget WHERE publicationId = :id
+    """), {"id": publication_id}).mappings().all()
+    return [
+        {"scope": r["scope"], "departmentId": r["departmentId"], "officeId": r["officeId"]}
+        for r in rows
+    ]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GET /publications — listado admin (HR/Admin), con filtros opcionales
+# ─────────────────────────────────────────────────────────────────────────────
+@router.get("", dependencies=[Depends(require_rrhh_auth)])
+def list_publications(categoria: Optional[str] = None, estado: Optional[str] = None, db: Session = Depends(get_db)):
+    """Lista publicaciones activas con su estado efectivo y sus destinos."""
+    ensure_table(db)
+
+    query = "SELECT * FROM Publication WHERE activo = 1"
+    params = {}
+    if categoria:
+        query += " AND categoria = :categoria"
+        params["categoria"] = categoria
+    query += " ORDER BY createdAt DESC"
+
+    rows = db.execute(text(query), params).mappings().all()
+    ahora = datetime.utcnow()
+
+    result = []
+    for r in rows:
+        est = _estado_efectivo(r, ahora)
+        if estado and est != estado:
+            continue
+        result.append({
+            "id": r["id"],
+            "titulo": r["titulo"],
+            "resumen": r["resumen"],
+            "contenido": r["contenido"],
+            "categoria": r["categoria"],
+            "prioridad": r["prioridad"],
+            "estadoMantenimiento": r["estadoMantenimiento"],
+            "estado": est,
+            "esBorrador": bool(r["esBorrador"]),
+            "destacada": bool(r["destacada"]),
+            "fijada": bool(r["fijada"]),
+            "fechaPublicacion": r["fechaPublicacion"].isoformat() if r["fechaPublicacion"] else None,
+            "fechaExpiracion": r["fechaExpiracion"].isoformat() if r["fechaExpiracion"] else None,
+            "autorEmployeeId": r["autorEmployeeId"],
+            "createdAt": r["createdAt"].isoformat() if r["createdAt"] else None,
+            "updatedAt": r["updatedAt"].isoformat() if r["updatedAt"] else None,
+            "targets": _targets_de(db, r["id"]),
+        })
+
+    return {"publications": result}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GET /publications/feed — feed filtrado del empleado (self-or-admin)
+# ─────────────────────────────────────────────────────────────────────────────
+@router.get("/feed", dependencies=[Depends(require_any_auth)])
+def get_feed(employeeId: int, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
+    """Publicaciones visibles para el empleado: publicadas por fecha y dirigidas
+    a el (institucion, su departamento o su oficina)."""
+    _check_self_or_admin(employeeId, current_user)
+
+    ensure_table(db)
+
+    empleado = db.execute(text("""
+        SELECT departmentId, officeId FROM Employee WHERE id = :id
+    """), {"id": employeeId}).mappings().first()
+    if not empleado:
+        raise HTTPException(status_code=404, detail="Empleado no encontrado")
+
+    dep_id = empleado["departmentId"]
+    off_id = empleado["officeId"]
+
+    rows = db.execute(text("""
+        SELECT DISTINCT p.*
+        FROM Publication p
+        INNER JOIN PublicationTarget t ON t.publicationId = p.id
+        WHERE p.activo = 1
+          AND p.esBorrador = 0
+          AND (p.fechaPublicacion IS NULL OR p.fechaPublicacion <= GETDATE())
+          AND (p.fechaExpiracion IS NULL OR p.fechaExpiracion >= GETDATE())
+          AND (
+                t.scope = 'institucion'
+                OR (t.scope = 'departamento' AND t.departmentId = :depId)
+                OR (t.scope = 'oficina' AND t.officeId = :offId)
+              )
+        ORDER BY p.fijada DESC, p.fechaPublicacion DESC
+    """), {"depId": dep_id, "offId": off_id}).mappings().all()
+
+    return {
+        "publications": [
+            {
+                "id": r["id"],
+                "titulo": r["titulo"],
+                "resumen": r["resumen"],
+                "contenido": r["contenido"],
+                "categoria": r["categoria"],
+                "prioridad": r["prioridad"],
+                "estadoMantenimiento": r["estadoMantenimiento"],
+                "destacada": bool(r["destacada"]),
+                "fijada": bool(r["fijada"]),
+                "fechaPublicacion": r["fechaPublicacion"].isoformat() if r["fechaPublicacion"] else None,
+                "fechaExpiracion": r["fechaExpiracion"].isoformat() if r["fechaExpiracion"] else None,
+                "createdAt": r["createdAt"].isoformat() if r["createdAt"] else None,
+            }
+            for r in rows
+        ]
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GET /publications/{publication_id} — detalle para edicion (HR/Admin)
+# ─────────────────────────────────────────────────────────────────────────────
+@router.get("/{publication_id}", dependencies=[Depends(require_rrhh_auth)])
+def get_publication(publication_id: int, db: Session = Depends(get_db)):
+    """Detalle de una publicacion con sus destinos."""
+    ensure_table(db)
+
+    r = db.execute(text("""
+        SELECT * FROM Publication WHERE id = :id AND activo = 1
+    """), {"id": publication_id}).mappings().first()
+    if not r:
+        raise HTTPException(status_code=404, detail="Publicacion no encontrada")
+
+    return {
+        "id": r["id"],
+        "titulo": r["titulo"],
+        "resumen": r["resumen"],
+        "contenido": r["contenido"],
+        "categoria": r["categoria"],
+        "prioridad": r["prioridad"],
+        "estadoMantenimiento": r["estadoMantenimiento"],
+        "estado": _estado_efectivo(r, datetime.utcnow()),
+        "esBorrador": bool(r["esBorrador"]),
+        "destacada": bool(r["destacada"]),
+        "fijada": bool(r["fijada"]),
+        "fechaPublicacion": r["fechaPublicacion"].isoformat() if r["fechaPublicacion"] else None,
+        "fechaExpiracion": r["fechaExpiracion"].isoformat() if r["fechaExpiracion"] else None,
+        "autorEmployeeId": r["autorEmployeeId"],
+        "createdAt": r["createdAt"].isoformat() if r["createdAt"] else None,
+        "updatedAt": r["updatedAt"].isoformat() if r["updatedAt"] else None,
+        "targets": _targets_de(db, r["id"]),
+    }
