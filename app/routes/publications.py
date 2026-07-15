@@ -314,21 +314,22 @@ def get_feed(employeeId: int, db: Session = Depends(get_db), current_user: dict 
     dep_id = empleado["departmentId"]
     off_id = empleado["officeId"]
 
+    now = datetime.utcnow()
     rows = db.execute(text("""
         SELECT DISTINCT p.*
         FROM Publication p
         INNER JOIN PublicationTarget t ON t.publicationId = p.id
         WHERE p.activo = 1
           AND p.esBorrador = 0
-          AND (p.fechaPublicacion IS NULL OR p.fechaPublicacion <= GETDATE())
-          AND (p.fechaExpiracion IS NULL OR p.fechaExpiracion >= GETDATE())
+          AND (p.fechaPublicacion IS NULL OR p.fechaPublicacion <= :now)
+          AND (p.fechaExpiracion IS NULL OR p.fechaExpiracion >= :now)
           AND (
                 t.scope = 'institucion'
                 OR (t.scope = 'departamento' AND t.departmentId = :depId)
                 OR (t.scope = 'oficina' AND t.officeId = :offId)
               )
         ORDER BY p.fijada DESC, p.fechaPublicacion DESC
-    """), {"depId": dep_id, "offId": off_id}).mappings().all()
+    """), {"depId": dep_id, "offId": off_id, "now": now}).mappings().all()
 
     return {
         "publications": [
