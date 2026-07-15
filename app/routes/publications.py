@@ -123,6 +123,25 @@ def _insertar_targets(db: Session, publication_id: int, targets: list) -> None:
         })
 
 
+def _notificar_destinatarios(db: Session, publication_id: int, categoria: str, titulo: str, now: datetime) -> None:
+    """Inserta un Message para cada empleado alcanzado por los destinos de la publicacion."""
+    destinatarios = db.execute(text("""
+        SELECT DISTINCT e.id
+        FROM Employee e
+        INNER JOIN PublicationTarget t ON t.publicationId = :pubId
+        WHERE t.scope = 'institucion'
+           OR (t.scope = 'departamento' AND t.departmentId = e.departmentId)
+           OR (t.scope = 'oficina' AND t.officeId = e.officeId)
+    """), {"pubId": publication_id}).mappings().all()
+
+    msg_text = f"Nueva {categoria.lower()}: {titulo}"
+    for r in destinatarios:
+        db.execute(text("""
+            INSERT INTO Message (employeeId, text, days, startDate, endDate, status, createdAt)
+            VALUES (:empId, :msg, 0, :now, :now, 'active', GETDATE())
+        """), {"empId": r["id"], "msg": msg_text, "now": now})
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # POST /publications — crear publicacion (HR/Admin)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -162,6 +181,10 @@ def create_publication(data: dict = Body(...), db: Session = Depends(get_db)):
     new_id = result.fetchone()[0]
 
     _insertar_targets(db, new_id, targets)
+
+    es_borrador = 1 if data.get("esBorrador", True) else 0
+    if not es_borrador and (fecha_pub is None or fecha_pub <= now):
+        _notificar_destinatarios(db, new_id, data.get("categoria"), data.get("titulo").strip(), now)
 
     db.commit()
     return {"message": "Publicacion creada", "id": new_id}
