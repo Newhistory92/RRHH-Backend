@@ -3,7 +3,9 @@ Router /publications -- nucleo de publicaciones del Portal Institucional
 (subsistema 1). Autoria (HR/Admin) + feed filtrado del empleado.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Body
+import os
+import uuid
+from fastapi import APIRouter, Depends, HTTPException, Body, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from datetime import datetime
@@ -18,6 +20,17 @@ from app.database.publications import (
     VALID_SCOPES,
     CATEGORIA_AVISO_IMPORTANTE,
     CATEGORIA_MANTENIMIENTO,
+)
+from app.database.publications_attachments import (
+    ensure_attachments_table,
+    categoria_de_extension,
+    CATEGORIAS_LIMITE,
+    VALID_ROLES,
+    insertar_adjunto,
+    adjuntos_descargables_de,
+    asociar_adjuntos,
+    resync_adjuntos,
+    desactivar_adjuntos_de,
 )
 
 router = APIRouter(prefix="/publications", tags=["Publications"])
@@ -140,6 +153,44 @@ def _notificar_destinatarios(db: Session, publication_id: int, categoria: str, t
             INSERT INTO Message (employeeId, text, days, startDate, endDate, status, createdAt)
             VALUES (:empId, :msg, 0, :now, :now, 'active', GETDATE())
         """), {"empId": r["id"], "msg": msg_text, "now": now})
+
+
+UPLOAD_DIR = "uploads/publications"
+
+
+@router.post("/attachments", dependencies=[Depends(require_rrhh_auth)])
+async def upload_attachment(file: UploadFile = File(...), rol: str = Form(...), db: Session = Depends(get_db)):
+    """Sube un adjunto a disco y devuelve su metadata. Valida tipo y tamano
+    antes de escribir. rol = 'inline' (embebido en el cuerpo) | 'adjunto' (descargable)."""
+    ensure_attachments_table(db)
+
+    if rol not in VALID_ROLES:
+        raise HTTPException(status_code=400, detail=f"rol debe ser uno de: {sorted(VALID_ROLES)}")
+
+    original = file.filename or ""
+    ext = original.rsplit(".", 1)[-1].lower() if "." in original else ""
+    categoria = categoria_de_extension(ext)
+    if categoria is None:
+        raise HTTPException(status_code=400, detail=f"Tipo de archivo no permitido (.{ext})")
+
+    contenido = await file.read()
+    size = len(contenido)
+    limite = CATEGORIAS_LIMITE[categoria]
+    if size > limite:
+        mb = limite // (1024 * 1024)
+        raise HTTPException(status_code=400, detail=f"El archivo excede el limite de {mb} MB para {categoria}")
+
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    stored_name = f"{uuid.uuid4().hex}.{ext}"
+    with open(os.path.join(UPLOAD_DIR, stored_name), "wb") as f:
+        f.write(contenido)
+
+    url = f"/uploads/publications/{stored_name}"
+    return insertar_adjunto(
+        db, rol=rol, file_name=original, stored_name=stored_name,
+        mime_type=file.content_type or "application/octet-stream",
+        size_bytes=size, url=url,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

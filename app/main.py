@@ -1,4 +1,6 @@
+import os
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from app.cors_config import setup_cors
 from app.routes import employee, user, auth, role, active, rrhh, departments, tests, feedback, licenses, obrasocial, stats, configtest, contracts, professions, schedules, reubicacion, publications
 from app.routes.auth import init_blacklist
@@ -6,6 +8,11 @@ from app.routes.auth import init_blacklist
 app = FastAPI(title="Backend RRHH", version="1.0")
 
 setup_cors(app)
+
+# Carpeta de adjuntos del Portal Institucional (subsistema 3): se sirve
+# estaticamente y se crea al importar si no existe.
+os.makedirs("uploads/publications", exist_ok=True)
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 # Inicializar tabla TokenBlacklist en DB al arrancar
 @app.on_event("startup")
