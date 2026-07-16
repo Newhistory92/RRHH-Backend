@@ -5,6 +5,7 @@ Router /publications -- nucleo de publicaciones del Portal Institucional
 
 import os
 import uuid
+import nh3
 from fastapi import APIRouter, Depends, HTTPException, Body, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -73,6 +74,37 @@ def _parse_dt(value) -> Optional[datetime]:
     if isinstance(value, datetime):
         return value
     return datetime.fromisoformat(str(value).replace("Z", "+00:00").replace("+00:00", ""))
+
+
+_ALLOWED_TAGS = {
+    "p", "br", "strong", "em", "u", "s", "h1", "h2", "h3",
+    "ul", "ol", "li", "blockquote", "a", "img",
+    "table", "thead", "tbody", "tr", "td", "th",
+    "div", "span", "video", "source", "figure", "figcaption",
+}
+_ALLOWED_ATTRS = {
+    "a": {"href", "target", "rel", "class"},
+    "img": {"src", "alt", "class", "width", "height"},
+    "div": {"class"},
+    "span": {"class"},
+    "video": {"controls", "src", "class", "width", "height"},
+    "source": {"src", "type"},
+    "table": {"class"},
+    "td": {"colspan", "rowspan"},
+    "th": {"colspan", "rowspan"},
+}
+
+
+def _sanitizar_html(raw):
+    """Sanitiza el HTML del contenido con una allowlist (defensa contra XSS).
+
+    link_rel=None desactiva la gestion automatica del atributo rel en <a> que
+    hace nh3 por defecto (link_rel='noopener noreferrer'); sin esto, nh3.clean
+    lanza ValueError porque "rel" tambien esta en la allowlist de atributos.
+    """
+    if not raw:
+        return raw
+    return nh3.clean(raw, tags=_ALLOWED_TAGS, attributes=_ALLOWED_ATTRS, link_rel=None)
 
 
 def _validar_payload(data: dict) -> tuple:
@@ -217,7 +249,7 @@ def create_publication(data: dict = Body(...), db: Session = Depends(get_db)):
     """), {
         "titulo": data.get("titulo").strip(),
         "resumen": data.get("resumen"),
-        "contenido": data.get("contenido"),
+        "contenido": _sanitizar_html(data.get("contenido")),
         "categoria": data.get("categoria"),
         "prioridad": data.get("prioridad") or "Normal",
         "estadoMantenimiento": data.get("estadoMantenimiento"),
@@ -232,6 +264,9 @@ def create_publication(data: dict = Body(...), db: Session = Depends(get_db)):
     new_id = result.fetchone()[0]
 
     _insertar_targets(db, new_id, targets)
+
+    ensure_attachments_table(db)
+    asociar_adjuntos(db, new_id, data.get("attachmentIds") or [])
 
     es_borrador = 1 if data.get("esBorrador", True) else 0
     if not es_borrador and (fecha_pub is None or fecha_pub <= now):
@@ -269,7 +304,7 @@ def update_publication(publication_id: int, data: dict = Body(...), db: Session 
     """), {
         "titulo": data.get("titulo").strip(),
         "resumen": data.get("resumen"),
-        "contenido": data.get("contenido"),
+        "contenido": _sanitizar_html(data.get("contenido")),
         "categoria": data.get("categoria"),
         "prioridad": data.get("prioridad") or "Normal",
         "estadoMantenimiento": data.get("estadoMantenimiento"),
@@ -284,6 +319,9 @@ def update_publication(publication_id: int, data: dict = Body(...), db: Session 
 
     db.execute(text("DELETE FROM PublicationTarget WHERE publicationId = :id"), {"id": publication_id})
     _insertar_targets(db, publication_id, targets)
+
+    ensure_attachments_table(db)
+    resync_adjuntos(db, publication_id, data.get("attachmentIds") or [])
 
     db.commit()
     return {"message": "Publicacion actualizada", "id": publication_id}
@@ -306,6 +344,10 @@ def delete_publication(publication_id: int, db: Session = Depends(get_db)):
     db.execute(text("""
         UPDATE Publication SET activo = 0, updatedAt = :now WHERE id = :id
     """), {"now": datetime.utcnow(), "id": publication_id})
+
+    ensure_attachments_table(db)
+    desactivar_adjuntos_de(db, publication_id)
+
     db.commit()
     return {"message": "Publicacion eliminada"}
 
@@ -378,6 +420,7 @@ def get_feed(employeeId: int, db: Session = Depends(get_db), current_user: dict 
     _check_self_or_admin(employeeId, current_user)
 
     ensure_table(db)
+    ensure_attachments_table(db)
 
     empleado = db.execute(text("""
         SELECT departmentId, officeId FROM Employee WHERE id = :id
@@ -420,6 +463,7 @@ def get_feed(employeeId: int, db: Session = Depends(get_db), current_user: dict 
                 "fechaPublicacion": r["fechaPublicacion"].isoformat() if r["fechaPublicacion"] else None,
                 "fechaExpiracion": r["fechaExpiracion"].isoformat() if r["fechaExpiracion"] else None,
                 "createdAt": r["createdAt"].isoformat() if r["createdAt"] else None,
+                "adjuntos": adjuntos_descargables_de(db, r["id"]),
             }
             for r in rows
         ]
@@ -433,6 +477,7 @@ def get_feed(employeeId: int, db: Session = Depends(get_db), current_user: dict 
 def get_publication(publication_id: int, db: Session = Depends(get_db)):
     """Detalle de una publicacion con sus destinos."""
     ensure_table(db)
+    ensure_attachments_table(db)
 
     r = db.execute(text("""
         SELECT * FROM Publication WHERE id = :id AND activo = 1
@@ -458,4 +503,5 @@ def get_publication(publication_id: int, db: Session = Depends(get_db)):
         "createdAt": r["createdAt"].isoformat() if r["createdAt"] else None,
         "updatedAt": r["updatedAt"].isoformat() if r["updatedAt"] else None,
         "targets": _targets_de(db, r["id"]),
+        "adjuntos": adjuntos_descargables_de(db, r["id"]),
     }
