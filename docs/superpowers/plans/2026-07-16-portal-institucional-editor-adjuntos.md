@@ -382,10 +382,12 @@ _ALLOWED_ATTRS = {
 
 
 def _sanitizar_html(raw):
-    """Sanitiza el HTML del contenido con una allowlist (defensa contra XSS)."""
+    """Sanitiza el HTML del contenido con una allowlist (defensa contra XSS).
+    link_rel=None es obligatorio: nh3 gestiona 'rel' en <a> por defecto y
+    lanza ValueError si 'rel' tambien esta en la allowlist de atributos."""
     if not raw:
         return raw
-    return nh3.clean(raw, tags=_ALLOWED_TAGS, attributes=_ALLOWED_ATTRS)
+    return nh3.clean(raw, tags=_ALLOWED_TAGS, attributes=_ALLOWED_ATTRS, link_rel=None)
 ```
 
 - [ ] **Step 2: Sanitizar `contenido` y asociar adjuntos en `POST /publications`**
