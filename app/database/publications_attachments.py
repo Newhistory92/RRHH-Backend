@@ -103,7 +103,13 @@ def asociar_adjuntos(db: Session, publication_id: int, ids: list[int]) -> None:
 
 
 def resync_adjuntos(db: Session, publication_id: int, ids: list[int]) -> None:
-    """Re-sincroniza (al editar): asocia los de la lista y desactiva los que ya no estan."""
+    """Re-sincroniza (al editar): asocia los de la lista y desactiva los
+    descargables ('adjunto') que ya no estan. Los inline ya asociados
+    (imagenes/video embebidos en contenido de ediciones previas) nunca se
+    desactivan aca -- el frontend no puede conocer sus ids porque
+    GET /publications/{id} solo expone los descargables. Solo se
+    desactivan todos (via desactivar_adjuntos_de) si se borra la
+    publicacion entera."""
     limpios = []
     for raw in ids or []:
         try:
@@ -114,7 +120,7 @@ def resync_adjuntos(db: Session, publication_id: int, ids: list[int]) -> None:
         placeholders = ",".join(str(i) for i in limpios)  # ints ya casteados: sin inyeccion
         db.execute(text(
             f"UPDATE PublicationAttachment SET activo = 0 "
-            f"WHERE publicationId = :pid AND id NOT IN ({placeholders})"
+            f"WHERE publicationId = :pid AND rol = 'adjunto' AND id NOT IN ({placeholders})"
         ), {"pid": publication_id})
         for aid in limpios:
             db.execute(text("""
@@ -122,7 +128,7 @@ def resync_adjuntos(db: Session, publication_id: int, ids: list[int]) -> None:
             """), {"pid": publication_id, "aid": aid})
     else:
         db.execute(text("""
-            UPDATE PublicationAttachment SET activo = 0 WHERE publicationId = :pid
+            UPDATE PublicationAttachment SET activo = 0 WHERE publicationId = :pid AND rol = 'adjunto'
         """), {"pid": publication_id})
 
 
