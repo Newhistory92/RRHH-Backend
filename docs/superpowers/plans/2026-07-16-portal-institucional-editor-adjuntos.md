@@ -59,7 +59,6 @@
 - Produces:
   - `ensure_attachments_table(db: Session) -> None`
   - `CATEGORIAS_LIMITE: dict[str, int]` (bytes), `EXT_A_CATEGORIA: dict[str, str]`, `VALID_ROLES: set[str]`
-  - `validar_subida(file_name: str, size_bytes: int) -> str` (devuelve `storedName` extensión-validada o lanza `ValueError` con mensaje) — en la práctica devuelve la extensión en minúscula; la validación de categoría/tamaño se hace en la función `categoria_y_limite`.
   - `categoria_de_extension(ext: str) -> str | None`
   - `insertar_adjunto(db, rol, file_name, stored_name, mime_type, size_bytes, url) -> dict`
   - `adjuntos_descargables_de(db, publication_id) -> list[dict]`
