@@ -378,8 +378,19 @@ def _targets_de(db: Session, publication_id: int) -> list:
 # GET /publications — listado admin (HR/Admin), con filtros opcionales
 # ─────────────────────────────────────────────────────────────────────────────
 @router.get("", dependencies=[Depends(require_rrhh_auth)])
-def list_publications(categoria: Optional[str] = None, estado: Optional[str] = None, db: Session = Depends(get_db)):
-    """Lista publicaciones activas con su estado efectivo y sus destinos."""
+def list_publications(
+    categoria: Optional[str] = None,
+    estado: Optional[str] = None,
+    texto: Optional[str] = None,
+    prioridad: Optional[str] = None,
+    fechaDesde: Optional[str] = None,
+    fechaHasta: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """Lista publicaciones activas con su estado efectivo y sus destinos.
+    Filtros opcionales: categoria, prioridad y texto (titulo/resumen) y rango
+    de fechas van en el WHERE SQL; estado se post-filtra sobre el estado
+    efectivo calculado."""
     ensure_table(db)
 
     query = "SELECT * FROM Publication WHERE activo = 1"
@@ -387,6 +398,21 @@ def list_publications(categoria: Optional[str] = None, estado: Optional[str] = N
     if categoria:
         query += " AND categoria = :categoria"
         params["categoria"] = categoria
+    if prioridad:
+        query += " AND prioridad = :prioridad"
+        params["prioridad"] = prioridad
+    if texto:
+        query += " AND (titulo LIKE :q OR resumen LIKE :q)"
+        params["q"] = f"%{texto}%"
+    fdesde = _parse_dt(fechaDesde)
+    if fdesde:
+        query += " AND fechaPublicacion >= :fdesde"
+        params["fdesde"] = fdesde
+    fhasta = _parse_dt(fechaHasta)
+    if fhasta:
+        # < dia siguiente para que un "hasta" con fecha sin hora sea inclusivo
+        query += " AND fechaPublicacion < DATEADD(DAY, 1, :fhasta)"
+        params["fhasta"] = fhasta
     query += " ORDER BY createdAt DESC"
 
     rows = db.execute(text(query), params).mappings().all()
@@ -424,9 +450,18 @@ def list_publications(categoria: Optional[str] = None, estado: Optional[str] = N
 # GET /publications/feed — feed filtrado del empleado (self-or-admin)
 # ─────────────────────────────────────────────────────────────────────────────
 @router.get("/feed", dependencies=[Depends(require_any_auth)])
-def get_feed(employeeId: int, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
+def get_feed(
+    employeeId: int,
+    texto: Optional[str] = None,
+    categoria: Optional[str] = None,
+    prioridad: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
     """Publicaciones visibles para el empleado: publicadas por fecha y dirigidas
-    a el (institucion, su departamento o su oficina)."""
+    a el (institucion, su departamento o su oficina). Filtros opcionales
+    (texto/categoria/prioridad) se suman como condiciones AND sobre el conjunto
+    ya restringido por visibilidad y targeting."""
     _check_self_or_admin(employeeId, current_user)
 
     ensure_table(db)
@@ -442,7 +477,19 @@ def get_feed(employeeId: int, db: Session = Depends(get_db), current_user: dict 
     off_id = empleado["officeId"]
 
     now = datetime.utcnow()
-    rows = db.execute(text("""
+    params = {"depId": dep_id, "offId": off_id, "now": now}
+    filtros_sql = ""
+    if categoria:
+        filtros_sql += " AND p.categoria = :categoria"
+        params["categoria"] = categoria
+    if prioridad:
+        filtros_sql += " AND p.prioridad = :prioridad"
+        params["prioridad"] = prioridad
+    if texto:
+        filtros_sql += " AND (p.titulo LIKE :q OR p.resumen LIKE :q)"
+        params["q"] = f"%{texto}%"
+
+    rows = db.execute(text(f"""
         SELECT DISTINCT p.*
         FROM Publication p
         INNER JOIN PublicationTarget t ON t.publicationId = p.id
@@ -455,8 +502,9 @@ def get_feed(employeeId: int, db: Session = Depends(get_db), current_user: dict 
                 OR (t.scope = 'departamento' AND t.departmentId = :depId)
                 OR (t.scope = 'oficina' AND t.officeId = :offId)
               )
+          {filtros_sql}
         ORDER BY p.fijada DESC, p.fechaPublicacion DESC
-    """), {"depId": dep_id, "offId": off_id, "now": now}).mappings().all()
+    """), params).mappings().all()
 
     return {
         "publications": [
