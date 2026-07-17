@@ -95,16 +95,26 @@ _ALLOWED_ATTRS = {
 }
 
 
+_ALLOWED_URL_SCHEMES = {"http", "https", "mailto", "tel"}
+
+
 def _sanitizar_html(raw):
     """Sanitiza el HTML del contenido con una allowlist (defensa contra XSS).
 
     link_rel=None desactiva la gestion automatica del atributo rel en <a> que
     hace nh3 por defecto (link_rel='noopener noreferrer'); sin esto, nh3.clean
     lanza ValueError porque "rel" tambien esta en la allowlist de atributos.
+
+    url_schemes se declara explicito (en vez de depender del default de la
+    libreria) para que esquemas peligrosos como javascript:/data: en href/src
+    queden bloqueados aunque una futura version de nh3 cambie su default.
     """
     if not raw:
         return raw
-    return nh3.clean(raw, tags=_ALLOWED_TAGS, attributes=_ALLOWED_ATTRS, link_rel=None)
+    return nh3.clean(
+        raw, tags=_ALLOWED_TAGS, attributes=_ALLOWED_ATTRS,
+        link_rel=None, url_schemes=_ALLOWED_URL_SCHEMES,
+    )
 
 
 def _validar_payload(data: dict) -> tuple:
