@@ -102,9 +102,11 @@ def _validar_comunes(db: Session, data: dict) -> tuple:
 @router.get("", dependencies=[Depends(require_any_auth)])
 def get_activos(categoriaId: Optional[int] = None, grupo: Optional[str] = None,
                 estadoId: Optional[int] = None, texto: Optional[str] = None,
+                departamentoId: Optional[int] = None, oficinaId: Optional[int] = None,
                 db: Session = Depends(get_db)):
     ensure_tables(db)
-    return {"activos": listar_activos(db, categoriaId, grupo, estadoId, texto)}
+    return {"activos": listar_activos(db, categoriaId, grupo, estadoId, texto,
+                                       departamento_id=departamentoId, oficina_id=oficinaId)}
 
 
 @router.get("/buscar", dependencies=[Depends(require_any_auth)])

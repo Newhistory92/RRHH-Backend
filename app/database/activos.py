@@ -105,14 +105,39 @@ _SELECT_ACTIVO = """
             WHEN 'oficina'      THEN ro.nombre
             WHEN 'departamento' THEN rd.nombre
             ELSE NULL
-        END AS responsableNombre
+        END AS responsableNombre,
+        CASE a.responsableTipo
+            WHEN 'empleado'     THEN re.departmentId
+            WHEN 'oficina'      THEN ro.departmentId
+            WHEN 'departamento' THEN a.responsableDepartamentoId
+            ELSE NULL
+        END AS efectivoDepartamentoId,
+        CASE a.responsableTipo
+            WHEN 'empleado'     THEN reDept.nombre
+            WHEN 'oficina'      THEN roDept.nombre
+            WHEN 'departamento' THEN rd.nombre
+            ELSE NULL
+        END AS efectivoDepartamentoNombre,
+        CASE a.responsableTipo
+            WHEN 'empleado' THEN re.officeId
+            WHEN 'oficina'  THEN a.responsableOficinaId
+            ELSE NULL
+        END AS efectivoOficinaId,
+        CASE a.responsableTipo
+            WHEN 'empleado' THEN reOffice.nombre
+            WHEN 'oficina'  THEN ro.nombre
+            ELSE NULL
+        END AS efectivoOficinaNombre
     FROM Activo a
     INNER JOIN ActivoCategoria c ON a.categoriaId = c.id
     INNER JOIN ActivoEstado e    ON a.estadoId = e.id
     LEFT  JOIN ActivoFabricante f ON a.fabricanteId = f.id
-    LEFT  JOIN Employee re   ON a.responsableEmpleadoId = re.id
-    LEFT  JOIN Office ro     ON a.responsableOficinaId = ro.id
-    LEFT  JOIN Department rd ON a.responsableDepartamentoId = rd.id
+    LEFT  JOIN Employee re     ON a.responsableEmpleadoId = re.id
+    LEFT  JOIN Office ro       ON a.responsableOficinaId = ro.id
+    LEFT  JOIN Department rd   ON a.responsableDepartamentoId = rd.id
+    LEFT  JOIN Department reDept ON re.departmentId = reDept.id
+    LEFT  JOIN Department roDept ON ro.departmentId = roDept.id
+    LEFT  JOIN Office reOffice   ON re.officeId = reOffice.id
     WHERE a.activo = 1
 """
 
@@ -130,13 +155,18 @@ def _fila_a_dict(r) -> dict:
         "responsableTipo": r["responsableTipo"], "responsableNombre": r["responsableNombre"],
         "responsableEmpleadoId": r["responsableEmpleadoId"], "responsableOficinaId": r["responsableOficinaId"],
         "responsableDepartamentoId": r["responsableDepartamentoId"],
+        "efectivoDepartamentoId": r["efectivoDepartamentoId"],
+        "efectivoDepartamentoNombre": r["efectivoDepartamentoNombre"],
+        "efectivoOficinaId": r["efectivoOficinaId"],
+        "efectivoOficinaNombre": r["efectivoOficinaNombre"],
         "createdAt": r["createdAt"].isoformat() if r["createdAt"] else None,
         "updatedAt": r["updatedAt"].isoformat() if r["updatedAt"] else None,
     }
 
 
 def listar_activos(db: Session, categoria_id: Optional[int] = None, grupo: Optional[str] = None,
-                   estado_id: Optional[int] = None, texto: Optional[str] = None) -> list[dict]:
+                   estado_id: Optional[int] = None, texto: Optional[str] = None,
+                   departamento_id: Optional[int] = None, oficina_id: Optional[int] = None) -> list[dict]:
     """Activos vigentes con nombres resueltos, con filtros opcionales."""
     query = _SELECT_ACTIVO
     params = {}
@@ -152,6 +182,21 @@ def listar_activos(db: Session, categoria_id: Optional[int] = None, grupo: Optio
     if texto:
         query += " AND (a.nombre LIKE :q OR a.numeroInventario LIKE :q OR a.numeroSerie LIKE :q)"
         params["q"] = f"%{texto}%"
+    if departamento_id:
+        query += """ AND (CASE a.responsableTipo
+                WHEN 'empleado'     THEN re.departmentId
+                WHEN 'oficina'      THEN ro.departmentId
+                WHEN 'departamento' THEN a.responsableDepartamentoId
+                ELSE NULL
+            END) = :deptId"""
+        params["deptId"] = departamento_id
+    if oficina_id:
+        query += """ AND (CASE a.responsableTipo
+                WHEN 'empleado' THEN re.officeId
+                WHEN 'oficina'  THEN a.responsableOficinaId
+                ELSE NULL
+            END) = :ofiId"""
+        params["ofiId"] = oficina_id
     query += " ORDER BY a.createdAt DESC"
     rows = db.execute(text(query), params).mappings().all()
     return [_fila_a_dict(r) for r in rows]
