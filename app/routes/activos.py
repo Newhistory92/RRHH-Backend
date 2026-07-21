@@ -14,6 +14,7 @@ from app.auth_middleware import require_any_auth, require_roles, ROLE_ADMIN, get
 from app.database.activos import (
     ensure_tables, RESPONSABLE_TIPOS, registrar_historial, estado_disponible_id,
     listar_activos, obtener_activo, buscar_por_codigo,
+    MAPEO_PCPARTS, listar_componentes_de, componentes_libres, buscar_pcparts,
 )
 
 router = APIRouter(prefix="/activos", tags=["Activos"])
@@ -118,6 +119,21 @@ def get_por_codigo(codigo: str, db: Session = Depends(get_db)):
     return activo
 
 
+@router.get("/componentes-libres", dependencies=[Depends(require_any_auth)])
+def get_componentes_libres(categoriaId: Optional[int] = None, db: Session = Depends(get_db)):
+    ensure_tables(db)
+    return {"componentes": componentes_libres(db, categoriaId)}
+
+
+@router.get("/pcparts", dependencies=[Depends(require_any_auth)])
+def get_pcparts(categoria: str, texto: str = "", db: Session = Depends(get_db)):
+    ensure_tables(db)
+    pcparts_cat = MAPEO_PCPARTS.get(categoria)
+    if not pcparts_cat:
+        return {"resultados": []}
+    return {"resultados": buscar_pcparts(db, pcparts_cat, texto)}
+
+
 @router.get("/{activo_id}", dependencies=[Depends(require_any_auth)])
 def get_activo(activo_id: int, db: Session = Depends(get_db)):
     ensure_tables(db)
@@ -125,6 +141,12 @@ def get_activo(activo_id: int, db: Session = Depends(get_db)):
     if not activo:
         raise HTTPException(status_code=404, detail="Activo no encontrado")
     return activo
+
+
+@router.get("/{activo_id}/componentes", dependencies=[Depends(require_any_auth)])
+def get_componentes(activo_id: int, db: Session = Depends(get_db)):
+    ensure_tables(db)
+    return {"componentes": listar_componentes_de(db, activo_id)}
 
 
 # ─── Escritura ───────────────────────────────────────────────────────────────
@@ -261,3 +283,99 @@ def _nombre_responsable(db: Session, resp: dict) -> Optional[str]:
         r = db.execute(text("SELECT nombre AS n FROM Department WHERE id = :id"), {"id": resp["departamento"]}).mappings().first()
         return r["n"] if r else None
     return None
+
+
+# ─── Composicion PC / componentes (subsistema 3) ─────────────────────────────
+def _validar_es_pc(db: Session, activo_id: int) -> dict:
+    """Devuelve el activo si existe, esta vigente y su categoria puede alojar
+    componentes. 404 si no existe, 400 si no es una PC."""
+    pc = obtener_activo(db, activo_id)
+    if not pc:
+        raise HTTPException(status_code=404, detail="Activo no encontrado")
+    if not pc["puedeAlbergarComponentes"]:
+        raise HTTPException(status_code=400, detail="Este activo no puede alojar componentes (no es una PC)")
+    return pc
+
+
+def _validar_componente_instalable(db: Session, componente_id, pc_id: int) -> dict:
+    """Devuelve el componente si puede instalarse en pc_id. 404/400 si no."""
+    if not componente_id:
+        raise HTTPException(status_code=400, detail="Falta el id del componente")
+    if componente_id == pc_id:
+        raise HTTPException(status_code=400, detail="Un activo no puede instalarse en si mismo")
+    comp = obtener_activo(db, componente_id)
+    if not comp:
+        raise HTTPException(status_code=404, detail="Componente no encontrado")
+    if comp["puedeAlbergarComponentes"]:
+        raise HTTPException(status_code=400, detail="No se puede instalar una PC dentro de otra")
+    cat = db.execute(text("SELECT montableEnPC FROM ActivoCategoria WHERE id = :id"),
+                     {"id": comp["categoriaId"]}).mappings().first()
+    if not cat or not cat["montableEnPC"]:
+        raise HTTPException(status_code=400, detail="La categoria de este componente no es montable en una PC")
+    if comp["pcPadreId"] is not None:
+        raise HTTPException(status_code=400, detail="El componente ya esta instalado en otra PC")
+    return comp
+
+
+def _instalar(db: Session, comp_id: int, pc_id: int, comp: dict, usuario) -> None:
+    """Setea pcPadreId y registra historial en el componente y en la PC. NO commitea."""
+    db.execute(text("UPDATE Activo SET pcPadreId = :pc, updatedAt = :now WHERE id = :id"),
+               {"pc": pc_id, "now": datetime.utcnow(), "id": comp_id})
+    registrar_historial(db, comp_id, "instalacion", "pcPadre", None, str(pc_id), usuario)
+    registrar_historial(db, pc_id, "componente_agregado", "componente", None, comp["nombre"], usuario)
+
+
+def _quitar(db: Session, comp_id: int, pc_id: int, comp: dict, usuario) -> None:
+    """Pone pcPadreId a NULL y registra historial en el componente y en la PC. NO commitea."""
+    db.execute(text("UPDATE Activo SET pcPadreId = NULL, updatedAt = :now WHERE id = :id"),
+               {"now": datetime.utcnow(), "id": comp_id})
+    registrar_historial(db, comp_id, "desinstalacion", "pcPadre", str(pc_id), None, usuario)
+    registrar_historial(db, pc_id, "componente_quitado", "componente", comp["nombre"], None, usuario)
+
+
+@router.post("/{activo_id}/componentes", dependencies=[Depends(require_admin)])
+def instalar_componente(activo_id: int, data: dict = Body(...), db: Session = Depends(get_db),
+                        current_user: dict = Depends(get_current_user)):
+    ensure_tables(db)
+    _validar_es_pc(db, activo_id)
+    comp = _validar_componente_instalable(db, data.get("componenteId"), activo_id)
+    _instalar(db, comp["id"], activo_id, comp, current_user.get("employeeId"))
+    db.commit()
+    return {"message": "Componente instalado"}
+
+
+@router.delete("/{pc_id}/componentes/{componente_id}", dependencies=[Depends(require_admin)])
+def quitar_componente(pc_id: int, componente_id: int, db: Session = Depends(get_db),
+                      current_user: dict = Depends(get_current_user)):
+    ensure_tables(db)
+    _validar_es_pc(db, pc_id)
+    comp = obtener_activo(db, componente_id)
+    if not comp:
+        raise HTTPException(status_code=404, detail="Componente no encontrado")
+    if comp["pcPadreId"] != pc_id:
+        raise HTTPException(status_code=400, detail="Ese componente no esta instalado en esta PC")
+    _quitar(db, componente_id, pc_id, comp, current_user.get("employeeId"))
+    db.commit()
+    return {"message": "Componente quitado"}
+
+
+@router.post("/{activo_id}/componentes/reemplazar", dependencies=[Depends(require_admin)])
+def reemplazar_componente(activo_id: int, data: dict = Body(...), db: Session = Depends(get_db),
+                          current_user: dict = Depends(get_current_user)):
+    ensure_tables(db)
+    _validar_es_pc(db, activo_id)
+    sale_id = data.get("saleComponenteId")
+    entra_id = data.get("entraComponenteId")
+    observacion = data.get("observacion") or None
+    sale = obtener_activo(db, sale_id) if sale_id else None
+    if not sale:
+        raise HTTPException(status_code=404, detail="El componente que sale no existe")
+    if sale["pcPadreId"] != activo_id:
+        raise HTTPException(status_code=400, detail="El componente que sale no esta instalado en esta PC")
+    entra = _validar_componente_instalable(db, entra_id, activo_id)
+    usuario = current_user.get("employeeId")
+    _quitar(db, sale_id, activo_id, sale, usuario)
+    _instalar(db, entra["id"], activo_id, entra, usuario)
+    registrar_historial(db, activo_id, "reemplazo", "componente", str(sale_id), str(entra_id), usuario, observacion)
+    db.commit()
+    return {"message": "Componente reemplazado"}
