@@ -214,8 +214,12 @@ def _fila_a_dict(r) -> dict:
 def listar_activos(db: Session, categoria_id: Optional[int] = None, grupo: Optional[str] = None,
                    estado_id: Optional[int] = None, texto: Optional[str] = None,
                    departamento_id: Optional[int] = None, oficina_id: Optional[int] = None) -> list[dict]:
-    """Activos vigentes con nombres resueltos, con filtros opcionales."""
-    query = _SELECT_ACTIVO
+    """Activos vigentes con nombres resueltos, con filtros opcionales. Excluye
+    componentes ya instalados en una PC (pcPadreId no nulo): esos se listan
+    dentro de la ficha de su PC (listar_componentes_de), no en el inventario
+    general -- evita duplicados y evita que aparezcan sin responsable propio
+    en el agrupamiento por departamento/oficina."""
+    query = _SELECT_ACTIVO + " AND a.pcPadreId IS NULL"
     params = {}
     if categoria_id:
         query += " AND a.categoriaId = :catId"
