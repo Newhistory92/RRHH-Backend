@@ -325,11 +325,39 @@ def _instalar(db: Session, comp_id: int, pc_id: int, comp: dict, usuario) -> Non
     registrar_historial(db, pc_id, "componente_agregado", "componente", None, comp["nombre"], usuario)
 
 
-def _quitar(db: Session, comp_id: int, pc_id: int, comp: dict, usuario) -> None:
-    """Pone pcPadreId a NULL y registra historial en el componente y en la PC. NO commitea."""
-    db.execute(text("UPDATE Activo SET pcPadreId = NULL, updatedAt = :now WHERE id = :id"),
-               {"now": datetime.utcnow(), "id": comp_id})
+def _quitar(db: Session, comp_id: int, pc_id: int, comp: dict, usuario,
+            estado_id: Optional[int] = None, estado_nombre: Optional[str] = None,
+            heredar_responsable: bool = False, responsable_tipo: Optional[str] = None,
+            responsable_empleado: Optional[int] = None, responsable_oficina: Optional[int] = None,
+            responsable_departamento: Optional[int] = None) -> None:
+    """Pone pcPadreId a NULL y, si se pasan, actualiza tambien el estado y el
+    responsable del componente que sale (para que no quede huerfano en el
+    inventario general, que ahora vuelve a listarlo tras salir). Sin esos
+    parametros (uso desde quitar_componente) el comportamiento es identico
+    al de antes: solo se limpia pcPadreId. NO commitea."""
+    sets = ["pcPadreId = NULL", "updatedAt = :now"]
+    params = {"now": datetime.utcnow(), "id": comp_id}
+    if estado_id is not None:
+        sets.append("estadoId = :estId")
+        params["estId"] = estado_id
+    if heredar_responsable:
+        sets += ["responsableTipo = :rtipo", "responsableEmpleadoId = :remp",
+                 "responsableOficinaId = :rofi", "responsableDepartamentoId = :rdep"]
+        params.update({
+            "rtipo": responsable_tipo, "remp": responsable_empleado,
+            "rofi": responsable_oficina, "rdep": responsable_departamento,
+        })
+    db.execute(text(f"UPDATE Activo SET {', '.join(sets)} WHERE id = :id"), params)
     registrar_historial(db, comp_id, "desinstalacion", "pcPadre", str(pc_id), None, usuario)
+    if estado_id is not None and estado_id != comp["estadoId"]:
+        registrar_historial(db, comp_id, "cambio_estado", "estado", comp["estadoNombre"], estado_nombre, usuario)
+    if heredar_responsable and (
+        responsable_tipo != comp["responsableTipo"]
+        or responsable_empleado != comp["responsableEmpleadoId"]
+        or responsable_oficina != comp["responsableOficinaId"]
+        or responsable_departamento != comp["responsableDepartamentoId"]
+    ):
+        registrar_historial(db, comp_id, "cambio_responsable", "responsable", comp["responsableNombre"], None, usuario)
     registrar_historial(db, pc_id, "componente_quitado", "componente", comp["nombre"], None, usuario)
 
 
@@ -363,7 +391,7 @@ def quitar_componente(pc_id: int, componente_id: int, db: Session = Depends(get_
 def reemplazar_componente(activo_id: int, data: dict = Body(...), db: Session = Depends(get_db),
                           current_user: dict = Depends(get_current_user)):
     ensure_tables(db)
-    _validar_es_pc(db, activo_id)
+    pc = _validar_es_pc(db, activo_id)
     sale_id = data.get("saleComponenteId")
     entra_id = data.get("entraComponenteId")
     observacion = data.get("observacion") or None
@@ -373,8 +401,22 @@ def reemplazar_componente(activo_id: int, data: dict = Body(...), db: Session = 
     if sale["pcPadreId"] != activo_id:
         raise HTTPException(status_code=400, detail="El componente que sale no esta instalado en esta PC")
     entra = _validar_componente_instalable(db, entra_id, activo_id)
+
+    estado_saliente_id = data.get("estadoSalienteId")
+    estado_saliente_nombre = None
+    if estado_saliente_id:
+        est = db.execute(text("SELECT nombre FROM ActivoEstado WHERE id = :id AND activo = 1"),
+                         {"id": estado_saliente_id}).mappings().first()
+        if not est:
+            raise HTTPException(status_code=400, detail="estadoSalienteId inexistente")
+        estado_saliente_nombre = est["nombre"]
+
     usuario = current_user.get("employeeId")
-    _quitar(db, sale_id, activo_id, sale, usuario)
+    _quitar(db, sale_id, activo_id, sale, usuario,
+            estado_id=estado_saliente_id, estado_nombre=estado_saliente_nombre,
+            heredar_responsable=estado_saliente_id is not None, responsable_tipo=pc["responsableTipo"],
+            responsable_empleado=pc["responsableEmpleadoId"], responsable_oficina=pc["responsableOficinaId"],
+            responsable_departamento=pc["responsableDepartamentoId"])
     _instalar(db, entra["id"], activo_id, entra, usuario)
     registrar_historial(db, activo_id, "reemplazo", "componente", str(sale_id), str(entra_id), usuario, observacion)
     db.commit()
