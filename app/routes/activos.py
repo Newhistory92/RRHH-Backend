@@ -4,7 +4,9 @@ autenticado. Escrituras: solo ADMIN. Cada mutacion escribe en ActivoHistorial
 dentro de la misma transaccion.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Body
+import os
+import uuid
+from fastapi import APIRouter, Depends, HTTPException, Body, File, Form, UploadFile
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from datetime import datetime
@@ -15,6 +17,7 @@ from app.database.activos import (
     ensure_tables, RESPONSABLE_TIPOS, registrar_historial, estado_disponible_id,
     listar_activos, obtener_activo, buscar_por_codigo,
     MAPEO_PCPARTS, listar_componentes_de, componentes_libres, buscar_pcparts,
+    historial_de_activo,
 )
 
 router = APIRouter(prefix="/activos", tags=["Activos"])
@@ -104,10 +107,12 @@ def _validar_comunes(db: Session, data: dict) -> tuple:
 def get_activos(categoriaId: Optional[int] = None, grupo: Optional[str] = None,
                 estadoId: Optional[int] = None, texto: Optional[str] = None,
                 departamentoId: Optional[int] = None, oficinaId: Optional[int] = None,
+                empleadoId: Optional[int] = None,
                 db: Session = Depends(get_db)):
     ensure_tables(db)
     return {"activos": listar_activos(db, categoriaId, grupo, estadoId, texto,
-                                       departamento_id=departamentoId, oficina_id=oficinaId)}
+                                       departamento_id=departamentoId, oficina_id=oficinaId,
+                                       empleado_id=empleadoId)}
 
 
 @router.get("/buscar", dependencies=[Depends(require_any_auth)])
@@ -147,6 +152,15 @@ def get_activo(activo_id: int, db: Session = Depends(get_db)):
 def get_componentes(activo_id: int, db: Session = Depends(get_db)):
     ensure_tables(db)
     return {"componentes": listar_componentes_de(db, activo_id)}
+
+
+@router.get("/{activo_id}/historial", dependencies=[Depends(require_any_auth)])
+def get_historial(activo_id: int, db: Session = Depends(get_db)):
+    ensure_tables(db)
+    actual = obtener_activo(db, activo_id)
+    if not actual:
+        raise HTTPException(status_code=404, detail="Activo no encontrado")
+    return {"historial": historial_de_activo(db, activo_id)}
 
 
 # ─── Escritura ───────────────────────────────────────────────────────────────
@@ -421,3 +435,78 @@ def reemplazar_componente(activo_id: int, data: dict = Body(...), db: Session = 
     registrar_historial(db, activo_id, "reemplazo", "componente", str(sale_id), str(entra_id), usuario, observacion)
     db.commit()
     return {"message": "Componente reemplazado"}
+
+
+# ─── Trazabilidad: historial, transferencia y danos (subsistema 4) ───────────
+@router.patch("/{activo_id}/responsable", dependencies=[Depends(require_admin)])
+def transferir_responsable(activo_id: int, data: dict = Body(...), db: Session = Depends(get_db),
+                           current_user: dict = Depends(get_current_user)):
+    ensure_tables(db)
+    actual = obtener_activo(db, activo_id)
+    if not actual:
+        raise HTTPException(status_code=404, detail="Activo no encontrado")
+    resp = _validar_responsable(db, data)
+    usuario = current_user.get("employeeId")
+    observacion = data.get("observacion") or None
+    resp_cambio = (resp["tipo"] != actual["responsableTipo"] or
+                   resp["empleado"] != actual["responsableEmpleadoId"] or
+                   resp["oficina"] != actual["responsableOficinaId"] or
+                   resp["departamento"] != actual["responsableDepartamentoId"])
+    if resp_cambio:
+        registrar_historial(db, activo_id, "cambio_responsable", "responsable",
+                            actual["responsableNombre"], _nombre_responsable(db, resp), usuario, observacion)
+    db.execute(text("""
+        UPDATE Activo SET responsableTipo = :rtipo, responsableEmpleadoId = :remp,
+            responsableOficinaId = :rofi, responsableDepartamentoId = :rdep, updatedAt = :now
+        WHERE id = :id
+    """), {
+        "rtipo": resp["tipo"], "remp": resp["empleado"], "rofi": resp["oficina"],
+        "rdep": resp["departamento"], "now": datetime.utcnow(), "id": activo_id,
+    })
+    db.commit()
+    return {"message": "Responsable actualizado"}
+
+
+DANOS_UPLOAD_DIR = "uploads/activos_danos"
+DANOS_EXT_VALIDAS = {"jpg", "jpeg", "png", "webp", "gif"}
+DANOS_TAMANO_MAX = 5 * 1024 * 1024  # 5 MB
+
+
+@router.post("/{activo_id}/danos", dependencies=[Depends(require_admin)])
+async def reportar_dano(activo_id: int, descripcion: str = Form(...), foto: Optional[UploadFile] = File(None),
+                        db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
+    ensure_tables(db)
+    actual = obtener_activo(db, activo_id)
+    if not actual:
+        raise HTTPException(status_code=404, detail="Activo no encontrado")
+    descripcion = descripcion.strip()
+    if not descripcion:
+        raise HTTPException(status_code=400, detail="La descripcion del dano es obligatoria")
+    dano_estado = db.execute(
+        text("SELECT id, nombre FROM ActivoEstado WHERE codigo = 'danado' AND activo = 1")
+    ).mappings().first()
+    if not dano_estado:
+        raise HTTPException(status_code=400, detail="No existe el estado 'Dañado'; verifique la configuracion")
+
+    foto_url = None
+    if foto is not None:
+        original = foto.filename or ""
+        ext = original.rsplit(".", 1)[-1].lower() if "." in original else ""
+        if ext not in DANOS_EXT_VALIDAS:
+            raise HTTPException(status_code=400, detail=f"Tipo de imagen no permitido (.{ext})")
+        contenido = await foto.read()
+        if len(contenido) > DANOS_TAMANO_MAX:
+            raise HTTPException(status_code=400, detail="La foto excede el limite de 5 MB")
+        os.makedirs(DANOS_UPLOAD_DIR, exist_ok=True)
+        stored_name = f"{uuid.uuid4().hex}.{ext}"
+        with open(os.path.join(DANOS_UPLOAD_DIR, stored_name), "wb") as f:
+            f.write(contenido)
+        foto_url = f"/uploads/activos_danos/{stored_name}"
+
+    usuario = current_user.get("employeeId")
+    registrar_historial(db, activo_id, "dano_reportado", "dano", actual["estadoNombre"], foto_url,
+                        usuario, descripcion)
+    db.execute(text("UPDATE Activo SET estadoId = :est, updatedAt = :now WHERE id = :id"),
+               {"est": dano_estado["id"], "now": datetime.utcnow(), "id": activo_id})
+    db.commit()
+    return {"message": "Dano reportado"}
