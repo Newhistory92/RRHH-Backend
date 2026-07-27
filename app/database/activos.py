@@ -213,7 +213,8 @@ def _fila_a_dict(r) -> dict:
 
 def listar_activos(db: Session, categoria_id: Optional[int] = None, grupo: Optional[str] = None,
                    estado_id: Optional[int] = None, texto: Optional[str] = None,
-                   departamento_id: Optional[int] = None, oficina_id: Optional[int] = None) -> list[dict]:
+                   departamento_id: Optional[int] = None, oficina_id: Optional[int] = None,
+                   empleado_id: Optional[int] = None) -> list[dict]:
     """Activos vigentes con nombres resueltos, con filtros opcionales. Excluye
     componentes ya instalados en una PC (pcPadreId no nulo): esos se listan
     dentro de la ficha de su PC (listar_componentes_de), no en el inventario
@@ -248,6 +249,9 @@ def listar_activos(db: Session, categoria_id: Optional[int] = None, grupo: Optio
                 ELSE NULL
             END) = :ofiId"""
         params["ofiId"] = oficina_id
+    if empleado_id:
+        query += " AND a.responsableTipo = 'empleado' AND a.responsableEmpleadoId = :empId"
+        params["empId"] = empleado_id
     query += " ORDER BY a.createdAt DESC"
     rows = db.execute(text(query), params).mappings().all()
     return [_fila_a_dict(r) for r in rows]
@@ -299,3 +303,23 @@ def buscar_pcparts(db: Session, pcparts_category: str, texto: str, limit: int = 
     """), {"limit": limit, "cat": pcparts_category, "texto": texto, "q": f"%{texto}%"}).mappings().all()
     return [{"id": r["id"], "category": r["category"], "name": r["name"],
              "image": r["image"], "specs": r["specs"]} for r in rows]
+
+
+def historial_de_activo(db: Session, activo_id: int) -> list[dict]:
+    """Historial completo de un activo (cualquier accion registrada), mas
+    recientes primero, con el nombre del usuario que hizo cada cambio resuelto."""
+    rows = db.execute(text("""
+        SELECT h.id, h.activoId, h.accion, h.campo, h.valorAnterior, h.valorNuevo,
+               h.usuarioEmpleadoId, emp.name AS usuarioNombre, h.observacion, h.createdAt
+        FROM ActivoHistorial h
+        LEFT JOIN Employee emp ON h.usuarioEmpleadoId = emp.id
+        WHERE h.activoId = :id
+        ORDER BY h.createdAt DESC, h.id DESC
+    """), {"id": activo_id}).mappings().all()
+    return [{
+        "id": r["id"], "activoId": r["activoId"], "accion": r["accion"], "campo": r["campo"],
+        "valorAnterior": r["valorAnterior"], "valorNuevo": r["valorNuevo"],
+        "usuarioEmpleadoId": r["usuarioEmpleadoId"], "usuarioNombre": r["usuarioNombre"],
+        "observacion": r["observacion"],
+        "createdAt": r["createdAt"].isoformat() if r["createdAt"] else None,
+    } for r in rows]
