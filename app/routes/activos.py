@@ -19,6 +19,7 @@ from app.database.activos import (
     MAPEO_PCPARTS, listar_componentes_de, componentes_libres, buscar_pcparts,
     historial_de_activo,
 )
+from app.database.activos_modelos import ensure_tables as ensure_tables_modelos
 
 router = APIRouter(prefix="/activos", tags=["Activos"])
 
@@ -167,6 +168,7 @@ def get_historial(activo_id: int, db: Session = Depends(get_db)):
 @router.post("", dependencies=[Depends(require_admin)])
 def crear_activo(data: dict = Body(...), db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
     ensure_tables(db)
+    ensure_tables_modelos(db)
     numero, cat_id, _ = _validar_comunes(db, data)
     dup = db.execute(text("SELECT id FROM Activo WHERE activo = 1 AND numeroInventario = :n"), {"n": numero}).first()
     if dup:
@@ -178,17 +180,18 @@ def crear_activo(data: dict = Body(...), db: Session = Depends(get_db), current_
         INSERT INTO Activo (numeroInventario, nombre, categoriaId, fabricanteId, estadoId, fechaAlta, anio,
             observaciones, imagenReferencial, numeroSerie, codigoBarras, codigoQR,
             responsableTipo, responsableEmpleadoId, responsableOficinaId, responsableDepartamentoId,
-            activo, createdAt, updatedAt)
+            specsJson, activo, createdAt, updatedAt)
         OUTPUT INSERTED.id
         VALUES (:numero, :nombre, :catId, :fabId, :estId, :fechaAlta, :anio,
             :obs, :img, :serie, :barras, :qr,
-            :rtipo, :remp, :rofi, :rdep, 1, :now, :now)
+            :rtipo, :remp, :rofi, :rdep, :specs, 1, :now, :now)
     """), {
         "numero": numero, "nombre": (data.get("nombre") or "").strip(), "catId": cat_id,
         "fabId": data.get("fabricanteId"), "estId": estado_id, "fechaAlta": _parse_date(data.get("fechaAlta")),
         "anio": data.get("anio"), "obs": data.get("observaciones"), "img": data.get("imagenReferencial"),
         "serie": (data.get("numeroSerie") or None), "barras": data.get("codigoBarras"), "qr": data.get("codigoQR"),
         "rtipo": resp["tipo"], "remp": resp["empleado"], "rofi": resp["oficina"], "rdep": resp["departamento"],
+        "specs": (data.get("specsJson") or None),
         "now": now,
     })
     new_id = result.scalar()
@@ -201,6 +204,7 @@ def crear_activo(data: dict = Body(...), db: Session = Depends(get_db), current_
 def actualizar_activo(activo_id: int, data: dict = Body(...), db: Session = Depends(get_db),
                       current_user: dict = Depends(get_current_user)):
     ensure_tables(db)
+    ensure_tables_modelos(db)
     actual = obtener_activo(db, activo_id)
     if not actual:
         raise HTTPException(status_code=404, detail="Activo no encontrado")
@@ -237,7 +241,7 @@ def actualizar_activo(activo_id: int, data: dict = Body(...), db: Session = Depe
             observaciones = :obs, imagenReferencial = :img, numeroSerie = :serie,
             codigoBarras = :barras, codigoQR = :qr, responsableTipo = :rtipo,
             responsableEmpleadoId = :remp, responsableOficinaId = :rofi, responsableDepartamentoId = :rdep,
-            updatedAt = :now
+            specsJson = :specs, updatedAt = :now
         WHERE id = :id
     """), {
         "numero": numero, "nombre": (data.get("nombre") or "").strip(), "catId": cat_id,
@@ -245,6 +249,7 @@ def actualizar_activo(activo_id: int, data: dict = Body(...), db: Session = Depe
         "anio": data.get("anio"), "obs": data.get("observaciones"), "img": data.get("imagenReferencial"),
         "serie": (data.get("numeroSerie") or None), "barras": data.get("codigoBarras"), "qr": data.get("codigoQR"),
         "rtipo": resp["tipo"], "remp": resp["empleado"], "rofi": resp["oficina"], "rdep": resp["departamento"],
+        "specs": (data.get("specsJson") or None),
         "now": now, "id": activo_id,
     })
     db.commit()
