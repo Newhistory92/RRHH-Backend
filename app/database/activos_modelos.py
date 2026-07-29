@@ -6,6 +6,7 @@ Lee las specs crudas guardadas en Activo.specsJson al elegir del catalogo PCPart
 """
 
 import json
+import re
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from datetime import datetime
@@ -84,6 +85,91 @@ def ensure_tables(db: Session) -> None:
     db.commit()
     db.execute(text("IF COL_LENGTH('Activo','specsJson') IS NULL ALTER TABLE Activo ADD specsJson NVARCHAR(MAX) NULL;"))
     db.commit()
+    backfill_specs_json(db)
+
+
+def _etiqueta_spec(clave: str) -> str:
+    s = clave.replace("_", " ")
+    s = re.sub(r"([a-z])([A-Z])", r"\1 \2", s)
+    return re.sub(r"\b\w", lambda m: m.group().upper(), s)
+
+
+def _formatear_valor_spec(v) -> Optional[str]:
+    def num(x):
+        return str(int(x)) if isinstance(x, float) and x.is_integer() else str(x)
+
+    if v is None or v == "":
+        return None
+    if isinstance(v, bool):
+        return "Sí" if v else "No"
+    if isinstance(v, list):
+        if len(v) == 2 and all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in v):
+            return f"{num(v[0])} - {num(v[1])}"
+        return ", ".join(num(x) if isinstance(x, (int, float)) and not isinstance(x, bool) else str(x) for x in v)
+    if isinstance(v, (int, float)):
+        return num(v)
+    return str(v)
+
+
+def _formatear_specs(specs_json: Optional[str]) -> str:
+    """Replica exacta de formatearSpecs() del frontend (util/pcparts.ts).
+    Necesaria para reconocer, a partir del texto que quedo en Activo.observaciones,
+    cual de las filas homonimas del catalogo PCParts se habia elegido."""
+    if not specs_json:
+        return ""
+    try:
+        obj = json.loads(specs_json)
+    except (ValueError, TypeError):
+        return specs_json
+    if not isinstance(obj, dict):
+        return specs_json
+    lineas = []
+    for clave, v in obj.items():
+        valor = _formatear_valor_spec(v)
+        if valor is not None:
+            lineas.append(f"{_etiqueta_spec(clave)}: {valor}")
+    return "\n".join(lineas)
+
+
+def backfill_specs_json(db: Session) -> int:
+    """Rellena Activo.specsJson en los componentes cargados antes de que la columna
+    existiera, que de otro modo puntuan 'sin datos' para siempre.
+
+    El nombre no identifica una fila del catalogo (hay homonimos con specs muy
+    distintas: 8 'Acer Nitro OC' con 10/12/16 GB de memoria), asi que la
+    reconstruccion se hace contra el volcado legible que el alta dejo en
+    observaciones. Solo escribe cuando exactamente un candidato reproduce ese
+    texto: con cero o varios coincidentes prefiere dejar 'sin datos' antes que
+    adivinar specs equivocadas. Idempotente."""
+    from app.database.activos import MAPEO_PCPARTS
+
+    pendientes = db.execute(text("""
+        SELECT a.id, a.nombre, a.observaciones, c.nombre AS categoriaNombre
+        FROM Activo a
+        INNER JOIN ActivoCategoria c ON a.categoriaId = c.id
+        WHERE a.activo = 1 AND a.specsJson IS NULL AND a.observaciones IS NOT NULL
+    """)).mappings().all()
+
+    actualizados = 0
+    for row in pendientes:
+        pcparts_cat = MAPEO_PCPARTS.get(row["categoriaNombre"])
+        if not pcparts_cat:
+            continue
+        candidatos = db.execute(text(
+            "SELECT specs FROM PCParts WHERE name = :n AND category = :c"
+        ), {"n": row["nombre"], "c": pcparts_cat}).mappings().all()
+        objetivo = (row["observaciones"] or "").strip()
+        coincidencias = {c["specs"] for c in candidatos
+                         if _formatear_specs(c["specs"]).strip() == objetivo}
+        if len(coincidencias) != 1:
+            continue
+        db.execute(text("UPDATE Activo SET specsJson = :s WHERE id = :id"),
+                   {"s": coincidencias.pop(), "id": row["id"]})
+        actualizados += 1
+
+    if actualizados:
+        db.commit()
+    return actualizados
 
 
 def _valor_de_spec(specs_json: Optional[str], campo: str) -> Optional[float]:
@@ -253,7 +339,12 @@ def evaluar_pc(db: Session, pc_id: int, modelo_id: int) -> dict:
         """), {"pc": pc_id, "cat": req["categoriaId"]}).mappings().all()
         valores = [v for v in (_valor_de_spec(c["specsJson"], req["campoSpec"]) for c in comps)
                    if v is not None]
-        if not valores:
+        if not comps:
+            # La PC no tiene ningun componente de esa categoria → no cumple
+            estado = "no_cumple"
+            valor_real = None
+        elif not valores:
+            # Componentes presentes pero specs ilegibles → sin datos (excluye del denominador)
             estado = "sin_datos"
             valor_real = None
             sin_datos += 1
