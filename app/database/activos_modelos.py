@@ -75,6 +75,10 @@ def ensure_tables(db: Session) -> None:
     El ALTER va en su propio batch + commit: SQL Server compila el batch entero
     antes de ejecutarlo y fallaria si un statement posterior referenciara la
     columna recien creada dentro del mismo batch."""
+    from app.database.activos_config import ensure_tables as _ensure_config
+    from app.database.activos import ensure_tables as _ensure_activos
+    _ensure_config(db)
+    _ensure_activos(db)
     db.execute(text(CREATE_MODELO_SQL))
     db.execute(text(CREATE_REQUISITO_SQL))
     db.commit()

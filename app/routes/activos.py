@@ -241,7 +241,7 @@ def actualizar_activo(activo_id: int, data: dict = Body(...), db: Session = Depe
             observaciones = :obs, imagenReferencial = :img, numeroSerie = :serie,
             codigoBarras = :barras, codigoQR = :qr, responsableTipo = :rtipo,
             responsableEmpleadoId = :remp, responsableOficinaId = :rofi, responsableDepartamentoId = :rdep,
-            specsJson = :specs, updatedAt = :now
+            specsJson = COALESCE(:specs, specsJson), updatedAt = :now
         WHERE id = :id
     """), {
         "numero": numero, "nombre": (data.get("nombre") or "").strip(), "catId": cat_id,
