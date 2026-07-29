@@ -170,7 +170,9 @@ _SELECT_ACTIVO = """
         END AS efectivoOficinaNombre,
         a.pcPadreId,
         pcp.nombre AS pcPadreNombre,
-        c.puedeAlbergarComponentes AS puedeAlbergarComponentes
+        c.puedeAlbergarComponentes AS puedeAlbergarComponentes,
+        a.modeloId,
+        m.nombre AS modeloNombre
     FROM Activo a
     INNER JOIN ActivoCategoria c ON a.categoriaId = c.id
     INNER JOIN ActivoEstado e    ON a.estadoId = e.id
@@ -182,6 +184,7 @@ _SELECT_ACTIVO = """
     LEFT  JOIN Department roDept ON ro.departmentId = roDept.id
     LEFT  JOIN Office reOffice   ON re.officeId = reOffice.id
     LEFT  JOIN Activo pcp        ON a.pcPadreId = pcp.id
+    LEFT  JOIN ActivoModeloPC m  ON a.modeloId = m.id
     WHERE a.activo = 1
 """
 
@@ -206,6 +209,8 @@ def _fila_a_dict(r) -> dict:
         "pcPadreId": r["pcPadreId"],
         "pcPadreNombre": r["pcPadreNombre"],
         "puedeAlbergarComponentes": bool(r["puedeAlbergarComponentes"]),
+        "modeloId": r["modeloId"],
+        "modeloNombre": r["modeloNombre"],
         "createdAt": r["createdAt"].isoformat() if r["createdAt"] else None,
         "updatedAt": r["updatedAt"].isoformat() if r["updatedAt"] else None,
     }
@@ -254,13 +259,29 @@ def listar_activos(db: Session, categoria_id: Optional[int] = None, grupo: Optio
         params["empId"] = empleado_id
     query += " ORDER BY a.createdAt DESC"
     rows = db.execute(text(query), params).mappings().all()
-    return [_fila_a_dict(r) for r in rows]
+    resultado = [_fila_a_dict(r) for r in rows]
+
+    from app.database.activos_modelos import score_rapido
+    for item in resultado:
+        if item.get("modeloId"):
+            item["score"] = score_rapido(db, item["id"])
+        else:
+            item["score"] = None
+    return resultado
 
 
 def obtener_activo(db: Session, activo_id: int) -> Optional[dict]:
     """Detalle de un activo vigente con nombres resueltos, o None."""
     r = db.execute(text(_SELECT_ACTIVO + " AND a.id = :id"), {"id": activo_id}).mappings().first()
-    return _fila_a_dict(r) if r else None
+    if not r:
+        return None
+    d = _fila_a_dict(r)
+    if d.get("modeloId"):
+        from app.database.activos_modelos import evaluar_pc
+        d["evaluacion"] = evaluar_pc(db, activo_id, d["modeloId"])
+    else:
+        d["evaluacion"] = None
+    return d
 
 
 def buscar_por_codigo(db: Session, codigo: str) -> Optional[dict]:
