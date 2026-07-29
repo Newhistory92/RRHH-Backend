@@ -72,7 +72,7 @@ CAMPOS_SPEC_POR_CATEGORIA = {
 
 
 def ensure_tables(db: Session) -> None:
-    """Crea las tablas de modelos/requisitos y asegura Activo.specsJson.
+    """Crea las tablas de modelos/requisitos y asegura Activo.specsJson y Activo.modeloId.
     El ALTER va en su propio batch + commit: SQL Server compila el batch entero
     antes de ejecutarlo y fallaria si un statement posterior referenciara la
     columna recien creada dentro del mismo batch."""
@@ -84,6 +84,8 @@ def ensure_tables(db: Session) -> None:
     db.execute(text(CREATE_REQUISITO_SQL))
     db.commit()
     db.execute(text("IF COL_LENGTH('Activo','specsJson') IS NULL ALTER TABLE Activo ADD specsJson NVARCHAR(MAX) NULL;"))
+    db.commit()
+    db.execute(text("IF COL_LENGTH('Activo','modeloId') IS NULL ALTER TABLE Activo ADD modeloId INT NULL;"))
     db.commit()
     backfill_specs_json(db)
 
@@ -170,6 +172,22 @@ def backfill_specs_json(db: Session) -> int:
     if actualizados:
         db.commit()
     return actualizados
+
+
+def asignar_modelo(db: Session, activo_id: int, modelo_id: Optional[int]) -> None:
+    """Asigna un modelo de referencia a una PC o quita la asignacion (si modelo_id es None)."""
+    db.execute(text("UPDATE Activo SET modeloId = :m, updatedAt = :now WHERE id = :id"),
+               {"m": modelo_id, "now": datetime.utcnow(), "id": activo_id})
+
+
+def score_rapido(db: Session, pc_id: int) -> Optional[int]:
+    """Retorna el score de la PC contra su modelo asignado, o None si no tiene modelo."""
+    modelo = db.execute(text("SELECT modeloId FROM Activo WHERE id = :id"),
+                        {"id": pc_id}).mappings().first()
+    if not modelo or modelo["modeloId"] is None:
+        return None
+    resultado = evaluar_pc(db, pc_id, modelo["modeloId"])
+    return resultado["score"]
 
 
 def _valor_de_spec(specs_json: Optional[str], campo: str) -> Optional[float]:

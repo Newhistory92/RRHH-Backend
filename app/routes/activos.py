@@ -19,7 +19,7 @@ from app.database.activos import (
     MAPEO_PCPARTS, listar_componentes_de, componentes_libres, buscar_pcparts,
     historial_de_activo,
 )
-from app.database.activos_modelos import ensure_tables as ensure_tables_modelos
+from app.database.activos_modelos import ensure_tables as ensure_tables_modelos, asignar_modelo, evaluar_pc as evaluar_pc_modelos
 
 router = APIRouter(prefix="/activos", tags=["Activos"])
 
@@ -143,7 +143,7 @@ def get_pcparts(categoria: str, texto: str = "", db: Session = Depends(get_db)):
 @router.get("/{activo_id}", dependencies=[Depends(require_any_auth)])
 def get_activo(activo_id: int, db: Session = Depends(get_db)):
     ensure_tables(db)
-    activo = obtener_activo(db, activo_id)
+    activo = obtener_activo(db, activo_id, incluir_evaluacion=True)
     if not activo:
         raise HTTPException(status_code=404, detail="Activo no encontrado")
     return activo
@@ -470,6 +470,40 @@ def transferir_responsable(activo_id: int, data: dict = Body(...), db: Session =
     })
     db.commit()
     return {"message": "Responsable actualizado"}
+
+
+@router.patch("/{activo_id}/modelo", dependencies=[Depends(require_admin)])
+def asignar_modelo_pc(activo_id: int, data: dict = Body(...), db: Session = Depends(get_db),
+                      current_user: dict = Depends(get_current_user)):
+    ensure_tables(db)
+    ensure_tables_modelos(db)
+    actual = obtener_activo(db, activo_id)
+    if not actual:
+        raise HTTPException(status_code=404, detail="Activo no encontrado")
+    if not actual["puedeAlbergarComponentes"]:
+        raise HTTPException(status_code=400, detail="Solo se puede asignar modelo a PCs")
+
+    nuevo_id = data.get("modeloId")
+    nuevo_nombre = None
+    if nuevo_id is not None:
+        from app.database.activos_modelos import obtener_modelo
+        modelo = obtener_modelo(db, nuevo_id)
+        if not modelo:
+            raise HTTPException(status_code=404, detail="Modelo no encontrado")
+        nuevo_nombre = modelo["nombre"]
+
+    viejo_nombre = actual.get("modeloNombre")
+    if nuevo_id != actual.get("modeloId"):
+        registrar_historial(db, activo_id, "cambio_modelo", "modelo",
+                            viejo_nombre, nuevo_nombre, current_user.get("employeeId"))
+
+    asignar_modelo(db, activo_id, nuevo_id)
+    evaluacion = None
+    if nuevo_id:
+        evaluacion = evaluar_pc_modelos(db, activo_id, nuevo_id)
+    db.commit()
+    return {"message": "Modelo asignado" if nuevo_id else "Modelo desasignado",
+            "evaluacion": evaluacion}
 
 
 DANOS_UPLOAD_DIR = "uploads/activos_danos"
