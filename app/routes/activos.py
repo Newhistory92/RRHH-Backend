@@ -143,7 +143,7 @@ def get_pcparts(categoria: str, texto: str = "", db: Session = Depends(get_db)):
 @router.get("/{activo_id}", dependencies=[Depends(require_any_auth)])
 def get_activo(activo_id: int, db: Session = Depends(get_db)):
     ensure_tables(db)
-    activo = obtener_activo(db, activo_id)
+    activo = obtener_activo(db, activo_id, incluir_evaluacion=True)
     if not activo:
         raise HTTPException(status_code=404, detail="Activo no encontrado")
     return activo

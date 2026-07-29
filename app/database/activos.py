@@ -89,13 +89,35 @@ def ensure_columns(db: Session) -> None:
     (idempotente), y marca la categoria 'PC' con el flag. El ALTER y el UPDATE
     van en batches separados: SQL Server compila el batch completo antes de
     ejecutarlo y fallaria con 'Invalid column name' si el UPDATE referenciara
-    la columna recien creada en el mismo batch."""
+    la columna recien creada en el mismo batch.
+    Tambien garantiza modeloId en Activo y la tabla ActivoModeloPC (necesarios
+    por _SELECT_ACTIVO) sin llamar a activos_modelos.ensure_tables para evitar
+    recursion infinita (activos_modelos.ensure_tables -> activos.ensure_tables)."""
     db.execute(text("IF COL_LENGTH('Activo','pcPadreId') IS NULL ALTER TABLE Activo ADD pcPadreId INT NULL;"))
     db.execute(text("IF COL_LENGTH('ActivoCategoria','puedeAlbergarComponentes') IS NULL "
                     "ALTER TABLE ActivoCategoria ADD puedeAlbergarComponentes BIT NOT NULL DEFAULT 0;"))
     db.commit()
     db.execute(text("UPDATE ActivoCategoria SET puedeAlbergarComponentes = 1 "
                     "WHERE nombre = 'PC' AND puedeAlbergarComponentes = 0;"))
+    db.commit()
+    # modeloId: requerido por _SELECT_ACTIVO (LEFT JOIN ActivoModeloPC m ON a.modeloId = m.id)
+    db.execute(text("IF COL_LENGTH('Activo','modeloId') IS NULL ALTER TABLE Activo ADD modeloId INT NULL;"))
+    db.commit()
+    # ActivoModeloPC: requerido por _SELECT_ACTIVO. DDL duplicado de activos_modelos.CREATE_MODELO_SQL
+    # para evitar recursion infinita -- NO llamar activos_modelos.ensure_tables aqui.
+    db.execute(text("""
+        IF NOT EXISTS (SELECT * FROM sysobjects WHERE name = 'ActivoModeloPC' AND xtype = 'U')
+        BEGIN
+            CREATE TABLE ActivoModeloPC (
+                id          INT IDENTITY(1,1) PRIMARY KEY,
+                nombre      NVARCHAR(150) NOT NULL,
+                descripcion NVARCHAR(500) NULL,
+                activo      BIT           NOT NULL DEFAULT 1,
+                createdAt   DATETIME2     NOT NULL,
+                updatedAt   DATETIME2     NOT NULL
+            );
+        END
+    """))
     db.commit()
 
 
@@ -261,22 +283,26 @@ def listar_activos(db: Session, categoria_id: Optional[int] = None, grupo: Optio
     rows = db.execute(text(query), params).mappings().all()
     resultado = [_fila_a_dict(r) for r in rows]
 
-    from app.database.activos_modelos import score_rapido
+    from app.database.activos_modelos import evaluar_pc as _evaluar_pc
     for item in resultado:
         if item.get("modeloId"):
-            item["score"] = score_rapido(db, item["id"])
+            result = _evaluar_pc(db, item["id"], item["modeloId"])
+            item["score"] = result.get("score")
         else:
             item["score"] = None
     return resultado
 
 
-def obtener_activo(db: Session, activo_id: int) -> Optional[dict]:
-    """Detalle de un activo vigente con nombres resueltos, o None."""
+def obtener_activo(db: Session, activo_id: int, incluir_evaluacion: bool = False) -> Optional[dict]:
+    """Detalle de un activo vigente con nombres resueltos, o None.
+    Solo calcula la evaluacion contra el modelo cuando incluir_evaluacion=True;
+    los demas llamadores (estado, responsable, danos, baja, etc.) no la necesitan
+    y evitan el coste de evaluar_pc con el valor por defecto False."""
     r = db.execute(text(_SELECT_ACTIVO + " AND a.id = :id"), {"id": activo_id}).mappings().first()
     if not r:
         return None
     d = _fila_a_dict(r)
-    if d.get("modeloId"):
+    if incluir_evaluacion and d.get("modeloId"):
         from app.database.activos_modelos import evaluar_pc
         d["evaluacion"] = evaluar_pc(db, activo_id, d["modeloId"])
     else:
