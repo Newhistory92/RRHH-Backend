@@ -29,6 +29,7 @@ def get_employee_details(employee_id: int, db: Session = Depends(get_db)):
         SELECT
             e.id,
             e.dni,
+            e.biometricoId,
             e.name,
             e.email,
             e.birthDate,
@@ -394,6 +395,7 @@ def get_employee_details(employee_id: int, db: Session = Depends(get_db)):
         "status": result["status"],
         "productivityScore": result["productivityScore"],
         "horas": result["horas"],
+        "biometricoId": result["biometricoId"],
         "managerId": result["managerId"],
         "manager": {
             "name": result["manager_name"]
@@ -765,7 +767,29 @@ def update_employee(employee_id: int, data: dict = Body(...), db: Session = Depe
                     "updatedAt":   datetime.utcnow(),
                 })
 
+        # ID del reloj biometrico: cadena vacia se guarda como NULL (desvincula).
+        if "biometricoId" in data:
+            crudo = data.get("biometricoId")
+            nuevo = str(crudo).strip() if crudo not in (None, "") else None
+
+            if nuevo is not None:
+                duplicado = db.execute(text("""
+                    SELECT id, name FROM Employee
+                    WHERE biometricoId = :bio AND id <> :id
+                """), {"bio": nuevo, "id": employee_id}).mappings().first()
+                if duplicado:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"El ID de reloj {nuevo} ya esta asignado a {duplicado['name']}",
+                    )
+
+            db.execute(text("UPDATE Employee SET biometricoId = :bio WHERE id = :id"),
+                       {"bio": nuevo, "id": employee_id})
+
         db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
         db.rollback()
         print(f"❌ Error al actualizar empleado {employee_id}: {e}")

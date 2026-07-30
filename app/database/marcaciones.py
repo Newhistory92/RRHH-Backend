@@ -42,6 +42,20 @@ CREATE TABLE RelojSync (
 );
 """
 
+ALTER_EMPLOYEE_BIOMETRICO_SQL = """
+IF COL_LENGTH('Employee','biometricoId') IS NULL
+ALTER TABLE Employee ADD biometricoId NVARCHAR(50) NULL;
+"""
+
+# Indice filtrado: impide que dos empleados compartan el mismo ID del reloj
+# (seria un error silencioso: dos personas viendo las mismas marcaciones),
+# pero admite varios NULL para los que todavia no estan vinculados.
+CREATE_UX_BIOMETRICO_SQL = """
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_Employee_biometricoId')
+CREATE UNIQUE INDEX UX_Employee_biometricoId ON Employee (biometricoId)
+WHERE biometricoId IS NOT NULL;
+"""
+
 
 def ensure_tables(db: Session) -> None:
     """DDL idempotente. Cada sentencia en su propio batch + commit."""
@@ -50,6 +64,15 @@ def ensure_tables(db: Session) -> None:
     db.execute(text(CREATE_INDEX_SQL))
     db.commit()
     db.execute(text(CREATE_RELOJSYNC_SQL))
+    db.commit()
+    ensure_columna_biometrico(db)
+
+
+def ensure_columna_biometrico(db: Session) -> None:
+    """DDL idempotente de Employee.biometricoId. Cada batch con su commit."""
+    db.execute(text(ALTER_EMPLOYEE_BIOMETRICO_SQL))
+    db.commit()
+    db.execute(text(CREATE_UX_BIOMETRICO_SQL))
     db.commit()
 
 
