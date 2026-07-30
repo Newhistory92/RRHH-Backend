@@ -55,7 +55,7 @@ def relojes_configurados() -> list[str]:
     return [ip.strip() for ip in crudo.split(",") if ip.strip()]
 
 
-def pedir(metodo: str, ip: str, path: str, json_body: Optional[dict] = None):
+def pedir(metodo: str, ip: str, path: str, json_body: Optional[dict] = None) -> "dict | str":
     """
     Unica salida a la red hacia un reloj. Rechaza cualquier par (metodo, path)
     que no este en la allowlist ANTES de abrir la conexion.
