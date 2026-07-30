@@ -114,7 +114,18 @@ def sincronizar_reloj(db: Session, reloj_ip: str,
                 max_visto = max(max_visto, max(f["serialNo"] for f in filas))
             if not hay_mas_paginas(payload):
                 break
-            posicion += MAX_RESULTS
+            posicion += (payload.get("AcsEvent") or {}).get("numOfMatches", MAX_RESULTS)
+        else:
+            # El bucle agotó MAX_PAGINAS sin llegar al final: hay eventos sin leer.
+            # Se commitea lo ya insertado pero NO se avanza ultimaSync, de modo que
+            # el próximo ciclo reintente la misma ventana.
+            log.warning(
+                "Reloj %s: cap MAX_PAGINAS=%s alcanzado. Quedan eventos sin leer. "
+                "Ejecutar sync manual con rango explícito para recuperarlos.",
+                reloj_ip, MAX_PAGINAS,
+            )
+            db.commit()
+            return resultado
 
         # Riesgo conocido: si el equipo reinicia su correlativo, los eventos
         # nuevos colisionarian con los viejos y se descartarian en silencio.
@@ -128,7 +139,7 @@ def sincronizar_reloj(db: Session, reloj_ip: str,
 
         marcar_sync_ok(db, reloj_ip, ahora)
         db.commit()
-    except ISAPIError as e:
+    except Exception as e:
         resultado["error"] = str(e)
         marcar_sync_error(db, reloj_ip, str(e))
         db.commit()

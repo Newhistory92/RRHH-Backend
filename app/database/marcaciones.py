@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Optional
 
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 CREATE_MARCACION_SQL = """
@@ -150,16 +151,23 @@ def insertar_marcaciones(db: Session, filas: list[dict]) -> int:
 
     nuevas = [f for f in filas if f["serialNo"] not in existentes]
     ahora = datetime.now()
+    insertadas = 0
     for f in nuevas:
-        db.execute(text("""
-            INSERT INTO Marcacion
-                (relojIp, serialNo, biometricoId, nombreReloj, fechaHora, verifyMode, createdAt)
-            VALUES
-                (:relojIp, :serialNo, :biometricoId, :nombreReloj, :fechaHora, :verifyMode, :createdAt)
-        """), {**f, "createdAt": ahora})
+        try:
+            db.execute(text("""
+                INSERT INTO Marcacion
+                    (relojIp, serialNo, biometricoId, nombreReloj, fechaHora, verifyMode, createdAt)
+                VALUES
+                    (:relojIp, :serialNo, :biometricoId, :nombreReloj, :fechaHora, :verifyMode, :createdAt)
+            """), {**f, "createdAt": ahora})
+            insertadas += 1
+        except IntegrityError:
+            # Race condition: otro proceso insertó el mismo (relojIp, serialNo) entre
+            # nuestra query de dedup y este insert. Rollback + continuar.
+            db.rollback()
 
     db.commit()
-    return len(nuevas)
+    return insertadas
 
 
 def marcaciones_de(db: Session, biometrico_id: str,

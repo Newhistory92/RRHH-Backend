@@ -5,6 +5,8 @@ from app.cors_config import setup_cors
 from app.routes import employee, user, auth, role, active, rrhh, departments, tests, feedback, licenses, obrasocial, stats, configtest, contracts, professions, schedules, reubicacion, publications, activos_config, activos, activos_modelos, relojes
 from app.routes.auth import init_blacklist
 from app.scheduler import iniciar_scheduler, detener_scheduler
+from app.database.database import SessionLocal
+from app.database.marcaciones import ensure_columna_biometrico
 
 app = FastAPI(title="Backend RRHH", version="1.0")
 
@@ -21,6 +23,12 @@ def startup():
     print("[*] Iniciando app...")
     init_blacklist()
     print("[OK] init_blacklist ejecutado")
+    db = SessionLocal()
+    try:
+        ensure_columna_biometrico(db)
+        print("[OK] columna biometricoId verificada")
+    finally:
+        db.close()
     iniciar_scheduler()
     print("[OK] scheduler de relojes iniciado")
 
