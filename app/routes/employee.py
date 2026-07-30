@@ -385,6 +385,7 @@ def get_employee_details(employee_id: int, db: Session = Depends(get_db)):
     employee = {
         "id": result["id"],
         "dni": result["dni"],
+        "biometricoId": result["biometricoId"],
         "name": result["name"],
         "email": result["email"],
         "birthDate": result["birthDate"],
@@ -395,7 +396,6 @@ def get_employee_details(employee_id: int, db: Session = Depends(get_db)):
         "status": result["status"],
         "productivityScore": result["productivityScore"],
         "horas": result["horas"],
-        "biometricoId": result["biometricoId"],
         "managerId": result["managerId"],
         "manager": {
             "name": result["manager_name"]
