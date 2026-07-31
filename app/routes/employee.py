@@ -5,6 +5,7 @@ from app.database.database import SessionLocal
 from app.auth_middleware import require_roles, require_any_auth, ROLE_ADMIN, get_current_user
 from datetime import datetime
 from app.database.employee_documents import get_documents as get_employee_documents_data, get_document as get_employee_document_data
+from app.services.asistencia_recalc import recalcular_historia
 router = APIRouter()
 
 def get_db():
@@ -767,6 +768,8 @@ def update_employee(employee_id: int, data: dict = Body(...), db: Session = Depe
                     "updatedAt":   datetime.utcnow(),
                 })
 
+        recalcular_biometrico = False
+
         # ID del reloj biometrico: cadena vacia se guarda como NULL (desvincula).
         if "biometricoId" in data:
             crudo = data.get("biometricoId")
@@ -785,6 +788,9 @@ def update_employee(employee_id: int, data: dict = Body(...), db: Session = Depe
 
             db.execute(text("UPDATE Employee SET biometricoId = :bio WHERE id = :id"),
                        {"bio": nuevo, "id": employee_id})
+            # Las marcaciones huerfanas ya guardadas pasan a tener dueno: hay que
+            # recalcular toda su historia para que el saldo aparezca completo.
+            recalcular_biometrico = True
 
         db.commit()
     except HTTPException:
@@ -797,6 +803,14 @@ def update_employee(employee_id: int, data: dict = Body(...), db: Session = Depe
             status_code=500,
             detail=f"Error al actualizar el empleado. Los datos no fueron modificados: {e}"
         )
+
+    if recalcular_biometrico:
+        try:
+            recalcular_historia(db, employee_id)
+        except Exception as e:
+            # El vinculo ya quedo guardado. Si el recalculo falla, el job
+            # nocturno lo corrige: no se revierte el PUT por esto.
+            print(f"[WARN] recalculo de asistencia fallido para {employee_id}: {e}")
 
     return {"message": "Empleado y formaciones actualizados correctamente"}
 
