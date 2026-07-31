@@ -149,7 +149,7 @@ def jornadas_de(db: Session, employee_id: int, desde: date, hasta: date) -> list
     filas = db.execute(text("""
         SELECT id, fecha, estado, horasRequeridas, horasTrabajadas, saldoDia,
                entrada, salida, entradaManual, salidaManual,
-               permisoBanco, permisoDeuda, permisoOficial, observacion
+               permisoBanco, permisoDeuda, permisoOficial, corregidoPor, observacion
         FROM JornadaDiaria
         WHERE employeeId = :emp AND fecha >= :desde AND fecha <= :hasta
         ORDER BY fecha DESC
@@ -204,7 +204,11 @@ def tablero(db: Session, desde: date, hasta: date) -> list[dict]:
 
 def get_jornada(db: Session, jornada_id: int) -> Optional[dict]:
     fila = db.execute(text("""
-        SELECT id, employeeId, fecha, estado, entrada, salida
+        SELECT id, employeeId, fecha, estado,
+               horasRequeridas, horasTrabajadas, saldoDia,
+               entrada, salida, entradaManual, salidaManual,
+               permisoBanco, permisoDeuda, permisoOficial,
+               corregidoPor, observacion
         FROM JornadaDiaria WHERE id = :id
     """), {"id": jornada_id}).mappings().first()
     return dict(fila) if fila else None
