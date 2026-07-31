@@ -221,6 +221,7 @@ def recalcular_todos(db: Session, anio: int) -> dict:
 
     filas = 0
     ok = 0
+    errores = []
     for eid in ids:
         try:
             filas += recalcular_anio(db, eid, anio)
@@ -228,4 +229,5 @@ def recalcular_todos(db: Session, anio: int) -> dict:
         except Exception as e:
             db.rollback()
             log.warning("Recalculo fallido para empleado %s: %s", eid, e)
-    return {"empleados": ok, "filas": filas}
+            errores.append({"employeeId": eid, "error": str(e)})
+    return {"procesados": ok, "filas": filas, "errores": errores}
