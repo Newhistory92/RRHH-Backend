@@ -38,8 +38,11 @@ def get_db():
 def _rango(desde: str | None, hasta: str | None) -> tuple[date, date]:
     """Sin parametros devuelve el anio en curso."""
     hoy = date.today()
-    d = date.fromisoformat(desde) if desde else date(hoy.year, 1, 1)
-    h = date.fromisoformat(hasta) if hasta else hoy
+    try:
+        d = date.fromisoformat(desde) if desde else date(hoy.year, 1, 1)
+        h = date.fromisoformat(hasta) if hasta else hoy
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Formato de fecha invalido, use YYYY-MM-DD")
     if d > h:
         raise HTTPException(status_code=400, detail="'desde' no puede ser posterior a 'hasta'")
     return d, h
@@ -59,10 +62,10 @@ def get_incompletas(db: Session = Depends(get_db)):
     return {"jornadas": jornadas_incompletas(db)}
 
 
-@router.put("/jornada/{jornada_id}", dependencies=[SOLO_RRHH])
-def put_jornada(jornada_id: int, data: dict = Body(...),
-                usuario: dict = Depends(get_current_user),
-                db: Session = Depends(get_db)):
+@router.post("/jornadas/{jornada_id}/correccion", dependencies=[SOLO_RRHH])
+def post_correccion_jornada(jornada_id: int, data: dict = Body(...),
+                            usuario: dict = Depends(get_current_user),
+                            db: Session = Depends(get_db)):
     """
     Carga manual de entrada y/o salida. Dispara el recalculo del anio para que
     el saldo del empleado quede al dia sin esperar al job nocturno.
@@ -90,8 +93,12 @@ def put_jornada(jornada_id: int, data: dict = Body(...),
         raise HTTPException(status_code=400,
                             detail="La salida debe ser posterior a la entrada")
 
+    if usuario.get("employeeId") is None:
+        raise HTTPException(status_code=403,
+                            detail="Tu usuario no tiene legajo vinculado para registrar la correccion")
+    corregido_por = int(usuario["employeeId"])
     marcar_correccion(db, jornada_id, entrada, salida,
-                      int(usuario["employeeId"]), data.get("observacion"))
+                      corregido_por, data.get("observacion"))
 
     fecha = jornada["fecha"]
     anio = fecha.year if isinstance(fecha, date) else fecha.date().year
@@ -100,9 +107,13 @@ def put_jornada(jornada_id: int, data: dict = Body(...),
     return {"ok": True, "employeeId": jornada["employeeId"], "anio": anio}
 
 
-@router.get("/empleado/{employee_id}", dependencies=[SOLO_RRHH])
+@router.get("/empleado/{employee_id}")
 def get_empleado(employee_id: int, desde: str | None = None,
-                 hasta: str | None = None, db: Session = Depends(get_db)):
+                 hasta: str | None = None,
+                 usuario: dict = Depends(get_current_user),
+                 db: Session = Depends(get_db)):
+    if usuario["roleId"] not in [ROLE_ADMIN, ROLE_RRHH] and usuario.get("employeeId") != employee_id:
+        raise HTTPException(status_code=403, detail="Sin permiso para ver este empleado")
     ensure_tables(db)
     d, h = _rango(desde, hasta)
     return {
@@ -123,7 +134,7 @@ def get_mi_asistencia(desde: str | None = None, hasta: str | None = None,
     """
     ensure_tables(db)
     if usuario.get("employeeId") is None:
-        raise HTTPException(status_code=404,
+        raise HTTPException(status_code=403,
                             detail="Tu usuario no esta vinculado a un legajo")
     fila = db.execute(text(
         "SELECT id FROM Employee WHERE id = :id"
