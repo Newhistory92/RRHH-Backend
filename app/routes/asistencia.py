@@ -18,9 +18,11 @@ from app.database.asistencia import (
     ensure_tables, get_config, get_jornada, jornadas_de, jornadas_incompletas,
     saldo_acumulado, tablero, update_config,
 )
-from app.database.asistencia_auditoria import upsert_correccion
+from app.database.asistencia_auditoria import (
+    incidencias_abiertas, ultimos_recalculos, upsert_correccion,
+)
 from app.database.database import SessionLocal
-from app.services.asistencia_recalc import recalcular_anio
+from app.services.asistencia_recalc import recalcular_anio, recalcular_todos
 
 router = APIRouter(prefix="/asistencia", tags=["Asistencia"])
 
@@ -169,4 +171,70 @@ def put_asistencia_config(data: dict = Body(...), db: Session = Depends(get_db))
     if not (0 <= tol_entrada <= 120) or not (0 <= tol_salida <= 120):
         raise HTTPException(status_code=400,
                             detail="Las tolerancias deben estar entre 0 y 120 minutos")
-    return update_config(db, tol_entrada, tol_salida)
+
+    fecha_inicio = None
+    crudo = data.get("fechaInicioModulo")
+    if crudo not in (None, ""):
+        try:
+            fecha_inicio = date.fromisoformat(str(crudo))
+        except ValueError:
+            raise HTTPException(status_code=400,
+                                detail="fechaInicioModulo debe ser YYYY-MM-DD")
+        if fecha_inicio > date.today():
+            raise HTTPException(status_code=400,
+                                detail="fechaInicioModulo no puede ser futura")
+
+    return update_config(db, tol_entrada, tol_salida, fecha_inicio)
+
+
+@router.post("/recalcular", dependencies=[SOLO_RRHH])
+def post_recalcular(data: dict = Body(default={}),
+                    usuario: dict = Depends(get_current_user),
+                    db: Session = Depends(get_db)):
+    """
+    Recalculo manual. Sin cuerpo recalcula todos los empleados del anio en
+    curso; con employeeId, solo ese. Es el disparador que faltaba: el job
+    nocturno requiere que el servidor este vivo a las 3 AM.
+    """
+    ensure_tables(db)
+    anio = data.get("anio")
+    try:
+        anio = int(anio) if anio is not None else date.today().year
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="'anio' debe ser un entero")
+    if not (2000 <= anio <= date.today().year + 1):
+        raise HTTPException(status_code=400, detail="'anio' fuera de rango")
+
+    disparado_por = usuario.get("employeeId")
+    employee_id = data.get("employeeId")
+    if employee_id is not None:
+        try:
+            employee_id = int(employee_id)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400,
+                                detail="'employeeId' debe ser un entero")
+        filas = recalcular_anio(db, employee_id, anio)
+        return {"employeeId": employee_id, "anio": anio,
+                "procesados": 1, "filas": filas, "errores": []}
+
+    resultado = recalcular_todos(db, anio, origen="manual",
+                                 disparado_por=disparado_por)
+    return {"anio": anio, **resultado}
+
+
+@router.get("/incidencias", dependencies=[SOLO_RRHH])
+def get_incidencias(tipo: str | None = None, desde: str | None = None,
+                    hasta: str | None = None, db: Session = Depends(get_db)):
+    ensure_tables(db)
+    d, h = _rango(desde, hasta)
+    return {"desde": d.isoformat(), "hasta": h.isoformat(),
+            "incidencias": incidencias_abiertas(db, tipo, d, h)}
+
+
+@router.get("/recalculos", dependencies=[SOLO_RRHH])
+def get_recalculos(limite: int = 50, db: Session = Depends(get_db)):
+    ensure_tables(db)
+    if not (1 <= limite <= 200):
+        raise HTTPException(status_code=400,
+                            detail="'limite' debe estar entre 1 y 200")
+    return {"recalculos": ultimos_recalculos(db, limite)}
