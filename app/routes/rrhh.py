@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from app.database.database import SessionLocal
-from app.auth_middleware import require_roles, ROLE_ADMIN, ROLE_USER
+from app.auth_middleware import require_roles, ROLE_ADMIN, ROLE_USER, ROLE_RRHH
 from app.routes.departments import ensure_capacity_columns
 from datetime import datetime
 from collections import defaultdict
@@ -30,10 +30,6 @@ from app.services.asistencia_recalc import recalcular_anio
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/rrhh", tags=["Employees"])
-
-# Rol RRHH: por defecto usamos ROLE_ADMIN (1) hasta confirmar IDs reales.
-# Si existe un rol "RRHH" separado, agregá su id aquí: ROLE_RRHH = 3
-ROLE_RRHH = ROLE_ADMIN
 
 
 def get_db():
@@ -519,6 +515,11 @@ def update_horario(employee_id: int, data: dict = Body(...), db: Session = Depen
         action = "creado"
 
     db.commit()
+    try:
+        from datetime import date as _date
+        recalcular_anio(db, employee_id, _date.today().year)
+    except Exception as e:
+        log.warning("Recalculo de asistencia fallido para empleado %s tras cambio de horario: %s", employee_id, e)
     return {"message": f"Horario {action} correctamente", "horasTrabajo": horas_trabajo}
 
 

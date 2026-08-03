@@ -12,14 +12,13 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.auth_middleware import (
-    ROLE_ADMIN, get_current_user, require_any_auth, require_roles,
+    ROLE_ADMIN, ROLE_RRHH, get_current_user, require_any_auth, require_roles,
 )
 from app.database.asistencia import (
     ensure_tables, get_config, get_jornada, jornadas_de, jornadas_incompletas,
     marcar_correccion, saldo_acumulado, tablero, update_config,
 )
 from app.database.database import SessionLocal
-from app.routes.rrhh import ROLE_RRHH
 from app.services.asistencia_recalc import recalcular_anio
 
 router = APIRouter(prefix="/asistencia", tags=["Asistencia"])

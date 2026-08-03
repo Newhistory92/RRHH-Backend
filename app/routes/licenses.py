@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from app.database.database import SessionLocal
-from app.auth_middleware import require_any_auth, require_roles, ROLE_ADMIN, get_current_user
+from app.auth_middleware import require_any_auth, require_roles, ROLE_ADMIN, ROLE_RRHH, get_current_user
 from datetime import datetime, date, timedelta
 from typing import Optional
 from app.database.feriados import (
@@ -23,7 +23,6 @@ def get_db():
     finally:
         db.close()
 
-ROLE_RRHH = ROLE_ADMIN
 require_rrhh_auth = require_roles(ROLE_ADMIN, ROLE_RRHH)
 
 router = APIRouter(prefix="/licenses", tags=["Licenses"])

@@ -37,7 +37,11 @@ def _datos_empleado(db: Session, employee_id: int) -> Optional[dict]:
                c.fechaIngreso
         FROM Employee e
         LEFT JOIN Horario h ON e.cronogramaId = h.id
-        LEFT JOIN CondicionLaboral c ON c.employeeId = e.id
+        LEFT JOIN (
+            SELECT employeeId, MIN(fechaIngreso) AS fechaIngreso
+            FROM CondicionLaboral
+            GROUP BY employeeId
+        ) c ON c.employeeId = e.id
         WHERE e.id = :id
     """), {"id": employee_id}).mappings().first()
     return dict(fila) if fila else None
