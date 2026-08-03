@@ -1,2 +1,7 @@
 uploads/
 .env
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.superpowers/
