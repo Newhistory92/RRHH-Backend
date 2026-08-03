@@ -16,9 +16,13 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.database.asistencia import get_config, reemplazar_jornadas
-from app.services.asistencia_calc import (
-    EntradaDia, HorarioDia, Permiso, ResultadoDia, calcular_anio,
+from app.database.asistencia_auditoria import (
+    abrir_recalculo, cerrar_recalculo, correcciones_por_dia,
 )
+from app.services.asistencia_calc import (
+    EntradaDia, Permiso, ResultadoDia, calcular_anio,
+)
+from app.services.marcaciones_norm import Correccion, HorarioDia, normalizar
 
 log = logging.getLogger(__name__)
 
@@ -102,28 +106,12 @@ def _permisos_por_dia(db: Session, employee_id: int,
     return por_dia
 
 
-def _correcciones_por_dia(db: Session, employee_id: int, desde: date,
-                          hasta: date) -> dict[date, dict]:
+def _a_fila(r: ResultadoDia) -> dict:
     """
-    Las cargas manuales de RRHH sobreviven al recalculo: se releen de la propia
-    JornadaDiaria antes de borrar el rango y se reinyectan al motor.
+    La fila de JornadaDiaria. Todo sale del resultado: los flags manuales ya
+    vienen resueltos desde los extremos, y corregidoPor y observacion viven en
+    JornadaCorreccion, no aca.
     """
-    filas = db.execute(text("""
-        SELECT fecha, entrada, salida, entradaManual, salidaManual,
-               corregidoPor, corregidoAt, observacion
-        FROM JornadaDiaria
-        WHERE employeeId = :emp AND fecha >= :desde AND fecha <= :hasta
-          AND (entradaManual = 1 OR salidaManual = 1)
-    """), {"emp": employee_id, "desde": desde, "hasta": hasta}).mappings().all()
-    out: dict[date, dict] = {}
-    for f in filas:
-        d = f["fecha"] if isinstance(f["fecha"], date) else f["fecha"].date()
-        out[d] = dict(f)
-    return out
-
-
-def _a_fila(r: ResultadoDia, correccion: Optional[dict]) -> dict:
-    c = correccion or {}
     return {
         "fecha": r.fecha,
         "estado": r.estado,
@@ -132,15 +120,23 @@ def _a_fila(r: ResultadoDia, correccion: Optional[dict]) -> dict:
         "saldoDia": round(r.saldoDia, 2),
         "entrada": r.entrada,
         "salida": r.salida,
-        "entradaManual": bool(c.get("entradaManual", False)),
-        "salidaManual": bool(c.get("salidaManual", False)),
+        "entradaManual": r.entradaManual,
+        "salidaManual": r.salidaManual,
         "permisoBanco": round(r.permisoBanco, 2),
         "permisoDeuda": round(r.permisoDeuda, 2),
         "permisoOficial": round(r.permisoOficial, 2),
-        "corregidoPor": c.get("corregidoPor"),
-        "corregidoAt": c.get("corregidoAt"),
-        "observacion": c.get("observacion"),
+        "toleranciaEntradaUsada": r.toleranciaEntradaUsada,
+        "toleranciaSalidaUsada": r.toleranciaSalidaUsada,
     }
+
+
+def _a_incidencias(resultados: list[ResultadoDia]) -> list[dict]:
+    """Aplana las incidencias de todos los dias a filas de JornadaIncidencia."""
+    return [
+        {"fecha": r.fecha, "tipo": tipo, "detalle": None}
+        for r in resultados
+        for tipo in r.incidencias
+    ]
 
 
 def recalcular_anio(db: Session, employee_id: int, anio: int) -> int:
@@ -163,7 +159,7 @@ def recalcular_anio(db: Session, employee_id: int, anio: int) -> int:
     if desde > hasta:
         return 0
 
-    correcciones = _correcciones_por_dia(db, employee_id, desde, hasta)
+    correcciones = correcciones_por_dia(db, employee_id, desde, hasta)
     marcaciones = _marcaciones_por_dia(db, emp["biometricoId"], desde, hasta)
     feriados = _feriados(db, desde, hasta)
     licencias = _dias_con_licencia(db, employee_id, desde, hasta)
@@ -179,23 +175,24 @@ def recalcular_anio(db: Session, employee_id: int, anio: int) -> int:
 
     entradas = []
     for d in _rango_dias(desde, hasta):
-        c = correcciones.get(d, {})
         entradas.append(EntradaDia(
             fecha=d,
-            marcaciones=marcaciones.get(d, []),
+            extremos=normalizar(
+                marcaciones.get(d, []), horario, correcciones.get(d),
+            ),
             horario=horario,
             es_feriado=d in feriados,
             tiene_licencia=d in licencias,
             permisos=permisos.get(d, []),
-            entrada_manual=c.get("entrada") if c.get("entradaManual") else None,
-            salida_manual=c.get("salida") if c.get("salidaManual") else None,
         ))
 
     resultados = calcular_anio(
         entradas, cfg["toleranciaEntradaMin"], cfg["toleranciaSalidaMin"],
     )
-    filas = [_a_fila(r, correcciones.get(r.fecha)) for r in resultados]
-    return reemplazar_jornadas(db, employee_id, desde, hasta, filas)
+    return reemplazar_jornadas(
+        db, employee_id, desde, hasta,
+        [_a_fila(r) for r in resultados], _a_incidencias(resultados),
+    )
 
 
 def recalcular_historia(db: Session, employee_id: int) -> int:
@@ -214,11 +211,14 @@ def recalcular_historia(db: Session, employee_id: int) -> int:
     return total
 
 
-def recalcular_todos(db: Session, anio: int) -> dict:
+def recalcular_todos(db: Session, anio: int, origen: str = "nocturno",
+                     disparado_por: Optional[int] = None) -> dict:
     """
-    Recalculo masivo del job nocturno. Un empleado que falla no debe abortar el
-    resto: se registra y se sigue.
+    Recalculo masivo. Un empleado que falla no debe abortar el resto: se
+    registra y se sigue. Toda la corrida queda auditada en RecalculoLog.
     """
+    log_id = abrir_recalculo(db, origen, disparado_por, None,
+                             date(anio, 1, 1), date(anio, 12, 31))
     ids = [r["id"] for r in db.execute(text(
         "SELECT id FROM Employee WHERE biometricoId IS NOT NULL ORDER BY id"
     )).mappings().all()]
@@ -234,4 +234,43 @@ def recalcular_todos(db: Session, anio: int) -> dict:
             db.rollback()
             log.warning("Recalculo fallido para empleado %s: %s", eid, e)
             errores.append({"employeeId": eid, "error": str(e)})
+
+    cerrar_recalculo(db, log_id, ok, filas, errores)
     return {"procesados": ok, "filas": filas, "errores": errores}
+
+
+def anios_con_huecos(db: Session, hoy: Optional[date] = None) -> list[int]:
+    """
+    Anios que hay que recalcular porque algun empleado vinculado quedo atrasado.
+
+    Toma la fecha calculada mas vieja entre todos los empleados con reloj: si
+    alguno no tiene ninguna jornada, cuenta como fechaInicioModulo. Si esa
+    fecha esta a mas de un dia de hoy, hay hueco.
+
+    Es deliberadamente grueso. Recalcular un anio de mas cuesta segundos y da
+    el mismo resultado, mientras que no detectar un hueco deja el saldo mal.
+    """
+    cfg = get_config(db)
+    inicio = cfg["fechaInicioModulo"]
+    if not isinstance(inicio, date):
+        inicio = inicio.date()
+    hoy = hoy or date.today()
+
+    fila = db.execute(text("""
+        SELECT MIN(COALESCE(j.ultima, :inicio)) AS mas_atrasada
+        FROM Employee e
+        LEFT JOIN (
+            SELECT employeeId, MAX(fecha) AS ultima
+            FROM JornadaDiaria GROUP BY employeeId
+        ) j ON j.employeeId = e.id
+        WHERE e.biometricoId IS NOT NULL
+    """), {"inicio": inicio}).mappings().first()
+
+    if fila is None or fila["mas_atrasada"] is None:
+        return []
+    atrasada = fila["mas_atrasada"]
+    if not isinstance(atrasada, date):
+        atrasada = atrasada.date()
+    if atrasada >= hoy - timedelta(days=1):
+        return []
+    return list(range(max(atrasada.year, inicio.year), hoy.year + 1))
