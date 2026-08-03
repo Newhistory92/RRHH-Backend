@@ -334,6 +334,14 @@ nivel más bajo. `asistencia_calc` lo importa desde acá.
 primera. `descartadas` cuenta cuántas se fusionaron; si es mayor que cero se
 emite `rebote_descartado` como incidencia informativa.
 
+La deduplicación es **global, nunca por reloj**. `normalizar()` recibe una
+lista de `datetime` sin la IP del equipo, justamente para que sea imposible
+implementarla por reloj por accidente. Si se agrupara por equipo, alguien que
+pasa por los dos lectores al llegar —07:00 en uno, 07:03 en el otro— quedaría
+con dos marcas sobrevivientes, el motor las leería como entrada y salida, y el
+día daría una jornada de tres minutos con la deuda completa. Es el mismo bug
+que la deduplicación viene a corregir, reintroducido por otra vía.
+
 **Dos o más marcas tras deduplicar.** La primera es entrada, la última es
 salida. Sin incidencias.
 
@@ -354,6 +362,24 @@ y la última como salida si hay dos o más. Se emite `sin_cronograma`.
 manualmente marca su flag (`entrada_manual` / `salida_manual`) y elimina la
 incidencia correspondiente. Una corrección que aporta el extremo faltante deja
 el día sin incidencias.
+
+### Marcación cruzada entre relojes
+
+Hay dos equipos (`10.25.2.24` y `10.25.2.25`) y un empleado puede fichar la
+entrada en uno y la salida en el otro. No es un caso de borde: 64 de los 174
+biométricos marcan en ambos, con 88 días-persona cruzados en el período
+observado, y el cruce ocurre en las dos direcciones.
+
+**El padrón es compartido entre los equipos.** La columna `Marcacion.nombreReloj`
+lo confirma: los 64 IDs presentes en ambos relojes traen el mismo nombre en los
+dos. No hay colisión de identidades, así que agrupar las marcas por
+`biometricoId` sin discriminar el equipo es correcto.
+
+En consecuencia, `_marcaciones_por_dia()` filtra por `biometricoId` y rango de
+fechas, **nunca por `relojIp`**, y las marcas de ambos equipos se ordenan juntas
+por hora antes de normalizar. El comportamiento actual ya es el correcto; queda
+documentado para que ningún cambio futuro agregue un filtro por equipo
+creyendo que aporta precisión.
 
 ## Motor de cálculo
 
@@ -479,6 +505,11 @@ su lista de incidencias.
 - corrección de RRHH aportando la salida elimina `falta_salida`
 - corrección de RRHH pisa el valor del reloj y marca el flag
 - día sin marcaciones ni corrección → ambos extremos en `None`, sin incidencias
+- marcación cruzada: entrada de un reloj y salida del otro producen una jornada
+  normal, sin incidencias
+- dos marcas de relojes distintos separadas por tres minutos colapsan en una
+  sola, y el día queda como marca única con `falta_salida` — no como jornada de
+  tres minutos
 
 **`tests/test_asistencia_calc.py`** (modificar): los 22 tests actuales se
 adaptan a construir `EntradaDia` con `ExtremosDia` en lugar de marcaciones
@@ -509,6 +540,15 @@ apunta a un tope del dispositivo sobre la ventana de búsqueda, pero no se prob�
 contra el firmware. La corrección — ventanas diarias más detección de tope — es
 válida en cualquiera de los escenarios posibles, y la advertencia dejará
 registro si el problema persiste.
+
+**Desfasaje de hora entre los dos relojes.** Con marcación cruzada, la entrada
+y la salida de una misma jornada pueden venir de equipos distintos, así que
+cualquier diferencia de reloj entre ellos se traslada directa al total de horas
+trabajadas. Los datos actuales no permiten medirlo: haría falta que una misma
+persona marcara en ambos equipos con pocos minutos de diferencia, y la
+separación mínima observada es de 82 minutos. Queda como verificación
+operativa —contrastar la hora de los dos equipos contra la misma referencia—,
+fuera del alcance del código.
 
 **Reinicio del correlativo.** El riesgo ya documentado en `reloj_sync.py:130`
 se mantiene: si un equipo reinicia su `serialNo`, los eventos nuevos colisionan
