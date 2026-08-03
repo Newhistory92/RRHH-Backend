@@ -9,6 +9,7 @@ Las queries secundarias traen todos los registros relacionados en una sola
 pasada (WHERE employeeId IN (...)) y se agrupan en Python por employeeId.
 """
 
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -24,6 +25,9 @@ from app.database.employee_documents import (
     save_document as save_employee_document,
     delete_document as delete_employee_document,
 )
+from app.services.asistencia_recalc import recalcular_anio
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/rrhh", tags=["Employees"])
 
@@ -528,6 +532,9 @@ def create_permission(employee_id: int, data: dict = Body(...), db: Session = De
 
     exit_time   = data.get("exitTime")
     return_time = data.get("returnTime")
+    # Permiso oficial: no consume el banco de 12 h ni suma deuda. Por defecto
+    # los permisos son regulares.
+    oficial = bool(data.get("oficial", False))
 
     if exit_time is None or return_time is None:
         raise HTTPException(status_code=400, detail="Debe enviar exitTime y returnTime")
@@ -550,10 +557,19 @@ def create_permission(employee_id: int, data: dict = Body(...), db: Session = De
         raise HTTPException(status_code=404, detail="Empleado no encontrado")
 
     db.execute(text("""
-        INSERT INTO Permission (employeeId, date, exitTime, returnTime, hours)
-        VALUES (:employeeId, :date, :exitTime, :returnTime, :hours)
-    """), {"employeeId": employee_id, "date": date, "exitTime": exit_time, "returnTime": return_time, "hours": hours})
+        INSERT INTO Permission (employeeId, date, exitTime, returnTime, hours, oficial)
+        VALUES (:employeeId, :date, :exitTime, :returnTime, :hours, :oficial)
+    """), {"employeeId": employee_id, "date": date, "exitTime": exit_time,
+           "returnTime": return_time, "hours": hours, "oficial": oficial})
     db.commit()
+
+    # El permiso cambia las horas requeridas de ese dia: recalcular para que el
+    # saldo quede al dia sin esperar al job nocturno.
+    try:
+        anio = date.year if hasattr(date, "year") else int(str(date)[:4])
+        recalcular_anio(db, employee_id, anio)
+    except Exception as e:
+        log.warning("recalculo de asistencia fallido para empleado %s: %s", employee_id, e)
 
     return {
         "message":    "Permiso registrado correctamente",

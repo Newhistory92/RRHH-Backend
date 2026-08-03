@@ -1,3 +1,4 @@
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -11,6 +12,9 @@ from app.database.feriados import (
     save_feriado as save_feriado_data,
     delete_feriado as delete_feriado_data,
 )
+from app.services.asistencia_recalc import recalcular_anio as recalcular_asistencia
+
+log = logging.getLogger(__name__)
 
 def get_db():
     db = SessionLocal()
@@ -867,6 +871,16 @@ def update_license_status(license_id: int, data: dict = Body(...), db: Session =
             _sync_employee_status(db, lic["employeeId"])
 
         db.commit()
+
+        # Una licencia aprobada neutraliza esos dias; una rechazada los devuelve
+        # al conteo. En ambos casos hay que recomputar el anio del empleado.
+        try:
+            inicio = lic["startDate"]
+            anio = inicio.year if hasattr(inicio, "year") else int(str(inicio)[:4])
+            recalcular_asistencia(db, lic["employeeId"], anio)
+        except Exception as e:
+            log.warning("recalculo de asistencia fallido para licencia %s: %s", license_id, e)
+
         print(f"console.log: ✅ Transacción completada exitosamente para License {license_id}")
         return {"message": f"Estado: {status}", "licenseId": license_id}
     except Exception as e:
