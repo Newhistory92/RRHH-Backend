@@ -8,7 +8,7 @@ en app/services/isapi_client.py).
 
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -55,6 +55,38 @@ def post_carga_inicial(db: Session = Depends(get_db)):
     """
     hasta = datetime.now()
     desde = hasta - timedelta(days=DIAS_CARGA_INICIAL)
+    return {
+        "desde": desde.isoformat(),
+        "hasta": hasta.isoformat(),
+        "resultados": sincronizar_todos(db, desde=desde, hasta=hasta),
+    }
+
+
+@router.post("/relojes/resincronizar", dependencies=[Depends(require_admin)])
+def post_resincronizar(data: dict = Body(...), db: Session = Depends(get_db)):
+    """
+    Re-lee un rango historico iterando de a un dia.
+
+    Sirve para recuperar periodos que la carga inicial trajo truncados: los
+    eventos siguen en los equipos y la unicidad (relojIp, serialNo) hace que
+    reprocesar sea inofensivo.
+    """
+    try:
+        desde = datetime.fromisoformat(str(data["desde"]))
+        hasta = datetime.fromisoformat(str(data["hasta"]))
+    except (KeyError, ValueError):
+        raise HTTPException(
+            status_code=400,
+            detail="Hay que enviar 'desde' y 'hasta' en formato ISO (YYYY-MM-DD)",
+        )
+    if desde >= hasta:
+        raise HTTPException(status_code=400,
+                            detail="'desde' debe ser anterior a 'hasta'")
+    if (hasta - desde).days > 90:
+        raise HTTPException(
+            status_code=400,
+            detail="El rango no puede superar los 90 dias: partilo en tramos",
+        )
     return {
         "desde": desde.isoformat(),
         "hasta": hasta.isoformat(),
