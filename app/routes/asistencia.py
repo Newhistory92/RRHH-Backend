@@ -16,8 +16,9 @@ from app.auth_middleware import (
 )
 from app.database.asistencia import (
     ensure_tables, get_config, get_jornada, jornadas_de, jornadas_incompletas,
-    marcar_correccion, saldo_acumulado, tablero, update_config,
+    saldo_acumulado, tablero, update_config,
 )
+from app.database.asistencia_auditoria import upsert_correccion
 from app.database.database import SessionLocal
 from app.services.asistencia_recalc import recalcular_anio
 
@@ -96,11 +97,12 @@ def post_correccion_jornada(jornada_id: int, data: dict = Body(...),
         raise HTTPException(status_code=403,
                             detail="Tu usuario no tiene legajo vinculado para registrar la correccion")
     corregido_por = int(usuario["employeeId"])
-    marcar_correccion(db, jornada_id, entrada, salida,
+    fecha = jornada["fecha"]
+    fecha_date = fecha if isinstance(fecha, date) else fecha.date()
+    upsert_correccion(db, jornada["employeeId"], fecha_date, entrada, salida,
                       corregido_por, data.get("observacion"))
 
-    fecha = jornada["fecha"]
-    anio = fecha.year if isinstance(fecha, date) else fecha.date().year
+    anio = fecha_date.year
     recalcular_anio(db, jornada["employeeId"], anio)
 
     return {"ok": True, "employeeId": jornada["employeeId"], "anio": anio}
