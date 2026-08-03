@@ -5,6 +5,11 @@ from app.database.database import SessionLocal
 from app.auth_middleware import require_roles, require_any_auth, ROLE_ADMIN, get_current_user
 from datetime import datetime
 from app.database.employee_documents import get_documents as get_employee_documents_data, get_document as get_employee_document_data
+from app.services.asistencia_recalc import recalcular_historia
+import logging
+
+log = logging.getLogger(__name__)
+
 router = APIRouter()
 
 def get_db():
@@ -767,8 +772,16 @@ def update_employee(employee_id: int, data: dict = Body(...), db: Session = Depe
                     "updatedAt":   datetime.utcnow(),
                 })
 
+        recalcular_biometrico = False
+
         # ID del reloj biometrico: cadena vacia se guarda como NULL (desvincula).
         if "biometricoId" in data:
+            # Leer el valor actual antes de cualquier UPDATE
+            fila_actual = db.execute(
+                text("SELECT biometricoId FROM Employee WHERE id = :id"), {"id": employee_id}
+            ).fetchone()
+            bio_actual = fila_actual.biometricoId if fila_actual else None
+
             crudo = data.get("biometricoId")
             nuevo = str(crudo).strip() if crudo not in (None, "") else None
 
@@ -785,6 +798,9 @@ def update_employee(employee_id: int, data: dict = Body(...), db: Session = Depe
 
             db.execute(text("UPDATE Employee SET biometricoId = :bio WHERE id = :id"),
                        {"bio": nuevo, "id": employee_id})
+            # Las marcaciones huerfanas ya guardadas pasan a tener dueno: hay que
+            # recalcular toda su historia para que el saldo aparezca completo.
+            recalcular_biometrico = nuevo != bio_actual
 
         db.commit()
     except HTTPException:
@@ -797,6 +813,14 @@ def update_employee(employee_id: int, data: dict = Body(...), db: Session = Depe
             status_code=500,
             detail=f"Error al actualizar el empleado. Los datos no fueron modificados: {e}"
         )
+
+    if recalcular_biometrico:
+        try:
+            recalcular_historia(db, employee_id)
+        except Exception as e:
+            # El vinculo ya quedo guardado. Si el recalculo falla, el job
+            # nocturno lo corrige: no se revierte el PUT por esto.
+            log.warning("Recalculo de asistencia fallido para empleado %s: %s", employee_id, e)
 
     return {"message": "Empleado y formaciones actualizados correctamente"}
 

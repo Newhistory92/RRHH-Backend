@@ -9,11 +9,12 @@ Las queries secundarias traen todos los registros relacionados en una sola
 pasada (WHERE employeeId IN (...)) y se agrupan en Python por employeeId.
 """
 
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from app.database.database import SessionLocal
-from app.auth_middleware import require_roles, ROLE_ADMIN, ROLE_USER
+from app.auth_middleware import require_roles, ROLE_ADMIN, ROLE_USER, ROLE_RRHH
 from app.routes.departments import ensure_capacity_columns
 from datetime import datetime
 from collections import defaultdict
@@ -24,12 +25,11 @@ from app.database.employee_documents import (
     save_document as save_employee_document,
     delete_document as delete_employee_document,
 )
+from app.services.asistencia_recalc import recalcular_anio
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/rrhh", tags=["Employees"])
-
-# Rol RRHH: por defecto usamos ROLE_ADMIN (1) hasta confirmar IDs reales.
-# Si existe un rol "RRHH" separado, agregá su id aquí: ROLE_RRHH = 3
-ROLE_RRHH = ROLE_ADMIN
 
 
 def get_db():
@@ -82,6 +82,7 @@ def get_all_employees(db: Session = Depends(get_db)):
             e.officeId,
             e.managerId,
             e.cronogramaId,
+            e.biometricoId,
             e.createdAt,
             e.updatedAt,
 
@@ -345,6 +346,7 @@ def get_all_employees(db: Session = Depends(get_db)):
             "status":           emp["status"],
             "productivityScore":emp["productivityScore"],
             "horas":            emp["horas"],
+            "biometricoId":     emp["biometricoId"],
             "createdAt":        emp["createdAt"],
             "updatedAt":        emp["updatedAt"],
 
@@ -513,6 +515,11 @@ def update_horario(employee_id: int, data: dict = Body(...), db: Session = Depen
         action = "creado"
 
     db.commit()
+    try:
+        from datetime import date as _date
+        recalcular_anio(db, employee_id, _date.today().year)
+    except Exception as e:
+        log.warning("Recalculo de asistencia fallido para empleado %s tras cambio de horario: %s", employee_id, e)
     return {"message": f"Horario {action} correctamente", "horasTrabajo": horas_trabajo}
 
 
@@ -526,6 +533,9 @@ def create_permission(employee_id: int, data: dict = Body(...), db: Session = De
 
     exit_time   = data.get("exitTime")
     return_time = data.get("returnTime")
+    # Permiso oficial: no consume el banco de 12 h ni suma deuda. Por defecto
+    # los permisos son regulares.
+    oficial = bool(data.get("oficial", False))
 
     if exit_time is None or return_time is None:
         raise HTTPException(status_code=400, detail="Debe enviar exitTime y returnTime")
@@ -548,10 +558,19 @@ def create_permission(employee_id: int, data: dict = Body(...), db: Session = De
         raise HTTPException(status_code=404, detail="Empleado no encontrado")
 
     db.execute(text("""
-        INSERT INTO Permission (employeeId, date, exitTime, returnTime, hours)
-        VALUES (:employeeId, :date, :exitTime, :returnTime, :hours)
-    """), {"employeeId": employee_id, "date": date, "exitTime": exit_time, "returnTime": return_time, "hours": hours})
+        INSERT INTO Permission (employeeId, date, exitTime, returnTime, hours, oficial)
+        VALUES (:employeeId, :date, :exitTime, :returnTime, :hours, :oficial)
+    """), {"employeeId": employee_id, "date": date, "exitTime": exit_time,
+           "returnTime": return_time, "hours": hours, "oficial": oficial})
     db.commit()
+
+    # El permiso cambia las horas requeridas de ese dia: recalcular para que el
+    # saldo quede al dia sin esperar al job nocturno.
+    try:
+        anio = date.year if hasattr(date, "year") else int(str(date)[:4])
+        recalcular_anio(db, employee_id, anio)
+    except Exception as e:
+        log.warning("recalculo de asistencia fallido para empleado %s: %s", employee_id, e)
 
     return {
         "message":    "Permiso registrado correctamente",

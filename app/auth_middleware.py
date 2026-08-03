@@ -32,6 +32,7 @@ ALGORITHM  = "HS256"
 # ---------------------------------------------------------------------------
 ROLE_ADMIN = 1
 ROLE_USER  = 2
+ROLE_RRHH  = ROLE_ADMIN  # actualizar cuando el rol RRHH tenga ID propio
 # Si existen más roles (ej. RRHH=3) agregalos aquí como constantes
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
