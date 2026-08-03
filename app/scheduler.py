@@ -6,6 +6,7 @@ pierde nada, el ciclo siguiente retoma desde ultimaSync.
 """
 
 import logging
+from datetime import date
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -46,7 +47,6 @@ def _tick_asistencia():
     """
     db = SessionLocal()
     try:
-        from datetime import date
         resultado = recalcular_todos(db, date.today().year)
         log.info("Recalculo de asistencia: %s empleados, %s jornadas",
                  resultado["procesados"], resultado["filas"])

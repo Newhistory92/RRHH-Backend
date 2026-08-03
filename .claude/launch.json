@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "backend",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "uvicorn", "app.main:app", "--reload"],
+      "port": 8000
+    },
+    {
+      "name": "frontend-rrhh",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": ["/c", "cd /d C:\\Users\\Emiliano\\Documents\\RRHH && npm run dev"],
+      "port": 3000
+    }
+  ]
+}

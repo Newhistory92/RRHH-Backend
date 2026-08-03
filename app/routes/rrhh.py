@@ -82,6 +82,7 @@ def get_all_employees(db: Session = Depends(get_db)):
             e.officeId,
             e.managerId,
             e.cronogramaId,
+            e.biometricoId,
             e.createdAt,
             e.updatedAt,
 
@@ -345,6 +346,7 @@ def get_all_employees(db: Session = Depends(get_db)):
             "status":           emp["status"],
             "productivityScore":emp["productivityScore"],
             "horas":            emp["horas"],
+            "biometricoId":     emp["biometricoId"],
             "createdAt":        emp["createdAt"],
             "updatedAt":        emp["updatedAt"],
 
