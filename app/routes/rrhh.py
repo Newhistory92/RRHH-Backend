@@ -420,6 +420,8 @@ def update_condicion_laboral(employee_id: int, data: dict = Body(...), db: Sessi
 
     tipo_contrato = data.get("tipoContrato") or None
 
+    position = data.get("position") or None
+
     if existing:
         update_query = text("""
             UPDATE CondicionLaboral
@@ -428,7 +430,7 @@ def update_condicion_laboral(employee_id: int, data: dict = Body(...), db: Sessi
                 fechaPlanta   = :fechaPlanta,
                 categoria     = :categoria,
                 fechaCategoria= :fechaCategoria,
-                position      = :position
+                position      = COALESCE(:position, position)
             WHERE employeeId = :employeeId
         """)
     else:
@@ -450,7 +452,7 @@ def update_condicion_laboral(employee_id: int, data: dict = Body(...), db: Sessi
         "fechaPlanta":     data.get("fechaPlanta"),
         "categoria":       data.get("categoria"),
         "fechaCategoria":  data.get("fechaCategoria"),
-        "position":        data.get("position"),
+        "position":        position if position else "",
         "employeeId":      employee_id,
     })
     db.commit()
