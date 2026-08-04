@@ -153,7 +153,9 @@ def recalcular_anio(db: Session, employee_id: int, anio: int) -> int:
     desde = max(date(anio, 1, 1), inicio_modulo)
     ingreso = emp.get("fechaIngreso")
     if ingreso is not None:
-        ingreso = ingreso if isinstance(ingreso, date) else ingreso.date()
+        # isinstance(datetime_obj, date) es True porque datetime hereda de date;
+        # hay que verificar el tipo mas especifico primero.
+        ingreso = ingreso.date() if isinstance(ingreso, datetime) else ingreso
         desde = max(desde, ingreso)
     hasta = min(date(anio, 12, 31), date.today())
     if desde > hasta:
