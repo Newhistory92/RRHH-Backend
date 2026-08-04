@@ -206,7 +206,9 @@ def sincronizar_reloj(db: Session, reloj_ip: str,
             db.commit()
             return resultado
 
-        marcar_sync_ok(db, reloj_ip, ahora)
+        previo = ultima_sync(db, reloj_ip)
+        if previo is None or ahora > previo:
+            marcar_sync_ok(db, reloj_ip, ahora)
         db.commit()
     except Exception as e:
         resultado["error"] = str(e)

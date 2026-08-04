@@ -133,6 +133,19 @@ def upsert_correccion(db: Session, employee_id: int, fecha: date,
     db.commit()
 
 
+def borrar_correccion(db: Session, employee_id: int, fecha: date) -> bool:
+    """
+    Elimina la correccion del dia y devuelve True si existia.
+    El recalculo posterior restaurara los extremos del reloj.
+    """
+    resultado = db.execute(text("""
+        DELETE FROM JornadaCorreccion
+        WHERE employeeId = :emp AND fecha = :fecha
+    """), {"emp": employee_id, "fecha": fecha})
+    db.commit()
+    return resultado.rowcount > 0
+
+
 # -- Incidencias --------------------------------------------------------------
 
 def reemplazar_incidencias(db: Session, employee_id: int, desde: date,

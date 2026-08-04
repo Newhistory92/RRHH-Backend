@@ -7,7 +7,7 @@ employeeId por parametro: un usuario sin rol de RRHH no puede ver datos ajenos.
 
 from datetime import date, datetime
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -19,7 +19,7 @@ from app.database.asistencia import (
     saldo_acumulado, tablero, update_config,
 )
 from app.database.asistencia_auditoria import (
-    incidencias_abiertas, ultimos_recalculos, upsert_correccion,
+    borrar_correccion, incidencias_abiertas, ultimos_recalculos, upsert_correccion,
 )
 from app.database.database import SessionLocal
 from app.services.asistencia_recalc import recalcular_anio, recalcular_todos
@@ -110,6 +110,26 @@ def post_correccion_jornada(jornada_id: int, data: dict = Body(...),
     return {"ok": True, "employeeId": jornada["employeeId"], "anio": anio}
 
 
+@router.delete("/jornadas/{jornada_id}/correccion", dependencies=[SOLO_RRHH])
+def delete_correccion_jornada(jornada_id: int, db: Session = Depends(get_db)):
+    """
+    Elimina la carga manual del dia. El proximo recalculo restaura los
+    extremos que marque el reloj.
+    """
+    ensure_tables(db)
+    jornada = get_jornada(db, jornada_id)
+    if not jornada:
+        raise HTTPException(status_code=404, detail="Jornada no encontrada")
+    fecha = jornada["fecha"]
+    fecha = fecha if isinstance(fecha, date) else fecha.date()
+    existia = borrar_correccion(db, jornada["employeeId"], fecha)
+    if not existia:
+        raise HTTPException(status_code=404, detail="No hay correccion para esta jornada")
+    anio = fecha.year
+    recalcular_anio(db, jornada["employeeId"], anio)
+    return {"eliminado": True, "jornada_id": jornada_id, "fecha": fecha.isoformat()}
+
+
 @router.get("/empleado/{employee_id}")
 def get_empleado(employee_id: int, desde: str | None = None,
                  hasta: str | None = None,
@@ -188,13 +208,15 @@ def put_asistencia_config(data: dict = Body(...), db: Session = Depends(get_db))
 
 
 @router.post("/recalcular", dependencies=[SOLO_RRHH])
-def post_recalcular(data: dict = Body(default={}),
+def post_recalcular(background_tasks: BackgroundTasks,
+                    data: dict = Body(default={}),
                     usuario: dict = Depends(get_current_user),
                     db: Session = Depends(get_db)):
     """
     Recalculo manual. Sin cuerpo recalcula todos los empleados del anio en
-    curso; con employeeId, solo ese. Es el disparador que faltaba: el job
-    nocturno requiere que el servidor este vivo a las 3 AM.
+    curso en segundo plano (202 Accepted); con employeeId, solo ese (sincrono).
+    Es el disparador que faltaba: el job nocturno requiere que el servidor
+    este vivo a las 3 AM.
     """
     ensure_tables(db)
     anio = data.get("anio")
@@ -213,13 +235,20 @@ def post_recalcular(data: dict = Body(default={}),
         except (TypeError, ValueError):
             raise HTTPException(status_code=400,
                                 detail="'employeeId' debe ser un entero")
-        filas = recalcular_anio(db, employee_id, anio)
+        try:
+            filas = recalcular_anio(db, employee_id, anio)
+        except Exception as e:
+            raise HTTPException(status_code=500,
+                                detail=f"Error en recalculo de empleado {employee_id}: {e}")
         return {"employeeId": employee_id, "anio": anio,
                 "procesados": 1, "filas": filas, "errores": []}
 
-    resultado = recalcular_todos(db, anio, origen="manual",
-                                 disparado_por=disparado_por)
-    return {"anio": anio, **resultado}
+    # mass recalc path
+    background_tasks.add_task(
+        recalcular_todos, db, anio, origen="manual", disparado_por=disparado_por,
+    )
+    return {"anio": anio, "status": "en_proceso",
+            "mensaje": "El recalculo se ejecuta en segundo plano. Consulta GET /asistencia/recalculos para ver el resultado."}
 
 
 @router.get("/incidencias", dependencies=[SOLO_RRHH])

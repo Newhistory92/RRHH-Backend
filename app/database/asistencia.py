@@ -18,6 +18,8 @@ from app.database.asistencia_auditoria import (
     reemplazar_incidencias,
 )
 
+_tablas_listas = False
+
 CREATE_JORNADA_SQL = """
 IF OBJECT_ID('JornadaDiaria', 'U') IS NULL
 CREATE TABLE JornadaDiaria (
@@ -120,6 +122,9 @@ VALUES (1, 15, 15,
 
 def ensure_tables(db: Session) -> None:
     """DDL idempotente. Cada sentencia en su propio batch con su commit."""
+    global _tablas_listas
+    if _tablas_listas:
+        return
     db.execute(text(CREATE_JORNADA_SQL))
     db.commit()
     db.execute(text(CREATE_INDEX_ESTADO_SQL))
@@ -137,6 +142,7 @@ def ensure_tables(db: Session) -> None:
     db.execute(text(SEED_CONFIG_SQL))
     db.commit()
     auditoria_ensure_tables(db)
+    _tablas_listas = True
 
 
 def get_config(db: Session) -> dict:
