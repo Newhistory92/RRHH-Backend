@@ -72,11 +72,11 @@ def importar_feriados_publicos(db: Session, anio: int) -> dict:
     e inserta los que no existen aun en la tabla Feriado.
     Retorna { importados, ya_existian }.
     """
-    import httpx
+    import requests
 
     url = f"https://api.argentinadatos.com/v1/feriados/{anio}"
     try:
-        resp = httpx.get(url, timeout=10)
+        resp = requests.get(url, timeout=10)
         resp.raise_for_status()
         datos = resp.json()  # [{fecha, tipo, nombre}, ...]
     except Exception as e:
