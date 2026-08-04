@@ -15,7 +15,7 @@ from typing import Optional
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.database.asistencia import get_config, reemplazar_jornadas
+from app.database.asistencia import get_config, reemplazar_jornadas, saldo_acumulado
 from app.database.asistencia_auditoria import (
     abrir_recalculo, cerrar_recalculo, correcciones_por_dia,
 )
@@ -191,10 +191,18 @@ def recalcular_anio(db: Session, employee_id: int, anio: int) -> int:
     resultados = calcular_anio(
         entradas, cfg["toleranciaEntradaMin"], cfg["toleranciaSalidaMin"],
     )
-    return reemplazar_jornadas(
+    filas_count = reemplazar_jornadas(
         db, employee_id, desde, hasta,
         [_a_fila(r) for r in resultados], _a_incidencias(resultados),
     )
+    # Sincroniza Employee.horas con el saldo acumulado real para que el
+    # modal de estadisticas muestre el valor correcto sin consulta extra.
+    nuevo_saldo = saldo_acumulado(db, employee_id)
+    db.execute(text(
+        "UPDATE Employee SET horas = :s WHERE id = :id"
+    ), {"s": round(nuevo_saldo, 2), "id": employee_id})
+    db.commit()
+    return filas_count
 
 
 def recalcular_historia(db: Session, employee_id: int) -> int:
