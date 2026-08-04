@@ -256,6 +256,7 @@ def jornadas_incompletas(db: Session) -> list[dict]:
         FROM JornadaDiaria j
         INNER JOIN Employee e ON e.id = j.employeeId
         WHERE j.estado IN ('incompleta', 'sin_horario')
+          AND j.fecha < CAST(GETDATE() AS date)
         ORDER BY j.fecha DESC, e.name ASC
     """)).mappings().all()
     return [dict(f) for f in filas]
