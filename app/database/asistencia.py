@@ -300,9 +300,8 @@ def reset_inicio_modulo(db: Session) -> date:
     actual. Permite arrancar de cero sin historia incorrecta.
     """
     hoy = date.today()
-    db.execute(text(
-        "DELETE FROM JornadaDiaria WHERE fecha < :hoy"
-    ), {"hoy": hoy})
+    db.execute(text("DELETE FROM JornadaDiaria"))
+    db.execute(text("UPDATE Employee SET horas = 0"))
     db.execute(text("""
         UPDATE AsistenciaConfig
         SET fechaInicioModulo = :hoy, updatedAt = GETDATE()
