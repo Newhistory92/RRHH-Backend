@@ -207,7 +207,7 @@ def put_asistencia_config(data: dict = Body(...), db: Session = Depends(get_db))
     return update_config(db, tol_entrada, tol_salida, fecha_inicio)
 
 
-@router.post("/recalcular", dependencies=[SOLO_RRHH])
+@router.post("/recalcular", dependencies=[SOLO_RRHH], status_code=202)
 def post_recalcular(background_tasks: BackgroundTasks,
                     data: dict = Body(default={}),
                     usuario: dict = Depends(get_current_user),
