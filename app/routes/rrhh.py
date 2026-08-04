@@ -408,7 +408,8 @@ def get_all_employees(db: Session = Depends(get_db)):
 def update_condicion_laboral(employee_id: int, data: dict = Body(...), db: Session = Depends(get_db)):
     """
     Actualiza la condición laboral del empleado.
-    Si no existe un registro, lo crea.
+    Si no existe un registro, lo crea (tipoContrato requerido en ese caso).
+    En UPDATE, COALESCE preserva el tipoContrato existente si no se envía uno nuevo.
     """
     print("🟢 Datos recibidos para Condición Laboral:", data)
 
@@ -417,10 +418,12 @@ def update_condicion_laboral(employee_id: int, data: dict = Body(...), db: Sessi
         {"id": employee_id}
     ).first()
 
+    tipo_contrato = data.get("tipoContrato") or None
+
     if existing:
         update_query = text("""
             UPDATE CondicionLaboral
-            SET tipoContrato  = :tipoContrato,
+            SET tipoContrato  = COALESCE(:tipoContrato, tipoContrato),
                 fechaIngreso  = :fechaIngreso,
                 fechaPlanta   = :fechaPlanta,
                 categoria     = :categoria,
@@ -429,6 +432,11 @@ def update_condicion_laboral(employee_id: int, data: dict = Body(...), db: Sessi
             WHERE employeeId = :employeeId
         """)
     else:
+        if not tipo_contrato:
+            raise HTTPException(
+                status_code=422,
+                detail="tipoContrato es obligatorio al crear la condición laboral"
+            )
         update_query = text("""
             INSERT INTO CondicionLaboral
                 (tipoContrato, fechaIngreso, fechaPlanta, categoria, fechaCategoria, position, employeeId)
@@ -437,7 +445,7 @@ def update_condicion_laboral(employee_id: int, data: dict = Body(...), db: Sessi
         """)
 
     db.execute(update_query, {
-        "tipoContrato":    data.get("tipoContrato"),
+        "tipoContrato":    tipo_contrato,
         "fechaIngreso":    data.get("fechaIngreso"),
         "fechaPlanta":     data.get("fechaPlanta"),
         "categoria":       data.get("categoria"),
