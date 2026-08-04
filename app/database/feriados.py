@@ -64,3 +64,48 @@ def delete_feriado(db: Session, feriado_id: int) -> bool:
     db.execute(text("UPDATE Feriado SET activo = 0 WHERE id = :id"), {"id": feriado_id})
     db.commit()
     return True
+
+
+def importar_feriados_publicos(db: Session, anio: int) -> dict:
+    """
+    Descarga los feriados nacionales argentinos desde api.argentinadatos.com
+    e inserta los que no existen aun en la tabla Feriado.
+    Retorna { importados, ya_existian }.
+    """
+    import requests
+
+    url = f"https://api.argentinadatos.com/v1/feriados/{anio}"
+    try:
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        datos = resp.json()  # [{fecha, tipo, nombre}, ...]
+    except Exception as e:
+        raise RuntimeError(f"Error al consultar la API de feriados: {e}") from e
+
+    # Fechas ya persistidas para ese anio (evita duplicados)
+    existentes = {
+        str(r["fecha"])
+        for r in db.execute(text(
+            "SELECT fecha FROM Feriado WHERE YEAR(fecha) = :anio"
+        ), {"anio": anio}).mappings().all()
+    }
+
+    importados = 0
+    ya_existian = 0
+    ahora = datetime.utcnow()
+    for item in datos:
+        fecha = str(item.get("fecha", ""))
+        nombre = str(item.get("nombre", "Feriado nacional"))
+        if not fecha:
+            continue
+        if fecha in existentes:
+            ya_existian += 1
+            continue
+        db.execute(text("""
+            INSERT INTO Feriado (fecha, nombre, activo, createdAt)
+            VALUES (:fecha, :nombre, 1, :createdAt)
+        """), {"fecha": fecha, "nombre": nombre, "createdAt": ahora})
+        importados += 1
+
+    db.commit()
+    return {"importados": importados, "ya_existian": ya_existian}

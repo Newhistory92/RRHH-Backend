@@ -7,7 +7,7 @@ employeeId por parametro: un usuario sin rol de RRHH no puede ver datos ajenos.
 
 from datetime import date, datetime
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -15,11 +15,15 @@ from app.auth_middleware import (
     ROLE_ADMIN, ROLE_RRHH, get_current_user, require_any_auth, require_roles,
 )
 from app.database.asistencia import (
-    ensure_tables, get_config, get_jornada, jornadas_de, jornadas_incompletas,
-    marcar_correccion, saldo_acumulado, tablero, update_config,
+    biometricos_huerfanos, ensure_tables, get_config, get_jornada,
+    jornadas_de, jornadas_incompletas, reset_inicio_modulo,
+    saldo_acumulado, tablero, update_config,
+)
+from app.database.asistencia_auditoria import (
+    borrar_correccion, incidencias_abiertas, ultimos_recalculos, upsert_correccion,
 )
 from app.database.database import SessionLocal
-from app.services.asistencia_recalc import recalcular_anio
+from app.services.asistencia_recalc import recalcular_anio, recalcular_todos
 
 router = APIRouter(prefix="/asistencia", tags=["Asistencia"])
 
@@ -61,6 +65,24 @@ def get_incompletas(db: Session = Depends(get_db)):
     return {"jornadas": jornadas_incompletas(db)}
 
 
+@router.get("/biometricos-huerfanos", dependencies=[SOLO_RRHH])
+def get_biometricos_huerfanos(db: Session = Depends(get_db)):
+    """IDs del reloj con marcaciones recientes que no estan vinculados a ningun empleado."""
+    ensure_tables(db)
+    return {"huerfanos": biometricos_huerfanos(db)}
+
+
+@router.post("/reset-inicio", dependencies=[SOLO_RRHH])
+def post_reset_inicio(db: Session = Depends(get_db)):
+    """
+    Limpia jornadas anteriores a hoy y mueve fechaInicioModulo al dia de hoy.
+    Permite arrancar de cero sin datos historicos incorrectos.
+    """
+    ensure_tables(db)
+    nueva_fecha = reset_inicio_modulo(db)
+    return {"ok": True, "fechaInicioModulo": nueva_fecha.isoformat()}
+
+
 @router.post("/jornadas/{jornada_id}/correccion", dependencies=[SOLO_RRHH])
 def post_correccion_jornada(jornada_id: int, data: dict = Body(...),
                             usuario: dict = Depends(get_current_user),
@@ -96,14 +118,35 @@ def post_correccion_jornada(jornada_id: int, data: dict = Body(...),
         raise HTTPException(status_code=403,
                             detail="Tu usuario no tiene legajo vinculado para registrar la correccion")
     corregido_por = int(usuario["employeeId"])
-    marcar_correccion(db, jornada_id, entrada, salida,
+    fecha = jornada["fecha"]
+    fecha_date = fecha if isinstance(fecha, date) else fecha.date()
+    upsert_correccion(db, jornada["employeeId"], fecha_date, entrada, salida,
                       corregido_por, data.get("observacion"))
 
-    fecha = jornada["fecha"]
-    anio = fecha.year if isinstance(fecha, date) else fecha.date().year
+    anio = fecha_date.year
     recalcular_anio(db, jornada["employeeId"], anio)
 
     return {"ok": True, "employeeId": jornada["employeeId"], "anio": anio}
+
+
+@router.delete("/jornadas/{jornada_id}/correccion", dependencies=[SOLO_RRHH])
+def delete_correccion_jornada(jornada_id: int, db: Session = Depends(get_db)):
+    """
+    Elimina la carga manual del dia. El proximo recalculo restaura los
+    extremos que marque el reloj.
+    """
+    ensure_tables(db)
+    jornada = get_jornada(db, jornada_id)
+    if not jornada:
+        raise HTTPException(status_code=404, detail="Jornada no encontrada")
+    fecha = jornada["fecha"]
+    fecha = fecha if isinstance(fecha, date) else fecha.date()
+    existia = borrar_correccion(db, jornada["employeeId"], fecha)
+    if not existia:
+        raise HTTPException(status_code=404, detail="No hay correccion para esta jornada")
+    anio = fecha.year
+    recalcular_anio(db, jornada["employeeId"], anio)
+    return {"eliminado": True, "jornada_id": jornada_id, "fecha": fecha.isoformat()}
 
 
 @router.get("/empleado/{employee_id}")
@@ -167,4 +210,85 @@ def put_asistencia_config(data: dict = Body(...), db: Session = Depends(get_db))
     if not (0 <= tol_entrada <= 120) or not (0 <= tol_salida <= 120):
         raise HTTPException(status_code=400,
                             detail="Las tolerancias deben estar entre 0 y 120 minutos")
-    return update_config(db, tol_entrada, tol_salida)
+
+    fecha_inicio = None
+    crudo = data.get("fechaInicioModulo")
+    if crudo not in (None, ""):
+        try:
+            fecha_inicio = date.fromisoformat(str(crudo))
+        except ValueError:
+            raise HTTPException(status_code=400,
+                                detail="fechaInicioModulo debe ser YYYY-MM-DD")
+        if fecha_inicio > date.today():
+            raise HTTPException(status_code=400,
+                                detail="fechaInicioModulo no puede ser futura")
+
+    return update_config(db, tol_entrada, tol_salida, fecha_inicio)
+
+
+@router.post("/recalcular", dependencies=[SOLO_RRHH], status_code=202)
+def post_recalcular(background_tasks: BackgroundTasks,
+                    data: dict = Body(default={}),
+                    usuario: dict = Depends(get_current_user),
+                    db: Session = Depends(get_db)):
+    """
+    Recalculo manual. Sin cuerpo recalcula todos los empleados del anio en
+    curso en segundo plano (202 Accepted); con employeeId, solo ese (sincrono).
+    Es el disparador que faltaba: el job nocturno requiere que el servidor
+    este vivo a las 3 AM.
+    """
+    ensure_tables(db)
+    anio = data.get("anio")
+    try:
+        anio = int(anio) if anio is not None else date.today().year
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="'anio' debe ser un entero")
+    if not (2000 <= anio <= date.today().year + 1):
+        raise HTTPException(status_code=400, detail="'anio' fuera de rango")
+
+    disparado_por = usuario.get("employeeId")
+    employee_id = data.get("employeeId")
+    if employee_id is not None:
+        try:
+            employee_id = int(employee_id)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400,
+                                detail="'employeeId' debe ser un entero")
+        try:
+            filas = recalcular_anio(db, employee_id, anio)
+        except Exception as e:
+            raise HTTPException(status_code=500,
+                                detail=f"Error en recalculo de empleado {employee_id}: {e}")
+        return {"employeeId": employee_id, "anio": anio,
+                "procesados": 1, "filas": filas, "errores": []}
+
+    # mass recalc path — el background task necesita su propia sesion porque
+    # la del request se cierra cuando el handler retorna.
+    def _recalcular(anio_: int, disparado_por_: int):
+        _db = SessionLocal()
+        try:
+            recalcular_todos(_db, anio_, origen="manual", disparado_por=disparado_por_)
+        finally:
+            _db.close()
+
+    background_tasks.add_task(_recalcular, anio, disparado_por)
+    return {"anio": anio, "status": "en_proceso",
+            "mensaje": "El recalculo se ejecuta en segundo plano. Consulta GET /asistencia/recalculos para ver el resultado."}
+
+
+@router.get("/incidencias", dependencies=[SOLO_RRHH])
+def get_incidencias(tipo: str | None = None, desde: str | None = None,
+                    hasta: str | None = None, db: Session = Depends(get_db)):
+    ensure_tables(db)
+    d, h = _rango(desde, hasta)
+    return {"desde": d.isoformat(), "hasta": h.isoformat(),
+            "incidencias": incidencias_abiertas(db, tipo, d, h)}
+
+
+@router.get("/recalculos", dependencies=[SOLO_RRHH])
+def get_recalculos(limite: int = 50, db: Session = Depends(get_db)):
+    ensure_tables(db)
+    if not (1 <= limite <= 200):
+        raise HTTPException(status_code=400,
+                            detail="'limite' debe estar entre 1 y 200")
+    return {"recalculos": ultimos_recalculos(db, limite)}

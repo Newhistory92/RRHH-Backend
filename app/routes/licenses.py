@@ -9,6 +9,7 @@ from typing import Optional
 from app.database.feriados import (
     ensure_table as ensure_feriado_table,
     get_feriados as get_feriados_data,
+    importar_feriados_publicos,
     save_feriado as save_feriado_data,
     delete_feriado as delete_feriado_data,
 )
@@ -1047,3 +1048,20 @@ def delete_feriado_endpoint(feriado_id: int, db: Session = Depends(get_db)):
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Error al eliminar feriado: {str(e)}")
 
+
+@router.post("/feriados/importar/{anio}", dependencies=[Depends(require_rrhh_auth)])
+def importar_feriados_nacionales(anio: int, db: Session = Depends(get_db)):
+    """
+    Descarga los feriados nacionales argentinos de api.argentinadatos.com
+    para el anio indicado y los persiste en la tabla Feriado.
+    Idempotente: no duplica fechas ya existentes.
+    """
+    ensure_feriado_table(db)
+    try:
+        resultado = importar_feriados_publicos(db, anio)
+        return {"success": True, **resultado}
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error al importar feriados: {str(e)}")

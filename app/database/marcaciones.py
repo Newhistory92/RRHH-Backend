@@ -24,8 +24,33 @@ CREATE TABLE Marcacion (
     fechaHora     DATETIME2     NOT NULL,
     verifyMode    NVARCHAR(30)  NULL,
     createdAt     DATETIME2     NOT NULL DEFAULT GETDATE(),
-    CONSTRAINT UQ_Marcacion UNIQUE (relojIp, serialNo)
+    CONSTRAINT UQ_Marcacion UNIQUE (relojIp, serialNo, biometricoId, fechaHora)
 );
+"""
+
+# Migracion: amplia la clave de dedup de 2 a 4 columnas.
+# Un reset del correlativo del dispositivo reutiliza numeros viejos; si la clave
+# solo era (relojIp, serialNo) esos eventos nuevos quedaban bloqueados por filas
+# antiguas con el mismo numero. Con fechaHora + biometricoId en la clave, un
+# numero reutilizado en una fecha distinta es siempre un evento distinto.
+_DROP_UQ_2COL_SQL = """
+IF EXISTS (
+    SELECT 1 FROM sys.key_constraints kc
+    JOIN sys.index_columns ic
+        ON ic.object_id = kc.parent_object_id AND ic.index_id = kc.unique_index_id
+    WHERE kc.name = 'UQ_Marcacion' AND kc.parent_object_id = OBJECT_ID('Marcacion')
+    GROUP BY kc.name HAVING COUNT(*) < 4
+)
+ALTER TABLE Marcacion DROP CONSTRAINT UQ_Marcacion;
+"""
+
+_ADD_UQ_4COL_SQL = """
+IF NOT EXISTS (
+    SELECT 1 FROM sys.key_constraints
+    WHERE name = 'UQ_Marcacion' AND parent_object_id = OBJECT_ID('Marcacion')
+)
+ALTER TABLE Marcacion ADD CONSTRAINT UQ_Marcacion
+    UNIQUE (relojIp, serialNo, biometricoId, fechaHora);
 """
 
 CREATE_INDEX_SQL = """
@@ -61,6 +86,11 @@ WHERE biometricoId IS NOT NULL;
 def ensure_tables(db: Session) -> None:
     """DDL idempotente. Cada sentencia en su propio batch + commit."""
     db.execute(text(CREATE_MARCACION_SQL))
+    db.commit()
+    # Migracion: (relojIp, serialNo) -> (relojIp, serialNo, biometricoId, fechaHora)
+    db.execute(text(_DROP_UQ_2COL_SQL))
+    db.commit()
+    db.execute(text(_ADD_UQ_4COL_SQL))
     db.commit()
     db.execute(text(CREATE_INDEX_SQL))
     db.commit()
@@ -126,12 +156,11 @@ def max_serial_no(db: Session, reloj_ip: str) -> Optional[int]:
 
 def insertar_marcaciones(db: Session, filas: list[dict]) -> int:
     """
-    Inserta descartando las que ya existen por (relojIp, serialNo).
+    Inserta descartando duplicados por (relojIp, serialNo, biometricoId, fechaHora).
 
-    Resuelve los existentes con UNA consulta previa por lote en lugar de
-    apoyarse en el rowcount de un 'IF NOT EXISTS ... INSERT': sobre SQL Server
-    ese rowcount no distingue de forma confiable el insert que ocurrio del que
-    se salteo, y el conteo devuelto se usa para verificar la idempotencia.
+    Un serialNo que el dispositivo reutiliza tras un reset tiene una fechaHora
+    distinta, por lo que NO colisiona con la fila antigua y se inserta normalmente.
+    Resuelve los existentes con UNA consulta previa por lote.
     """
     if not filas:
         return 0
@@ -139,17 +168,20 @@ def insertar_marcaciones(db: Session, filas: list[dict]) -> int:
     reloj_ip = filas[0]["relojIp"]
     seriales = [f["serialNo"] for f in filas]
 
-    # Parametrizado: se genera un bind por serial, nunca interpolacion.
+    # Trae solo los campos que forman la clave compuesta; filtra por serialNo
+    # como primer corte eficiente (el indice lo cubre).
     binds = {f"s{i}": s for i, s in enumerate(seriales)}
     marcadores = ", ".join(f":{k}" for k in binds)
-    existentes = {
-        r["serialNo"]
-        for r in db.execute(text(
-            f"SELECT serialNo FROM Marcacion WHERE relojIp = :ip AND serialNo IN ({marcadores})"
-        ), {"ip": reloj_ip, **binds}).mappings().all()
-    }
+    rows = db.execute(text(
+        f"SELECT serialNo, biometricoId, fechaHora FROM Marcacion"
+        f" WHERE relojIp = :ip AND serialNo IN ({marcadores})"
+    ), {"ip": reloj_ip, **binds}).mappings().all()
+    existentes = {(r["serialNo"], r["biometricoId"], r["fechaHora"]) for r in rows}
 
-    nuevas = [f for f in filas if f["serialNo"] not in existentes]
+    nuevas = [
+        f for f in filas
+        if (f["serialNo"], f["biometricoId"], f["fechaHora"]) not in existentes
+    ]
     ahora = datetime.now()
     insertadas = 0
     for f in nuevas:

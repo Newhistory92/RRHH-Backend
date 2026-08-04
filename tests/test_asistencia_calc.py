@@ -1,23 +1,32 @@
 from datetime import date, datetime
 
 from app.services import asistencia_calc as c
+from app.services import marcaciones_norm as n
 
-JORNADA_8H = c.HorarioDia(horaInicio=8.0, horaFin=16.0, horasTrabajo=8.0)
+JORNADA_8H = n.HorarioDia(horaInicio=8.0, horaFin=16.0, horasTrabajo=8.0)
 
 
 def _dia(fecha=date(2026, 7, 1), marcaciones=None, horario=JORNADA_8H,
          es_feriado=False, tiene_licencia=False, permisos=None,
          entrada_manual=None, salida_manual=None):
-    """Miercoles 2026-07-01 por defecto: dia habil."""
+    """
+    Miercoles 2026-07-01 por defecto: dia habil.
+
+    Arma los extremos pasando por normalizar(), asi los tests del motor
+    ejercitan la misma cadena que produccion.
+    """
+    correccion = None
+    if entrada_manual is not None or salida_manual is not None:
+        correccion = n.Correccion(entrada=entrada_manual, salida=salida_manual)
     return c.EntradaDia(
         fecha=fecha,
-        marcaciones=marcaciones if marcaciones is not None else [],
+        extremos=n.normalizar(
+            marcaciones if marcaciones is not None else [], horario, correccion,
+        ),
         horario=horario,
         es_feriado=es_feriado,
         tiene_licencia=tiene_licencia,
         permisos=permisos if permisos is not None else [],
-        entrada_manual=entrada_manual,
-        salida_manual=salida_manual,
     )
 
 
@@ -148,11 +157,13 @@ def test_el_banco_se_arrastra_cronologicamente_en_el_anio():
 # -- Estados especiales -------------------------------------------------------
 
 def test_una_sola_marcacion_queda_incompleta_sin_penalizar():
+    # 8:00 esta mas cerca del inicio (8.0) que del fin (16.0): es entrada.
     r = c.calcular_dia(_dia(marcaciones=_marcas((8, 0))), 15, 15, 12.0)
     assert r.estado == c.ESTADO_INCOMPLETA
     assert r.saldoDia == 0.0
     assert r.entrada == datetime(2026, 7, 1, 8, 0)
     assert r.salida is None
+    assert n.INCIDENCIA_FALTA_SALIDA in r.incidencias
 
 
 def test_sin_marcaciones_en_dia_habil_es_ausente():
@@ -215,3 +226,56 @@ def test_la_entrada_manual_pisa_la_primera_marcacion():
     )
     assert r.entrada == datetime(2026, 7, 1, 9, 0)
     assert r.horasTrabajadas == 7.0
+
+
+# -- Flags de tolerancia ------------------------------------------------------
+
+def test_flag_de_tolerancia_de_entrada_cuando_se_aplica():
+    r = c.calcular_dia(_dia(marcaciones=_marcas((8, 10), (16, 0))), 15, 15, 12.0)
+    assert r.toleranciaEntradaUsada is True
+    assert r.toleranciaSalidaUsada is False
+
+
+def test_flag_de_tolerancia_de_salida_cuando_se_aplica():
+    r = c.calcular_dia(_dia(marcaciones=_marcas((8, 0), (15, 50))), 15, 15, 12.0)
+    assert r.toleranciaEntradaUsada is False
+    assert r.toleranciaSalidaUsada is True
+
+
+def test_ambas_tolerancias_marcadas():
+    r = c.calcular_dia(_dia(marcaciones=_marcas((8, 10), (15, 50))), 15, 15, 12.0)
+    assert r.toleranciaEntradaUsada is True
+    assert r.toleranciaSalidaUsada is True
+
+
+def test_ninguna_tolerancia_cuando_llega_puntual():
+    r = c.calcular_dia(_dia(marcaciones=_marcas((8, 0), (16, 0))), 15, 15, 12.0)
+    assert r.toleranciaEntradaUsada is False
+    assert r.toleranciaSalidaUsada is False
+
+
+def test_pasada_la_tolerancia_el_flag_queda_en_falso():
+    # 8:20 supera los 15 min: no se perdona, asi que la tolerancia no se "uso".
+    r = c.calcular_dia(_dia(marcaciones=_marcas((8, 20), (16, 0))), 15, 15, 12.0)
+    assert r.toleranciaEntradaUsada is False
+
+
+# -- Incidencias y flags manuales ---------------------------------------------
+
+def test_las_incidencias_llegan_al_resultado():
+    r = c.calcular_dia(_dia(horario=None), 15, 15, 12.0)
+    assert n.INCIDENCIA_SIN_CRONOGRAMA in r.incidencias
+
+
+def test_los_flags_manuales_llegan_al_resultado():
+    r = c.calcular_dia(
+        _dia(marcaciones=_marcas((8, 0)), salida_manual=datetime(2026, 7, 1, 16, 0)),
+        15, 15, 12.0,
+    )
+    assert r.entradaManual is False
+    assert r.salidaManual is True
+
+
+def test_jornada_normal_no_tiene_incidencias():
+    r = c.calcular_dia(_dia(marcaciones=_marcas((8, 0), (16, 0))), 15, 15, 12.0)
+    assert r.incidencias == ()

@@ -13,6 +13,13 @@ from typing import Optional
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.database.asistencia_auditoria import (
+    ensure_tables as auditoria_ensure_tables,
+    reemplazar_incidencias,
+)
+
+_tablas_listas = False
+
 CREATE_JORNADA_SQL = """
 IF OBJECT_ID('JornadaDiaria', 'U') IS NULL
 CREATE TABLE JornadaDiaria (
@@ -59,6 +66,48 @@ IF COL_LENGTH('Permission','oficial') IS NULL
 ALTER TABLE Permission ADD oficial BIT NOT NULL DEFAULT 0;
 """
 
+ALTER_TOLERANCIA_ENTRADA_SQL = """
+IF COL_LENGTH('JornadaDiaria','toleranciaEntradaUsada') IS NULL
+ALTER TABLE JornadaDiaria ADD toleranciaEntradaUsada BIT NOT NULL DEFAULT 0;
+"""
+
+ALTER_TOLERANCIA_SALIDA_SQL = """
+IF COL_LENGTH('JornadaDiaria','toleranciaSalidaUsada') IS NULL
+ALTER TABLE JornadaDiaria ADD toleranciaSalidaUsada BIT NOT NULL DEFAULT 0;
+"""
+
+# Columnas que dejaron de ser derivadas: se mudaron a JornadaCorreccion.
+# entradaManual y salidaManual se conservan porque si son derivadas -se
+# reconstruyen leyendo JornadaCorreccion- y evitan un join en cada lectura.
+COLUMNAS_A_ELIMINAR = ("corregidoPor", "corregidoAt", "observacion")
+
+
+def _drop_columna(db: Session, tabla: str, columna: str) -> None:
+    """
+    Suelta el constraint de default antes de borrar la columna: SQL Server no
+    permite eliminar una columna con default sin quitarlo primero.
+
+    tabla y columna son constantes del propio codigo, nunca entrada del
+    usuario: la interpolacion no expone inyeccion.
+    """
+    db.execute(text(f"""
+        IF COL_LENGTH('{tabla}','{columna}') IS NOT NULL
+        BEGIN
+            DECLARE @c NVARCHAR(200);
+            SELECT @c = dc.name
+            FROM sys.default_constraints dc
+            JOIN sys.columns c ON c.object_id = dc.parent_object_id
+                              AND c.column_id = dc.parent_column_id
+            WHERE dc.parent_object_id = OBJECT_ID('{tabla}')
+              AND c.name = '{columna}';
+            IF @c IS NOT NULL
+                EXEC('ALTER TABLE {tabla} DROP CONSTRAINT ' + @c);
+            ALTER TABLE {tabla} DROP COLUMN {columna};
+        END
+    """))
+    db.commit()
+
+
 # La fecha de arranque por defecto es la marcacion mas antigua registrada: antes
 # de esa fecha no existe informacion de reloj y calcular ausencias seria inventar.
 SEED_CONFIG_SQL = """
@@ -73,6 +122,9 @@ VALUES (1, 15, 15,
 
 def ensure_tables(db: Session) -> None:
     """DDL idempotente. Cada sentencia en su propio batch con su commit."""
+    global _tablas_listas
+    if _tablas_listas:
+        return
     db.execute(text(CREATE_JORNADA_SQL))
     db.commit()
     db.execute(text(CREATE_INDEX_ESTADO_SQL))
@@ -81,8 +133,16 @@ def ensure_tables(db: Session) -> None:
     db.commit()
     db.execute(text(ALTER_PERMISSION_OFICIAL_SQL))
     db.commit()
+    db.execute(text(ALTER_TOLERANCIA_ENTRADA_SQL))
+    db.commit()
+    db.execute(text(ALTER_TOLERANCIA_SALIDA_SQL))
+    db.commit()
+    for columna in COLUMNAS_A_ELIMINAR:
+        _drop_columna(db, "JornadaDiaria", columna)
     db.execute(text(SEED_CONFIG_SQL))
     db.commit()
+    auditoria_ensure_tables(db)
+    _tablas_listas = True
 
 
 def get_config(db: Session) -> dict:
@@ -96,23 +156,34 @@ def get_config(db: Session) -> dict:
     return dict(fila)
 
 
-def update_config(db: Session, tol_entrada: int, tol_salida: int) -> dict:
+def update_config(db: Session, tol_entrada: int, tol_salida: int,
+                  fecha_inicio: Optional[date] = None) -> dict:
+    """
+    fecha_inicio en None deja la que estaba. Se puede mover hacia atras cuando
+    se recupera historico de los relojes, y hacia adelante para descartar un
+    periodo poco confiable.
+    """
     db.execute(text("""
         UPDATE AsistenciaConfig
-        SET toleranciaEntradaMin = :te, toleranciaSalidaMin = :ts, updatedAt = GETDATE()
+        SET toleranciaEntradaMin = :te,
+            toleranciaSalidaMin  = :ts,
+            fechaInicioModulo    = COALESCE(:fi, fechaInicioModulo),
+            updatedAt            = GETDATE()
         WHERE id = 1
-    """), {"te": int(tol_entrada), "ts": int(tol_salida)})
+    """), {"te": int(tol_entrada), "ts": int(tol_salida), "fi": fecha_inicio})
     db.commit()
     return get_config(db)
 
 
 def reemplazar_jornadas(db: Session, employee_id: int, desde: date, hasta: date,
-                        filas: list[dict]) -> int:
+                        filas: list[dict], incidencias: list[dict]) -> int:
     """
-    Borra el rango del empleado y reinserta. JornadaDiaria es derivada, asi que
-    reemplazar es mas simple y mas seguro que reconciliar fila por fila: no deja
-    huerfanas cuando un dia deja de corresponder (por ejemplo al cargarse una
-    licencia que lo cubre).
+    Borra el rango del empleado y reinserta jornadas e incidencias en la misma
+    transaccion. Las dos son derivadas, asi que reemplazar es mas simple y mas
+    seguro que reconciliar fila por fila: no deja huerfanas cuando un dia deja
+    de corresponder (por ejemplo al cargarse una licencia que lo cubre).
+
+    JornadaCorreccion no se toca: es dato propio y vive en su tabla.
     """
     db.execute(text("""
         DELETE FROM JornadaDiaria
@@ -126,14 +197,15 @@ def reemplazar_jornadas(db: Session, employee_id: int, desde: date, hasta: date,
                 (employeeId, fecha, estado, horasRequeridas, horasTrabajadas,
                  saldoDia, entrada, salida, entradaManual, salidaManual,
                  permisoBanco, permisoDeuda, permisoOficial,
-                 corregidoPor, corregidoAt, observacion, calculadoAt)
+                 toleranciaEntradaUsada, toleranciaSalidaUsada, calculadoAt)
             VALUES
                 (:employeeId, :fecha, :estado, :horasRequeridas, :horasTrabajadas,
                  :saldoDia, :entrada, :salida, :entradaManual, :salidaManual,
                  :permisoBanco, :permisoDeuda, :permisoOficial,
-                 :corregidoPor, :corregidoAt, :observacion, :calculadoAt)
+                 :toleranciaEntradaUsada, :toleranciaSalidaUsada, :calculadoAt)
         """), {**f, "employeeId": employee_id, "calculadoAt": ahora})
 
+    reemplazar_incidencias(db, employee_id, desde, hasta, incidencias)
     db.commit()
     return len(filas)
 
@@ -146,15 +218,34 @@ def saldo_acumulado(db: Session, employee_id: int) -> float:
 
 
 def jornadas_de(db: Session, employee_id: int, desde: date, hasta: date) -> list[dict]:
+    """Jornadas del rango con sus incidencias agregadas como lista."""
     filas = db.execute(text("""
-        SELECT id, fecha, estado, horasRequeridas, horasTrabajadas, saldoDia,
-               entrada, salida, entradaManual, salidaManual,
-               permisoBanco, permisoDeuda, permisoOficial, corregidoPor, observacion
-        FROM JornadaDiaria
-        WHERE employeeId = :emp AND fecha >= :desde AND fecha <= :hasta
-        ORDER BY fecha DESC
+        SELECT j.id, j.fecha, j.estado, j.horasRequeridas, j.horasTrabajadas,
+               j.saldoDia, j.entrada, j.salida, j.entradaManual, j.salidaManual,
+               j.permisoBanco, j.permisoDeuda, j.permisoOficial,
+               j.toleranciaEntradaUsada, j.toleranciaSalidaUsada,
+               c.corregidoPor, c.observacion
+        FROM JornadaDiaria j
+        LEFT JOIN JornadaCorreccion c
+               ON c.employeeId = j.employeeId AND c.fecha = j.fecha
+        WHERE j.employeeId = :emp AND j.fecha >= :desde AND j.fecha <= :hasta
+        ORDER BY j.fecha DESC
     """), {"emp": employee_id, "desde": desde, "hasta": hasta}).mappings().all()
-    return [dict(f) for f in filas]
+
+    incidencias = db.execute(text("""
+        SELECT fecha, tipo FROM JornadaIncidencia
+        WHERE employeeId = :emp AND fecha >= :desde AND fecha <= :hasta
+    """), {"emp": employee_id, "desde": desde, "hasta": hasta}).mappings().all()
+    por_dia: dict[date, list[str]] = {}
+    for i in incidencias:
+        d = i["fecha"] if isinstance(i["fecha"], date) else i["fecha"].date()
+        por_dia.setdefault(d, []).append(i["tipo"])
+
+    salida = []
+    for f in filas:
+        d = f["fecha"] if isinstance(f["fecha"], date) else f["fecha"].date()
+        salida.append({**dict(f), "incidencias": por_dia.get(d, [])})
+    return salida
 
 
 def jornadas_incompletas(db: Session) -> list[dict]:
@@ -165,6 +256,7 @@ def jornadas_incompletas(db: Session) -> list[dict]:
         FROM JornadaDiaria j
         INNER JOIN Employee e ON e.id = j.employeeId
         WHERE j.estado IN ('incompleta', 'sin_horario')
+          AND j.fecha < CAST(GETDATE() AS date)
         ORDER BY j.fecha DESC, e.name ASC
     """)).mappings().all()
     return [dict(f) for f in filas]
@@ -172,8 +264,9 @@ def jornadas_incompletas(db: Session) -> list[dict]:
 
 def tablero(db: Session, desde: date, hasta: date) -> list[dict]:
     """
-    Una fila por empleado vinculado a un reloj. El saldo es historico completo;
+    Una fila por empleado (activo). El saldo es historico completo;
     ausencias e incompletas se cuentan solo dentro del rango consultado.
+    Incluye empleados sin biometricoId para que RRHH los vea pendientes.
     """
     filas = db.execute(text("""
         SELECT
@@ -196,42 +289,63 @@ def tablero(db: Session, desde: date, hasta: date) -> list[dict]:
             WHERE fecha >= :desde AND fecha <= :hasta
             GROUP BY employeeId
         ) rango ON rango.employeeId = e.id
-        WHERE e.biometricoId IS NOT NULL
         ORDER BY e.name ASC
     """), {"desde": desde, "hasta": hasta}).mappings().all()
     return [dict(f) for f in filas]
 
 
+def reset_inicio_modulo(db: Session) -> date:
+    """
+    Limpia jornadas anteriores a hoy y mueve fechaInicioModulo a la fecha
+    actual. Permite arrancar de cero sin historia incorrecta.
+    """
+    hoy = date.today()
+    db.execute(text(
+        "DELETE FROM JornadaDiaria WHERE fecha < :hoy"
+    ), {"hoy": hoy})
+    db.execute(text("""
+        UPDATE AsistenciaConfig
+        SET fechaInicioModulo = :hoy, updatedAt = GETDATE()
+        WHERE id = 1
+    """), {"hoy": hoy})
+    db.commit()
+    return hoy
+
+
+def biometricos_huerfanos(db: Session, dias: int = 14) -> list[dict]:
+    """
+    IDs del reloj que tienen marcaciones recientes pero no estan vinculados
+    a ningun Employee. Sirve para que RRHH detecte cuando el biometricoId de
+    un empleado esta mal cargado o falta.
+    """
+    from datetime import timedelta
+    desde = datetime.now() - timedelta(days=dias)
+    filas = db.execute(text("""
+        SELECT m.biometricoId,
+               COUNT(*)        AS cantidadMarcas,
+               MAX(m.fechaHora) AS ultimaMarcacion
+        FROM Marcacion m
+        WHERE m.fechaHora >= :desde
+          AND NOT EXISTS (
+              SELECT 1 FROM Employee e WHERE e.biometricoId = m.biometricoId
+          )
+        GROUP BY m.biometricoId
+        ORDER BY ultimaMarcacion DESC
+    """), {"desde": desde}).mappings().all()
+    return [dict(f) for f in filas]
+
+
 def get_jornada(db: Session, jornada_id: int) -> Optional[dict]:
     fila = db.execute(text("""
-        SELECT id, employeeId, fecha, estado,
-               horasRequeridas, horasTrabajadas, saldoDia,
-               entrada, salida, entradaManual, salidaManual,
-               permisoBanco, permisoDeuda, permisoOficial,
-               corregidoPor, observacion
-        FROM JornadaDiaria WHERE id = :id
+        SELECT j.id, j.employeeId, j.fecha, j.estado,
+               j.horasRequeridas, j.horasTrabajadas, j.saldoDia,
+               j.entrada, j.salida, j.entradaManual, j.salidaManual,
+               j.permisoBanco, j.permisoDeuda, j.permisoOficial,
+               j.toleranciaEntradaUsada, j.toleranciaSalidaUsada,
+               c.corregidoPor, c.observacion
+        FROM JornadaDiaria j
+        LEFT JOIN JornadaCorreccion c
+               ON c.employeeId = j.employeeId AND c.fecha = j.fecha
+        WHERE j.id = :id
     """), {"id": jornada_id}).mappings().first()
     return dict(fila) if fila else None
-
-
-def marcar_correccion(db: Session, jornada_id: int,
-                      entrada: Optional[datetime], salida: Optional[datetime],
-                      corregido_por: int, observacion: Optional[str]) -> None:
-    """
-    Persiste la carga manual. Los flags entradaManual y salidaManual son la
-    fuente de verdad para el recalculo: sin ellos, la proxima corrida
-    sobrescribiria la correccion con lo que dice el reloj.
-    """
-    db.execute(text("""
-        UPDATE JornadaDiaria
-        SET entrada       = COALESCE(:entrada, entrada),
-            salida        = COALESCE(:salida, salida),
-            entradaManual = CASE WHEN :entrada IS NOT NULL THEN 1 ELSE entradaManual END,
-            salidaManual  = CASE WHEN :salida  IS NOT NULL THEN 1 ELSE salidaManual  END,
-            corregidoPor  = :por,
-            corregidoAt   = GETDATE(),
-            observacion   = :obs
-        WHERE id = :id
-    """), {"entrada": entrada, "salida": salida, "por": corregido_por,
-           "obs": (observacion or None), "id": jornada_id})
-    db.commit()
