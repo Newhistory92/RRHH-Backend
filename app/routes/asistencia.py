@@ -243,10 +243,16 @@ def post_recalcular(background_tasks: BackgroundTasks,
         return {"employeeId": employee_id, "anio": anio,
                 "procesados": 1, "filas": filas, "errores": []}
 
-    # mass recalc path
-    background_tasks.add_task(
-        recalcular_todos, db, anio, origen="manual", disparado_por=disparado_por,
-    )
+    # mass recalc path — el background task necesita su propia sesion porque
+    # la del request se cierra cuando el handler retorna.
+    def _recalcular(anio_: int, disparado_por_: int):
+        _db = SessionLocal()
+        try:
+            recalcular_todos(_db, anio_, origen="manual", disparado_por=disparado_por_)
+        finally:
+            _db.close()
+
+    background_tasks.add_task(_recalcular, anio, disparado_por)
     return {"anio": anio, "status": "en_proceso",
             "mensaje": "El recalculo se ejecuta en segundo plano. Consulta GET /asistencia/recalculos para ver el resultado."}
 
