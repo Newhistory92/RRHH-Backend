@@ -264,8 +264,9 @@ def jornadas_incompletas(db: Session) -> list[dict]:
 
 def tablero(db: Session, desde: date, hasta: date) -> list[dict]:
     """
-    Una fila por empleado vinculado a un reloj. El saldo es historico completo;
+    Una fila por empleado (activo). El saldo es historico completo;
     ausencias e incompletas se cuentan solo dentro del rango consultado.
+    Incluye empleados sin biometricoId para que RRHH los vea pendientes.
     """
     filas = db.execute(text("""
         SELECT
@@ -288,10 +289,27 @@ def tablero(db: Session, desde: date, hasta: date) -> list[dict]:
             WHERE fecha >= :desde AND fecha <= :hasta
             GROUP BY employeeId
         ) rango ON rango.employeeId = e.id
-        WHERE e.biometricoId IS NOT NULL
         ORDER BY e.name ASC
     """), {"desde": desde, "hasta": hasta}).mappings().all()
     return [dict(f) for f in filas]
+
+
+def reset_inicio_modulo(db: Session) -> date:
+    """
+    Limpia jornadas anteriores a hoy y mueve fechaInicioModulo a la fecha
+    actual. Permite arrancar de cero sin historia incorrecta.
+    """
+    hoy = date.today()
+    db.execute(text(
+        "DELETE FROM JornadaDiaria WHERE fecha < :hoy"
+    ), {"hoy": hoy})
+    db.execute(text("""
+        UPDATE AsistenciaConfig
+        SET fechaInicioModulo = :hoy, updatedAt = GETDATE()
+        WHERE id = 1
+    """), {"hoy": hoy})
+    db.commit()
+    return hoy
 
 
 def biometricos_huerfanos(db: Session, dias: int = 14) -> list[dict]:

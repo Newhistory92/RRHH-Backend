@@ -16,7 +16,8 @@ from app.auth_middleware import (
 )
 from app.database.asistencia import (
     biometricos_huerfanos, ensure_tables, get_config, get_jornada,
-    jornadas_de, jornadas_incompletas, saldo_acumulado, tablero, update_config,
+    jornadas_de, jornadas_incompletas, reset_inicio_modulo,
+    saldo_acumulado, tablero, update_config,
 )
 from app.database.asistencia_auditoria import (
     borrar_correccion, incidencias_abiertas, ultimos_recalculos, upsert_correccion,
@@ -69,6 +70,17 @@ def get_biometricos_huerfanos(db: Session = Depends(get_db)):
     """IDs del reloj con marcaciones recientes que no estan vinculados a ningun empleado."""
     ensure_tables(db)
     return {"huerfanos": biometricos_huerfanos(db)}
+
+
+@router.post("/reset-inicio", dependencies=[SOLO_RRHH])
+def post_reset_inicio(db: Session = Depends(get_db)):
+    """
+    Limpia jornadas anteriores a hoy y mueve fechaInicioModulo al dia de hoy.
+    Permite arrancar de cero sin datos historicos incorrectos.
+    """
+    ensure_tables(db)
+    nueva_fecha = reset_inicio_modulo(db)
+    return {"ok": True, "fechaInicioModulo": nueva_fecha.isoformat()}
 
 
 @router.post("/jornadas/{jornada_id}/correccion", dependencies=[SOLO_RRHH])
