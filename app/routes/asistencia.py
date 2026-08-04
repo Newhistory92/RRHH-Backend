@@ -15,8 +15,8 @@ from app.auth_middleware import (
     ROLE_ADMIN, ROLE_RRHH, get_current_user, require_any_auth, require_roles,
 )
 from app.database.asistencia import (
-    ensure_tables, get_config, get_jornada, jornadas_de, jornadas_incompletas,
-    saldo_acumulado, tablero, update_config,
+    biometricos_huerfanos, ensure_tables, get_config, get_jornada,
+    jornadas_de, jornadas_incompletas, saldo_acumulado, tablero, update_config,
 )
 from app.database.asistencia_auditoria import (
     borrar_correccion, incidencias_abiertas, ultimos_recalculos, upsert_correccion,
@@ -62,6 +62,13 @@ def get_tablero(desde: str | None = None, hasta: str | None = None,
 def get_incompletas(db: Session = Depends(get_db)):
     ensure_tables(db)
     return {"jornadas": jornadas_incompletas(db)}
+
+
+@router.get("/biometricos-huerfanos", dependencies=[SOLO_RRHH])
+def get_biometricos_huerfanos(db: Session = Depends(get_db)):
+    """IDs del reloj con marcaciones recientes que no estan vinculados a ningun empleado."""
+    ensure_tables(db)
+    return {"huerfanos": biometricos_huerfanos(db)}
 
 
 @router.post("/jornadas/{jornada_id}/correccion", dependencies=[SOLO_RRHH])

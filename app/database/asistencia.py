@@ -294,6 +294,29 @@ def tablero(db: Session, desde: date, hasta: date) -> list[dict]:
     return [dict(f) for f in filas]
 
 
+def biometricos_huerfanos(db: Session, dias: int = 14) -> list[dict]:
+    """
+    IDs del reloj que tienen marcaciones recientes pero no estan vinculados
+    a ningun Employee. Sirve para que RRHH detecte cuando el biometricoId de
+    un empleado esta mal cargado o falta.
+    """
+    from datetime import timedelta
+    desde = datetime.now() - timedelta(days=dias)
+    filas = db.execute(text("""
+        SELECT m.biometricoId,
+               COUNT(*)        AS cantidadMarcas,
+               MAX(m.fechaHora) AS ultimaMarcacion
+        FROM Marcacion m
+        WHERE m.fechaHora >= :desde
+          AND NOT EXISTS (
+              SELECT 1 FROM Employee e WHERE e.biometricoId = m.biometricoId
+          )
+        GROUP BY m.biometricoId
+        ORDER BY ultimaMarcacion DESC
+    """), {"desde": desde}).mappings().all()
+    return [dict(f) for f in filas]
+
+
 def get_jornada(db: Session, jornada_id: int) -> Optional[dict]:
     fila = db.execute(text("""
         SELECT j.id, j.employeeId, j.fecha, j.estado,
