@@ -76,6 +76,31 @@ IF COL_LENGTH('JornadaDiaria','toleranciaSalidaUsada') IS NULL
 ALTER TABLE JornadaDiaria ADD toleranciaSalidaUsada BIT NOT NULL DEFAULT 0;
 """
 
+ALTER_ABUSO_ENTRADA_SQL = """
+IF COL_LENGTH('JornadaDiaria','abusoEntrada') IS NULL
+ALTER TABLE JornadaDiaria ADD abusoEntrada BIT NOT NULL DEFAULT 0;
+"""
+
+ALTER_ABUSO_SALIDA_SQL = """
+IF COL_LENGTH('JornadaDiaria','abusoSalida') IS NULL
+ALTER TABLE JornadaDiaria ADD abusoSalida BIT NOT NULL DEFAULT 0;
+"""
+
+ALTER_CONFIG_ESTRICTA_ENTRADA_SQL = """
+IF COL_LENGTH('AsistenciaConfig','toleranciaEstrictaEntradaMin') IS NULL
+ALTER TABLE AsistenciaConfig ADD toleranciaEstrictaEntradaMin INT NOT NULL DEFAULT 7;
+"""
+
+ALTER_CONFIG_ESTRICTA_SALIDA_SQL = """
+IF COL_LENGTH('AsistenciaConfig','toleranciaEstrictaSalidaMin') IS NULL
+ALTER TABLE AsistenciaConfig ADD toleranciaEstrictaSalidaMin INT NOT NULL DEFAULT 5;
+"""
+
+ALTER_CONFIG_DIAS_RACHA_SQL = """
+IF COL_LENGTH('AsistenciaConfig','diasRachaAlerta') IS NULL
+ALTER TABLE AsistenciaConfig ADD diasRachaAlerta INT NOT NULL DEFAULT 3;
+"""
+
 # Columnas que dejaron de ser derivadas: se mudaron a JornadaCorreccion.
 # entradaManual y salidaManual se conservan porque si son derivadas -se
 # reconstruyen leyendo JornadaCorreccion- y evitan un join en cada lectura.
@@ -137,6 +162,16 @@ def ensure_tables(db: Session) -> None:
     db.commit()
     db.execute(text(ALTER_TOLERANCIA_SALIDA_SQL))
     db.commit()
+    db.execute(text(ALTER_ABUSO_ENTRADA_SQL))
+    db.commit()
+    db.execute(text(ALTER_ABUSO_SALIDA_SQL))
+    db.commit()
+    db.execute(text(ALTER_CONFIG_ESTRICTA_ENTRADA_SQL))
+    db.commit()
+    db.execute(text(ALTER_CONFIG_ESTRICTA_SALIDA_SQL))
+    db.commit()
+    db.execute(text(ALTER_CONFIG_DIAS_RACHA_SQL))
+    db.commit()
     for columna in COLUMNAS_A_ELIMINAR:
         _drop_columna(db, "JornadaDiaria", columna)
     db.execute(text(SEED_CONFIG_SQL))
@@ -147,30 +182,45 @@ def ensure_tables(db: Session) -> None:
 
 def get_config(db: Session) -> dict:
     fila = db.execute(text("""
-        SELECT toleranciaEntradaMin, toleranciaSalidaMin, fechaInicioModulo
+        SELECT toleranciaEntradaMin, toleranciaSalidaMin, fechaInicioModulo,
+               toleranciaEstrictaEntradaMin, toleranciaEstrictaSalidaMin,
+               diasRachaAlerta
         FROM AsistenciaConfig WHERE id = 1
     """)).mappings().first()
     if fila is None:
         return {"toleranciaEntradaMin": 15, "toleranciaSalidaMin": 15,
-                "fechaInicioModulo": date.today()}
+                "fechaInicioModulo": date.today(),
+                "toleranciaEstrictaEntradaMin": 7,
+                "toleranciaEstrictaSalidaMin": 5,
+                "diasRachaAlerta": 3}
     return dict(fila)
 
 
 def update_config(db: Session, tol_entrada: int, tol_salida: int,
-                  fecha_inicio: Optional[date] = None) -> dict:
+                  fecha_inicio: Optional[date] = None,
+                  estricta_entrada: Optional[int] = None,
+                  estricta_salida: Optional[int] = None,
+                  dias_racha: Optional[int] = None) -> dict:
     """
     fecha_inicio en None deja la que estaba. Se puede mover hacia atras cuando
     se recupera historico de los relojes, y hacia adelante para descartar un
     periodo poco confiable.
+
+    Los tres umbrales de alerta en None tambien dejan lo que estaba: permite
+    actualizar solo las tolerancias comunes sin pisar la politica de alertas.
     """
     db.execute(text("""
         UPDATE AsistenciaConfig
         SET toleranciaEntradaMin = :te,
             toleranciaSalidaMin  = :ts,
             fechaInicioModulo    = COALESCE(:fi, fechaInicioModulo),
+            toleranciaEstrictaEntradaMin = COALESCE(:ee, toleranciaEstrictaEntradaMin),
+            toleranciaEstrictaSalidaMin  = COALESCE(:es, toleranciaEstrictaSalidaMin),
+            diasRachaAlerta      = COALESCE(:dr, diasRachaAlerta),
             updatedAt            = GETDATE()
         WHERE id = 1
-    """), {"te": int(tol_entrada), "ts": int(tol_salida), "fi": fecha_inicio})
+    """), {"te": int(tol_entrada), "ts": int(tol_salida), "fi": fecha_inicio,
+           "ee": estricta_entrada, "es": estricta_salida, "dr": dias_racha})
     db.commit()
     return get_config(db)
 
@@ -197,12 +247,14 @@ def reemplazar_jornadas(db: Session, employee_id: int, desde: date, hasta: date,
                 (employeeId, fecha, estado, horasRequeridas, horasTrabajadas,
                  saldoDia, entrada, salida, entradaManual, salidaManual,
                  permisoBanco, permisoDeuda, permisoOficial,
-                 toleranciaEntradaUsada, toleranciaSalidaUsada, calculadoAt)
+                 toleranciaEntradaUsada, toleranciaSalidaUsada,
+                 abusoEntrada, abusoSalida, calculadoAt)
             VALUES
                 (:employeeId, :fecha, :estado, :horasRequeridas, :horasTrabajadas,
                  :saldoDia, :entrada, :salida, :entradaManual, :salidaManual,
                  :permisoBanco, :permisoDeuda, :permisoOficial,
-                 :toleranciaEntradaUsada, :toleranciaSalidaUsada, :calculadoAt)
+                 :toleranciaEntradaUsada, :toleranciaSalidaUsada,
+                 :abusoEntrada, :abusoSalida, :calculadoAt)
         """), {**f, "employeeId": employee_id, "calculadoAt": ahora})
 
     reemplazar_incidencias(db, employee_id, desde, hasta, incidencias)
@@ -224,6 +276,7 @@ def jornadas_de(db: Session, employee_id: int, desde: date, hasta: date) -> list
                j.saldoDia, j.entrada, j.salida, j.entradaManual, j.salidaManual,
                j.permisoBanco, j.permisoDeuda, j.permisoOficial,
                j.toleranciaEntradaUsada, j.toleranciaSalidaUsada,
+               j.abusoEntrada, j.abusoSalida,
                c.corregidoPor, c.observacion
         FROM JornadaDiaria j
         LEFT JOIN JornadaCorreccion c
@@ -341,6 +394,7 @@ def get_jornada(db: Session, jornada_id: int) -> Optional[dict]:
                j.entrada, j.salida, j.entradaManual, j.salidaManual,
                j.permisoBanco, j.permisoDeuda, j.permisoOficial,
                j.toleranciaEntradaUsada, j.toleranciaSalidaUsada,
+               j.abusoEntrada, j.abusoSalida,
                c.corregidoPor, c.observacion
         FROM JornadaDiaria j
         LEFT JOIN JornadaCorreccion c
@@ -348,3 +402,37 @@ def get_jornada(db: Session, jornada_id: int) -> Optional[dict]:
         WHERE j.id = :id
     """), {"id": jornada_id}).mappings().first()
     return dict(fila) if fila else None
+
+
+def _a_dia_abuso(fila) -> "DiaAbuso":
+    from app.services.asistencia_alertas import DiaAbuso
+    f = fila["fecha"]
+    return DiaAbuso(
+        fecha=f if isinstance(f, date) else f.date(),
+        estado=fila["estado"],
+        abuso=bool(fila["abusoEntrada"]) or bool(fila["abusoSalida"]),
+    )
+
+
+def dias_abuso_de(db: Session, employee_id: int,
+                  desde: date, hasta: date) -> list:
+    filas = db.execute(text("""
+        SELECT fecha, estado, abusoEntrada, abusoSalida
+        FROM JornadaDiaria
+        WHERE employeeId = :emp AND fecha >= :desde AND fecha <= :hasta
+        ORDER BY fecha
+    """), {"emp": employee_id, "desde": desde, "hasta": hasta}).mappings().all()
+    return [_a_dia_abuso(f) for f in filas]
+
+
+def dias_abuso_todos(db: Session, desde: date, hasta: date) -> dict[int, list]:
+    filas = db.execute(text("""
+        SELECT employeeId, fecha, estado, abusoEntrada, abusoSalida
+        FROM JornadaDiaria
+        WHERE fecha >= :desde AND fecha <= :hasta
+        ORDER BY employeeId, fecha
+    """), {"desde": desde, "hasta": hasta}).mappings().all()
+    por_empleado: dict[int, list] = {}
+    for f in filas:
+        por_empleado.setdefault(int(f["employeeId"]), []).append(_a_dia_abuso(f))
+    return por_empleado
