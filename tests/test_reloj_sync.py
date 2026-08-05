@@ -49,6 +49,95 @@ def test_descarta_ruido_de_puerta_y_eventos_sin_persona():
     assert fila["verifyMode"] == "fpOrface"
 
 
+# -- Modos de autenticacion ---------------------------------------------------
+# Los equipos estan configurados en "fpOrface" y emiten un minor distinto segun
+# como se haya identificado la persona. Capturar solo el de huella perdia el 40%
+# de las marcaciones reales: sobre 2942 eventos de tres dias, minor=38 traia 723
+# marcas y minor=75 (rostro) mas minor=104 aportaban otras 478 que se descartaban
+# en silencio.
+
+def _evento(minor, serial, bio="264", hora="2026-08-05T07:07:16-03:00"):
+    return {"AcsEvent": {"responseStatusStrg": "OK", "numOfMatches": 1,
+                         "InfoList": [{
+                             "major": 5, "minor": minor, "time": hora,
+                             "employeeNoString": bio, "serialNo": serial,
+                             "currentVerifyMode": "fpOrface",
+                         }]}}
+
+
+def test_captura_la_marcacion_por_huella():
+    filas = s.extraer_marcaciones(_evento(38, 187572), "10.25.2.24")
+    assert [f["biometricoId"] for f in filas] == ["264"]
+
+
+def test_captura_la_marcacion_por_rostro():
+    # Caso real: la entrada del 2026-08-05 07:07:16 llegaba con minor=75 y se perdia.
+    filas = s.extraer_marcaciones(_evento(75, 187572), "10.25.2.24")
+    assert [f["biometricoId"] for f in filas] == ["264"]
+    assert filas[0]["serialNo"] == 187572
+
+
+def test_captura_la_marcacion_combinada():
+    filas = s.extraer_marcaciones(_evento(104, 187600), "10.25.2.24")
+    assert [f["biometricoId"] for f in filas] == ["264"]
+
+
+def test_un_modo_desconocido_con_persona_se_registra_pero_no_se_pierde_en_silencio(caplog):
+    """
+    Si el equipo empieza a emitir otro minor con persona -- por ejemplo al
+    habilitar tarjeta -- tiene que verse en el log. Es exactamente el modo en
+    que se perdio el rostro durante semanas.
+    """
+    with caplog.at_level("WARNING"):
+        filas = s.extraer_marcaciones(_evento(1, 190000), "10.25.2.24")
+
+    assert filas == []
+    assert "minor" in caplog.text
+    assert "1" in caplog.text
+
+
+def test_los_eventos_de_puerta_no_ensucian_el_log(caplog):
+    """21 y 22 no traen persona: son ruido esperado, no un modo nuevo."""
+    payload = {"AcsEvent": {"responseStatusStrg": "OK", "numOfMatches": 2,
+                            "InfoList": [
+                                {"major": 5, "minor": 21, "serialNo": 1,
+                                 "time": "2026-08-05T05:52:25-03:00"},
+                                {"major": 5, "minor": 22, "serialNo": 2,
+                                 "time": "2026-08-05T05:52:30-03:00"},
+                            ]}}
+    with caplog.at_level("WARNING"):
+        assert s.extraer_marcaciones(payload, "10.25.2.24") == []
+    assert caplog.text == ""
+
+
+def test_el_cliente_isapi_no_filtra_por_un_solo_modo():
+    """
+    El filtro que viaja al equipo no puede fijar un minor concreto: si lo hace,
+    el equipo devuelve unicamente ese modo y los demas nunca llegan a
+    extraer_marcaciones. minor=0 significa "todos" en ISAPI.
+    """
+    from app.services import isapi_client
+
+    capturado = {}
+
+    def falso_pedir(metodo, ip, path, json_body=None):
+        capturado["cond"] = json_body["AcsEventCond"]
+        return {"AcsEvent": {"responseStatusStrg": "OK", "numOfMatches": 0,
+                             "InfoList": []}}
+
+    original = isapi_client.pedir
+    isapi_client.pedir = falso_pedir
+    try:
+        isapi_client.buscar_eventos(
+            "10.25.2.24", datetime(2026, 8, 5, 0, 0), datetime(2026, 8, 6, 0, 0), 0,
+        )
+    finally:
+        isapi_client.pedir = original
+
+    assert capturado["cond"]["major"] == 5
+    assert capturado["cond"]["minor"] == 0
+
+
 def test_fecha_se_guarda_como_hora_local_sin_tzinfo():
     fila = s.extraer_marcaciones(PAYLOAD_MIXTO, "10.25.2.24")[0]
     assert fila["fechaHora"] == datetime(2026, 7, 28, 6, 8, 29)

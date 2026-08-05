@@ -30,7 +30,16 @@ MAX_RESULTS = 100
 MAX_PAGINAS = 500  # tope de seguridad: 50.000 marcaciones por corrida
 
 MAJOR_ACCESO = 5
-MINOR_MARCACION_VALIDA = 38
+
+# Los equipos estan configurados en "fpOrface" y emiten un minor distinto segun
+# como se identifico la persona. Medido sobre 2942 eventos de tres dias en los
+# dos relojes, estos tres son los unicos que traen employeeNoString:
+#
+#     38  -> 723 marcas     75 -> 405 marcas     104 -> 73 marcas
+#
+# El resto (21, 22, 39, 151) son eventos de puerta y nunca traen persona.
+# Aceptar solo el 38 descartaba en silencio el 40% de las marcaciones reales.
+MINORS_MARCACION_VALIDA = frozenset({38, 75, 104})
 
 
 def calcular_ventana(ultima: Optional[datetime], ahora: datetime,
@@ -97,10 +106,22 @@ def extraer_marcaciones(payload: dict, reloj_ip: str) -> list[dict]:
     for ev in eventos:
         if ev.get("major") != MAJOR_ACCESO:
             continue
-        if ev.get("minor") != MINOR_MARCACION_VALIDA:
-            continue
         bio = str(ev.get("employeeNoString") or "").strip()
         if not bio:
+            # Evento de puerta: ruido esperado, no se loguea.
+            continue
+        minor = ev.get("minor")
+        if minor not in MINORS_MARCACION_VALIDA:
+            # Trae persona pero el modo no esta en la lista: es un modo de
+            # autenticacion nuevo (por ejemplo si habilitan tarjeta). Se avisa
+            # fuerte en vez de descartarlo callado, que es como se perdieron las
+            # marcaciones por rostro durante semanas.
+            log.warning(
+                "Reloj %s: evento con persona (bio=%s) y minor=%s desconocido. "
+                "Si es un modo de marcacion valido hay que agregarlo a "
+                "MINORS_MARCACION_VALIDA.",
+                reloj_ip, bio, minor,
+            )
             continue
         fecha = _parsear_fecha(ev.get("time"))
         if fecha is None:

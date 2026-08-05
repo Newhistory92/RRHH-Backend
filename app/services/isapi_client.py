@@ -92,8 +92,19 @@ def pedir(metodo: str, ip: str, path: str, json_body: Optional[dict] = None) -> 
 def buscar_eventos(ip: str, desde: datetime, hasta: datetime,
                    posicion: int, max_results: int = 100) -> dict:
     """
-    Busca marcaciones validas en una ventana. El filtro major/minor va DENTRO
-    de AcsEventCond para que filtre el equipo y no viajen los eventos de puerta.
+    Busca eventos de control de acceso en una ventana.
+
+    El filtro pide major=5 (control de acceso) con minor=0, que en ISAPI
+    significa "todos los subtipos". NO se fija un minor concreto a proposito:
+    los equipos estan en modo "fpOrface" y emiten un minor distinto segun como
+    se identifico la persona -- huella, rostro o combinado. Pedir uno solo hacia
+    que el equipo devolviera unicamente ese modo y el resto de las marcaciones
+    nunca llegara al sync.
+
+    A cambio viajan tambien los eventos de puerta, que no traen persona:
+    extraer_marcaciones() los descarta.
+
+    El equipo rechaza con HTTP 400 un major sin minor, por eso el 0 explicito.
     """
     cond = {
         "AcsEventCond": {
@@ -101,7 +112,7 @@ def buscar_eventos(ip: str, desde: datetime, hasta: datetime,
             "searchResultPosition": posicion,
             "maxResults": max_results,
             "major": 5,
-            "minor": 38,
+            "minor": 0,
             "startTime": desde.strftime("%Y-%m-%dT%H:%M:%S-03:00"),
             "endTime": hasta.strftime("%Y-%m-%dT%H:%M:%S-03:00"),
         }
