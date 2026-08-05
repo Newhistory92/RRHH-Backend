@@ -15,10 +15,11 @@ from app.auth_middleware import (
     ROLE_ADMIN, ROLE_RRHH, get_current_user, require_any_auth, require_roles,
 )
 from app.database.asistencia import (
-    biometricos_huerfanos, ensure_tables, get_config, get_jornada,
-    jornadas_de, jornadas_incompletas, reset_inicio_modulo,
-    saldo_acumulado, tablero, update_config,
+    biometricos_huerfanos, dias_abuso_de, dias_abuso_todos, ensure_tables,
+    get_config, get_jornada, jornadas_de, jornadas_incompletas,
+    reset_inicio_modulo, saldo_acumulado, tablero, update_config,
 )
+from app.services.asistencia_alertas import resumir, validar_umbrales
 from app.database.asistencia_auditoria import (
     borrar_correccion, incidencias_abiertas, ultimos_recalculos, upsert_correccion,
 )
@@ -56,7 +57,42 @@ def get_tablero(desde: str | None = None, hasta: str | None = None,
                 db: Session = Depends(get_db)):
     ensure_tables(db)
     d, h = _rango(desde, hasta)
-    return {"desde": d.isoformat(), "hasta": h.isoformat(), "empleados": tablero(db, d, h)}
+    cfg = get_config(db)
+    filas = tablero(db, d, h)
+    por_empleado = dias_abuso_todos(db, d, h)
+    for fila in filas:
+        r = resumir(por_empleado.get(fila["employeeId"], []), cfg["diasRachaAlerta"])
+        fila["diasAbuso"] = r.diasAbuso
+        fila["rachaMaxima"] = r.rachaMaxima
+        fila["alerta"] = r.alerta
+    return {"desde": d.isoformat(), "hasta": h.isoformat(), "empleados": filas}
+
+
+@router.get("/alertas-tolerancia", dependencies=[SOLO_RRHH])
+def get_alertas_tolerancia(desde: str | None = None, hasta: str | None = None,
+                           db: Session = Depends(get_db)):
+    ensure_tables(db)
+    d, h = _rango(desde, hasta)
+    cfg = get_config(db)
+    nombres = {
+        int(f["id"]): f["name"]
+        for f in db.execute(text("SELECT id, name FROM Employee")).mappings().all()
+    }
+    empleados = []
+    for employee_id, dias in dias_abuso_todos(db, d, h).items():
+        r = resumir(dias, cfg["diasRachaAlerta"])
+        if not r.alerta:
+            continue
+        empleados.append({
+            "employeeId": employee_id,
+            "employeeName": nombres.get(employee_id, ""),
+            "diasAbuso": r.diasAbuso,
+            "rachaMaxima": r.rachaMaxima,
+            "fechas": [f.isoformat() for f in r.fechasRachaMaxima],
+        })
+    empleados.sort(key=lambda x: (-x["rachaMaxima"], x["employeeName"]))
+    return {"desde": d.isoformat(), "hasta": h.isoformat(),
+            "empleados": empleados, "diasRachaAlerta": cfg["diasRachaAlerta"]}
 
 
 @router.get("/incompletas", dependencies=[SOLO_RRHH])
@@ -149,6 +185,19 @@ def delete_correccion_jornada(jornada_id: int, db: Session = Depends(get_db)):
     return {"eliminado": True, "jornada_id": jornada_id, "fecha": fecha.isoformat()}
 
 
+def _resumen_abuso(db: Session, employee_id: int, desde, hasta) -> dict:
+    cfg = get_config(db)
+    r = resumir(dias_abuso_de(db, employee_id, desde, hasta), cfg["diasRachaAlerta"])
+    return {
+        "diasAbuso": r.diasAbuso,
+        "rachaMaxima": r.rachaMaxima,
+        "fechasRachaMaxima": [f.isoformat() for f in r.fechasRachaMaxima],
+        "alerta": r.alerta,
+        "toleranciaEstrictaEntradaMin": cfg["toleranciaEstrictaEntradaMin"],
+        "toleranciaEstrictaSalidaMin": cfg["toleranciaEstrictaSalidaMin"],
+    }
+
+
 @router.get("/empleado/{employee_id}")
 def get_empleado(employee_id: int, desde: str | None = None,
                  hasta: str | None = None,
@@ -162,6 +211,7 @@ def get_empleado(employee_id: int, desde: str | None = None,
         "employeeId": employee_id,
         "saldoAcumulado": saldo_acumulado(db, employee_id),
         "jornadas": jornadas_de(db, employee_id, d, h),
+        "abuso": _resumen_abuso(db, employee_id, d, h),
     }
 
 
@@ -189,6 +239,7 @@ def get_mi_asistencia(desde: str | None = None, hasta: str | None = None,
     return {
         "saldoAcumulado": saldo_acumulado(db, employee_id),
         "jornadas": jornadas_de(db, employee_id, d, h),
+        "abuso": _resumen_abuso(db, employee_id, d, h),
     }
 
 
@@ -223,7 +274,27 @@ def put_asistencia_config(data: dict = Body(...), db: Session = Depends(get_db))
             raise HTTPException(status_code=400,
                                 detail="fechaInicioModulo no puede ser futura")
 
-    return update_config(db, tol_entrada, tol_salida, fecha_inicio)
+    def _entero_opcional(clave: str) -> int | None:
+        crudo = data.get(clave)
+        if crudo in (None, ""):
+            return None
+        try:
+            return int(crudo)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"{clave} debe ser un entero")
+
+    estricta_entrada = _entero_opcional("toleranciaEstrictaEntradaMin")
+    estricta_salida = _entero_opcional("toleranciaEstrictaSalidaMin")
+    dias_racha = _entero_opcional("diasRachaAlerta")
+
+    try:
+        validar_umbrales(tol_entrada, tol_salida,
+                         estricta_entrada, estricta_salida, dias_racha)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return update_config(db, tol_entrada, tol_salida, fecha_inicio,
+                         estricta_entrada, estricta_salida, dias_racha)
 
 
 @router.post("/recalcular", dependencies=[SOLO_RRHH], status_code=202)

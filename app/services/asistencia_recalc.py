@@ -20,7 +20,7 @@ from app.database.asistencia_auditoria import (
     abrir_recalculo, cerrar_recalculo, correcciones_por_dia,
 )
 from app.services.asistencia_calc import (
-    EntradaDia, Permiso, ResultadoDia, calcular_anio,
+    EntradaDia, Permiso, ResultadoDia, Tolerancias, calcular_anio,
 )
 from app.services.marcaciones_norm import Correccion, HorarioDia, normalizar
 
@@ -127,6 +127,8 @@ def _a_fila(r: ResultadoDia) -> dict:
         "permisoOficial": round(r.permisoOficial, 2),
         "toleranciaEntradaUsada": r.toleranciaEntradaUsada,
         "toleranciaSalidaUsada": r.toleranciaSalidaUsada,
+        "abusoEntrada": r.abusoEntrada,
+        "abusoSalida": r.abusoSalida,
     }
 
 
@@ -188,9 +190,12 @@ def recalcular_anio(db: Session, employee_id: int, anio: int) -> int:
             permisos=permisos.get(d, []),
         ))
 
-    resultados = calcular_anio(
-        entradas, cfg["toleranciaEntradaMin"], cfg["toleranciaSalidaMin"],
-    )
+    resultados = calcular_anio(entradas, Tolerancias(
+        entradaMin=cfg["toleranciaEntradaMin"],
+        salidaMin=cfg["toleranciaSalidaMin"],
+        estrictaEntradaMin=cfg["toleranciaEstrictaEntradaMin"],
+        estrictaSalidaMin=cfg["toleranciaEstrictaSalidaMin"],
+    ))
     filas_count = reemplazar_jornadas(
         db, employee_id, desde, hasta,
         [_a_fila(r) for r in resultados], _a_incidencias(resultados),
