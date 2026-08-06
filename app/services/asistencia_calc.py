@@ -26,14 +26,16 @@ ESTADO_INCOMPLETA = "incompleta"
 ESTADO_AUSENTE = "ausente"
 ESTADO_FERIADO = "feriado"
 ESTADO_LICENCIA = "licencia"
+ESTADO_JUSTIFICADA = "justificada"
 ESTADO_SIN_HORARIO = "sin_horario"
 
 # Re-export: los consumidores historicos importan HorarioDia desde aca.
 __all__ = [
     "BANCO_PERMISO_ANUAL_HORAS", "DIAS_HABILES", "ESTADO_OK",
     "ESTADO_INCOMPLETA", "ESTADO_AUSENTE", "ESTADO_FERIADO", "ESTADO_LICENCIA",
-    "ESTADO_SIN_HORARIO", "HorarioDia", "Permiso", "EntradaDia", "ResultadoDia",
-    "Tolerancias", "AjusteTolerancia", "calcular_dia", "calcular_anio",
+    "ESTADO_JUSTIFICADA", "ESTADO_SIN_HORARIO", "HorarioDia", "Permiso",
+    "EntradaDia", "ResultadoDia", "Tolerancias", "AjusteTolerancia",
+    "calcular_dia", "calcular_anio",
 ]
 
 
@@ -68,6 +70,8 @@ class EntradaDia:
     es_feriado: bool
     tiene_licencia: bool
     permisos: list[Permiso]
+    # Ultimo y con default: las construcciones que no lo pasan siguen andando.
+    justificada: bool = False
 
 
 @dataclass(frozen=True)
@@ -194,6 +198,11 @@ def calcular_dia(entrada_dia: EntradaDia, tolerancias: Tolerancias,
     permiso_deuda = permiso_regular - permiso_banco
 
     if entrada is None and salida is None:
+        # La justificacion se evalua aca y no antes: si mas tarde aparece una
+        # marcacion por correccion manual, la persona trabajo y se le cuentan
+        # las horas. Un parte medico no puede borrar presencia real.
+        if e.justificada:
+            return _resultado(e, ESTADO_JUSTIFICADA, 0.0, 0.0, 0.0)
         # Ausencia: se le exige la jornada completa. Los permisos de un dia sin
         # marcaciones no descuentan nada, no hay presencia que ajustar.
         return _resultado(

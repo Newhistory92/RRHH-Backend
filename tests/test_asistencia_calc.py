@@ -10,7 +10,7 @@ TOL = c.Tolerancias(entradaMin=15, salidaMin=15,
 
 def _dia(fecha=date(2026, 7, 1), marcaciones=None, horario=JORNADA_8H,
          es_feriado=False, tiene_licencia=False, permisos=None,
-         entrada_manual=None, salida_manual=None):
+         entrada_manual=None, salida_manual=None, justificada=False):
     """
     Miercoles 2026-07-01 por defecto: dia habil.
 
@@ -29,6 +29,7 @@ def _dia(fecha=date(2026, 7, 1), marcaciones=None, horario=JORNADA_8H,
         es_feriado=es_feriado,
         tiene_licencia=tiene_licencia,
         permisos=permisos if permisos is not None else [],
+        justificada=justificada,
     )
 
 
@@ -379,3 +380,49 @@ def test_los_flags_manuales_llegan_al_resultado():
 def test_jornada_normal_no_tiene_incidencias():
     r = c.calcular_dia(_dia(marcaciones=_marcas((8, 0), (16, 0))), TOL, 12.0)
     assert r.incidencias == ()
+
+
+# -- Justificacion de ausencias -----------------------------------------------
+
+def test_ausencia_justificada_no_resta_horas():
+    r = c.calcular_dia(_dia(justificada=True), TOL, 12.0)
+    assert r.estado == c.ESTADO_JUSTIFICADA
+    assert r.horasRequeridas == 0.0
+    assert r.horasTrabajadas == 0.0
+    assert r.saldoDia == 0.0
+
+
+def test_ausencia_sin_justificar_sigue_restando_la_jornada():
+    r = c.calcular_dia(_dia(), TOL, 12.0)
+    assert r.estado == c.ESTADO_AUSENTE
+    assert r.horasRequeridas == 8.0
+    assert r.saldoDia == -8.0
+
+
+def test_la_justificacion_no_borra_las_horas_realmente_trabajadas():
+    # Si aparece una marcacion despues de justificar, la persona trabajo:
+    # se le cuentan las horas y el dia no queda como justificado.
+    r = c.calcular_dia(
+        _dia(marcaciones=_marcas((8, 0), (16, 0)), justificada=True), TOL, 12.0,
+    )
+    assert r.estado == c.ESTADO_OK
+    assert r.horasTrabajadas == 8.0
+
+
+def test_con_licencia_y_justificacion_gana_la_licencia():
+    r = c.calcular_dia(_dia(tiene_licencia=True, justificada=True), TOL, 12.0)
+    assert r.estado == c.ESTADO_LICENCIA
+
+
+def test_un_dia_no_laborable_justificado_sigue_sin_generar_fila():
+    # Sabado 2026-07-04.
+    r = c.calcular_dia(_dia(fecha=date(2026, 7, 4), justificada=True), TOL, 12.0)
+    assert r is None
+
+
+def test_una_jornada_incompleta_justificada_sigue_incompleta():
+    # Falta un extremo: no es una ausencia, asi que la justificacion no aplica.
+    r = c.calcular_dia(
+        _dia(marcaciones=_marcas((8, 0)), justificada=True), TOL, 12.0,
+    )
+    assert r.estado == c.ESTADO_INCOMPLETA
