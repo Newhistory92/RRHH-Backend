@@ -19,6 +19,7 @@ from app.database.asistencia import get_config, reemplazar_jornadas, saldo_acumu
 from app.database.asistencia_auditoria import (
     abrir_recalculo, cerrar_recalculo, correcciones_por_dia,
 )
+from app.database.asistencia_justificaciones import dias_justificados
 from app.services.asistencia_calc import (
     EntradaDia, Permiso, ResultadoDia, Tolerancias, calcular_anio,
 )
@@ -168,6 +169,7 @@ def recalcular_anio(db: Session, employee_id: int, anio: int) -> int:
     feriados = _feriados(db, desde, hasta)
     licencias = _dias_con_licencia(db, employee_id, desde, hasta)
     permisos = _permisos_por_dia(db, employee_id, desde, hasta)
+    justificados = dias_justificados(db, employee_id, desde, hasta)
 
     horario = None
     if emp["horaInicio"] is not None and emp["horaFin"] is not None:
@@ -188,6 +190,7 @@ def recalcular_anio(db: Session, employee_id: int, anio: int) -> int:
             es_feriado=d in feriados,
             tiene_licencia=d in licencias,
             permisos=permisos.get(d, []),
+            justificada=d in justificados,
         ))
 
     resultados = calcular_anio(entradas, Tolerancias(
