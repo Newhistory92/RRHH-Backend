@@ -2,7 +2,7 @@ import os
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from app.cors_config import setup_cors
-from app.routes import employee, user, auth, role, active, rrhh, departments, tests, feedback, licenses, obrasocial, stats, configtest, contracts, professions, schedules, reubicacion, publications, activos_config, activos, activos_modelos, relojes, asistencia
+from app.routes import employee, user, auth, role, active, rrhh, departments, tests, feedback, licenses, obrasocial, stats, configtest, contracts, professions, schedules, reubicacion, publications, activos_config, activos, activos_modelos, relojes, asistencia, asistencia_ausencias
 from app.routes.auth import init_blacklist
 from app.scheduler import iniciar_scheduler, detener_scheduler
 from app.database.database import SessionLocal
@@ -64,6 +64,7 @@ app.include_router(activos_modelos.router)
 app.include_router(activos.router)
 app.include_router(relojes.router)
 app.include_router(asistencia.router)
+app.include_router(asistencia_ausencias.router)
 
 @app.get("/")
 def root():
