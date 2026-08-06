@@ -16,8 +16,9 @@ from app.auth_middleware import (
 )
 from app.database.asistencia import (
     biometricos_huerfanos, dias_abuso_de, dias_abuso_todos, ensure_tables,
-    get_config, get_jornada, jornadas_de, jornadas_incompletas,
-    reset_inicio_modulo, saldo_acumulado, tablero, update_config,
+    get_config, get_jornada, jornadas_abuso_todos, jornadas_de,
+    jornadas_incompletas, reset_inicio_modulo, saldo_acumulado, tablero,
+    update_config,
 )
 from app.services.asistencia_alertas import resumir, validar_umbrales
 from app.database.asistencia_auditoria import (
@@ -78,6 +79,7 @@ def get_alertas_tolerancia(desde: str | None = None, hasta: str | None = None,
         int(f["id"]): f["name"]
         for f in db.execute(text("SELECT id, name FROM Employee")).mappings().all()
     }
+    detalle = jornadas_abuso_todos(db, d, h)
     empleados = []
     for employee_id, dias in dias_abuso_todos(db, d, h).items():
         r = resumir(dias, cfg["diasRachaAlerta"])
@@ -89,6 +91,7 @@ def get_alertas_tolerancia(desde: str | None = None, hasta: str | None = None,
             "diasAbuso": r.diasAbuso,
             "rachaMaxima": r.rachaMaxima,
             "fechas": [f.isoformat() for f in r.fechasRachaMaxima],
+            "jornadas": detalle.get(employee_id, []),
         })
     empleados.sort(key=lambda x: (-x["rachaMaxima"], x["employeeName"]))
     return {"desde": d.isoformat(), "hasta": h.isoformat(),

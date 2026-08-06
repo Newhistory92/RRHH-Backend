@@ -436,3 +436,33 @@ def dias_abuso_todos(db: Session, desde: date, hasta: date) -> dict[int, list]:
     for f in filas:
         por_empleado.setdefault(int(f["employeeId"]), []).append(_a_dia_abuso(f))
     return por_empleado
+
+
+def jornadas_abuso_todos(db: Session, desde: date,
+                         hasta: date) -> dict[int, list[dict]]:
+    """
+    Los dias con abuso del rango, con la hora que se marco en cada extremo.
+
+    Es el detalle que necesita el panel de RRHH para mostrar la marcacion
+    concreta y no solo la fecha. Va aparte de dias_abuso_todos porque aquella
+    alimenta el calculo de la racha, que solo mira el flag: cargarla con los
+    horarios haria mas pesada la consulta de todos los empleados del tablero.
+    """
+    filas = db.execute(text("""
+        SELECT employeeId, fecha, entrada, salida, abusoEntrada, abusoSalida
+        FROM JornadaDiaria
+        WHERE fecha >= :desde AND fecha <= :hasta
+          AND (abusoEntrada = 1 OR abusoSalida = 1)
+        ORDER BY employeeId, fecha
+    """), {"desde": desde, "hasta": hasta}).mappings().all()
+    por_empleado: dict[int, list[dict]] = {}
+    for f in filas:
+        d = f["fecha"] if isinstance(f["fecha"], date) else f["fecha"].date()
+        por_empleado.setdefault(int(f["employeeId"]), []).append({
+            "fecha": d.isoformat(),
+            "entrada": f["entrada"].isoformat() if f["entrada"] else None,
+            "salida": f["salida"].isoformat() if f["salida"] else None,
+            "abusoEntrada": bool(f["abusoEntrada"]),
+            "abusoSalida": bool(f["abusoSalida"]),
+        })
+    return por_empleado
