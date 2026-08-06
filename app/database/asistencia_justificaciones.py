@@ -126,7 +126,7 @@ def dias_justificados(db: Session, employee_id: int,
         SELECT fecha FROM JornadaJustificacion
         WHERE employeeId = :emp AND fecha >= :desde AND fecha <= :hasta
     """), {"emp": employee_id, "desde": desde, "hasta": hasta}).mappings().all()
-    return {f["fecha"] if isinstance(f["fecha"], date) else f["fecha"].date()
+    return {f["fecha"].date() if isinstance(f["fecha"], datetime) else f["fecha"]
             for f in filas}
 
 
@@ -148,7 +148,7 @@ def justificaciones_de(db: Session, employee_id: int, desde: date,
 
     detalle: dict[date, dict] = {}
     for f in filas:
-        d = f["fecha"] if isinstance(f["fecha"], date) else f["fecha"].date()
+        d = f["fecha"].date() if isinstance(f["fecha"], datetime) else f["fecha"]
         detalle[d] = {
             "documentoId": int(f["documentoId"]),
             "fileName": f["fileName"],
