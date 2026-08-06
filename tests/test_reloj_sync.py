@@ -195,24 +195,45 @@ def test_la_carga_inicial_de_treinta_dias_da_treinta_y_un_ventanas():
 
 # -- Deteccion de truncamiento ------------------------------------------------
 
-def test_respuesta_en_el_tope_exacto_sin_mas_paginas_parece_truncada():
-    payload = {"AcsEvent": {"responseStatusStrg": "OK",
-                            "numOfMatches": s.MAX_RESULTS}}
-    assert s.parece_truncado(payload) is True
+def test_el_total_declarado_sale_de_total_matches():
+    assert s.total_declarado({"AcsEvent": {"totalMatches": 395}}) == 395
 
 
-def test_respuesta_por_debajo_del_tope_no_parece_truncada():
-    payload = {"AcsEvent": {"responseStatusStrg": "OK",
-                            "numOfMatches": s.MAX_RESULTS - 1}}
-    assert s.parece_truncado(payload) is False
+def test_sin_total_matches_no_hay_total_declarado():
+    assert s.total_declarado({"AcsEvent": {}}) is None
+    assert s.total_declarado({}) is None
 
 
-def test_respuesta_en_el_tope_pero_con_mas_paginas_no_parece_truncada():
-    # El equipo avisa que hay mas: esta paginando bien, no truncando.
-    payload = {"AcsEvent": {"responseStatusStrg": "MORE",
-                            "numOfMatches": s.MAX_RESULTS}}
-    assert s.parece_truncado(payload) is False
+def test_se_cuentan_los_eventos_realmente_entregados():
+    # Lo que vale es la lista que llego, no lo que el equipo dice haber mandado.
+    payload = {"AcsEvent": {"numOfMatches": 30, "InfoList": [{}, {}, {}]}}
+    assert s.eventos_entregados(payload) == 3
 
 
-def test_payload_vacio_no_parece_truncado():
-    assert s.parece_truncado({}) is False
+def test_pagina_vacia_no_entrega_eventos():
+    assert s.eventos_entregados({}) == 0
+
+
+def test_entregar_menos_de_lo_declarado_es_ventana_incompleta():
+    assert s.ventana_incompleta(254, 395) is True
+
+
+def test_entregar_todo_lo_declarado_no_es_incompleto():
+    assert s.ventana_incompleta(395, 395) is False
+
+
+def test_sin_declaracion_no_se_puede_afirmar_que_falte():
+    # Si el equipo no dice cuantos hay, no se puede acusar de incompleta una
+    # ventana: se la da por buena antes que frenar el cursor para siempre.
+    assert s.ventana_incompleta(0, None) is False
+
+
+def test_el_guard_dispara_con_la_paginacion_real_de_los_equipos():
+    # Regresion del hueco del 2026-08-05. Los equipos paginan de a 30 y
+    # declaran 395; la heuristica vieja comparaba numOfMatches contra
+    # MAX_RESULTS=100, un valor que estos relojes no emiten nunca, asi que no
+    # podia dispararse y el cursor avanzaba por encima del hueco.
+    pagina = {"AcsEvent": {"responseStatusStrg": "OK", "numOfMatches": 30,
+                           "totalMatches": 395, "InfoList": [{}] * 30}}
+    assert s.ventana_incompleta(
+        s.eventos_entregados(pagina), s.total_declarado(pagina)) is True

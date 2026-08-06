@@ -73,18 +73,46 @@ def ventanas_diarias(desde: datetime,
         actual = fin
 
 
-def parece_truncado(payload: dict) -> bool:
+def total_declarado(payload: dict) -> Optional[int]:
     """
-    El equipo devolvio exactamente el tope pedido y dijo que no hay mas.
+    Cuantos eventos dice el equipo que matchean la ventana ENTERA, no la pagina.
 
-    Es el sintoma de un dispositivo que corta la respuesta por su cuenta en vez
-    de paginar: si de verdad no hubiera mas eventos, el numero seria menor al
-    tope casi siempre.
+    Es el unico dato de completitud fiable que dan estos relojes: viaja igual en
+    todas las paginas y coincide exacto con la suma de lo entregado (medido:
+    395 = 30x13 + 5, y 200 = 30x6 + 20).
     """
     ev = (payload or {}).get("AcsEvent") or {}
-    if ev.get("responseStatusStrg") == "MORE":
+    total = ev.get("totalMatches")
+    return total if isinstance(total, int) else None
+
+
+def eventos_entregados(payload: dict) -> int:
+    """
+    Cuantos eventos trajo esta pagina, contados sobre la lista que llego.
+
+    Se cuenta InfoList y no numOfMatches: el que importa es lo que se puede
+    procesar, no lo que el equipo afirma haber mandado.
+    """
+    return len(((payload or {}).get("AcsEvent") or {}).get("InfoList") or [])
+
+
+def ventana_incompleta(entregados: int, declarado: Optional[int]) -> bool:
+    """
+    El equipo declaro mas eventos de los que termino entregando.
+
+    Reemplaza a la heuristica anterior, que comparaba numOfMatches contra
+    MAX_RESULTS. Esa comparacion no podia dar True nunca: los equipos paginan
+    de a 30 y ese numero jamas alcanza el tope de 100 que se les pide. El guard
+    era codigo muerto, y por eso una ventana que volvio incompleta se daba por
+    buena y ultimaSync avanzaba por encima del hueco, que es como se perdio la
+    tarde del 2026-08-05.
+
+    Sin totalMatches no se puede afirmar que falte nada: se da la ventana por
+    buena antes que frenar el cursor para siempre.
+    """
+    if declarado is None:
         return False
-    return ev.get("numOfMatches") == MAX_RESULTS
+    return entregados < declarado
 
 
 def _parsear_fecha(crudo: str) -> Optional[datetime]:
@@ -153,20 +181,25 @@ def _sincronizar_ventana(db: Session, reloj_ip: str, desde: datetime,
     """
     posicion = 0
     max_visto = 0
+    entregados = 0
+    declarado: Optional[int] = None
     for _ in range(MAX_PAGINAS):
         payload = buscar_eventos(reloj_ip, desde, hasta, posicion, MAX_RESULTS)
+        entregados += eventos_entregados(payload)
+        if declarado is None:
+            declarado = total_declarado(payload)
         filas = extraer_marcaciones(payload, reloj_ip)
         resultado["leidos"] += len(filas)
         if filas:
             resultado["insertados"] += insertar_marcaciones(db, filas)
             max_visto = max(max_visto, max(f["serialNo"] for f in filas))
         if not hay_mas_paginas(payload):
-            if parece_truncado(payload):
+            if ventana_incompleta(entregados, declarado):
                 log.warning(
-                    "Reloj %s: la ventana %s a %s devolvio el tope exacto de "
-                    "%s resultados sin indicar mas paginas. El equipo pudo "
-                    "haber cortado la respuesta.",
-                    reloj_ip, desde, hasta, MAX_RESULTS,
+                    "Reloj %s: la ventana %s a %s declaro %s eventos y entrego "
+                    "%s. Falta data: no se avanza ultimaSync para que el ciclo "
+                    "siguiente reintente.",
+                    reloj_ip, desde, hasta, declarado, entregados,
                 )
                 resultado["ventanasTruncadas"].append(
                     f"{desde.isoformat()}/{hasta.isoformat()}"
