@@ -8,6 +8,7 @@ from app.scheduler import iniciar_scheduler, detener_scheduler
 from app.database.database import SessionLocal
 from app.database.marcaciones import ensure_columna_biometrico
 from app.database.asistencia import ensure_tables as ensure_tablas_asistencia
+from app.database.provisioning import ensure_columna_origen
 
 app = FastAPI(title="Backend RRHH", version="1.0")
 
@@ -37,6 +38,8 @@ def startup():
         ))
         db.commit()
         print("[OK] columna Message.category verificada")
+        ensure_columna_origen(db)
+        print("[OK] columna origen de [User] verificada")
     finally:
         db.close()
     iniciar_scheduler()
