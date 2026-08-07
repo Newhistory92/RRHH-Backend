@@ -39,11 +39,13 @@ def _datos_empleado(db: Session, employee_id: int) -> Optional[dict]:
     fila = db.execute(text("""
         SELECT e.id, e.biometricoId,
                h.horaInicio, h.horaFin, h.horasTrabajo,
-               c.fechaIngreso
+               c.fechaIngreso, c.fechaJubilacion
         FROM Employee e
         LEFT JOIN Horario h ON e.cronogramaId = h.id
         LEFT JOIN (
-            SELECT employeeId, MIN(fechaIngreso) AS fechaIngreso
+            SELECT employeeId,
+                   MIN(fechaIngreso)    AS fechaIngreso,
+                   MAX(fechaJubilacion) AS fechaJubilacion
             FROM CondicionLaboral
             GROUP BY employeeId
         ) c ON c.employeeId = e.id
@@ -142,6 +144,47 @@ def _a_incidencias(resultados: list[ResultadoDia]) -> list[dict]:
     ]
 
 
+def _a_date(valor) -> Optional[date]:
+    """
+    Normaliza a date lo que pyodbc puede devolver como datetime.
+
+    datetime hereda de date, asi que el chequeo va sobre el tipo mas
+    especifico primero. El guard invertido ya rompio una vez en este repo.
+    """
+    if valor is None:
+        return None
+    return valor.date() if isinstance(valor, datetime) else valor
+
+
+def rango_de_calculo(anio: int, inicio_modulo: date,
+                     fecha_ingreso: Optional[date],
+                     fecha_jubilacion: Optional[date],
+                     hoy: date) -> Optional[tuple[date, date]]:
+    """
+    Los dias a calcular para un empleado en un anio, o None si no hay ninguno.
+
+    Cuatro fechas lo acotan. Por abajo, el inicio del modulo y el ingreso del
+    empleado. Por arriba, el fin del anio, hoy y la jubilacion.
+
+    La jubilacion es el espejo exacto del ingreso: por eso el saldo de un
+    jubilado se congela sin ningun caso especial, simplemente deja de haber
+    dias que calcular despues de su fecha.
+    """
+    desde = max(date(anio, 1, 1), inicio_modulo)
+    ingreso = _a_date(fecha_ingreso)
+    if ingreso is not None:
+        desde = max(desde, ingreso)
+
+    hasta = min(date(anio, 12, 31), hoy)
+    jubilacion = _a_date(fecha_jubilacion)
+    if jubilacion is not None:
+        hasta = min(hasta, jubilacion)
+
+    if desde > hasta:
+        return None
+    return desde, hasta
+
+
 def recalcular_anio(db: Session, employee_id: int, anio: int) -> int:
     """Recomputa el anio completo de un empleado. Idempotente."""
     emp = _datos_empleado(db, employee_id)
@@ -149,20 +192,13 @@ def recalcular_anio(db: Session, employee_id: int, anio: int) -> int:
         return 0
 
     cfg = get_config(db)
-    inicio_modulo = cfg["fechaInicioModulo"]
-    if not isinstance(inicio_modulo, date):
-        inicio_modulo = inicio_modulo.date()
-
-    desde = max(date(anio, 1, 1), inicio_modulo)
-    ingreso = emp.get("fechaIngreso")
-    if ingreso is not None:
-        # isinstance(datetime_obj, date) es True porque datetime hereda de date;
-        # hay que verificar el tipo mas especifico primero.
-        ingreso = ingreso.date() if isinstance(ingreso, datetime) else ingreso
-        desde = max(desde, ingreso)
-    hasta = min(date(anio, 12, 31), date.today())
-    if desde > hasta:
+    rango = rango_de_calculo(
+        anio, _a_date(cfg["fechaInicioModulo"]),
+        emp.get("fechaIngreso"), emp.get("fechaJubilacion"), date.today(),
+    )
+    if rango is None:
         return 0
+    desde, hasta = rango
 
     correcciones = correcciones_por_dia(db, employee_id, desde, hasta)
     marcaciones = _marcaciones_por_dia(db, emp["biometricoId"], desde, hasta)
