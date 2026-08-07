@@ -12,12 +12,13 @@ import os
 
 from app.services.auth_providers.base import AuthProvider, ResultadoAuth
 from app.services.auth_providers.local import LocalAuthProvider
+from app.services.auth_providers.obrasocial import ObraSocialAuthProvider
 
 PROVEEDOR_DEFAULT = "local"
 
-# Task 4 agrega aca la entrada "obrasocial".
 _PROVEEDORES = {
     "local": LocalAuthProvider,
+    "obrasocial": ObraSocialAuthProvider,
 }
 
 
