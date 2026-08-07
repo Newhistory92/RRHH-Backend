@@ -11,6 +11,10 @@ from datetime import date, datetime, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.database.database import SessionLocal
+from app.database.jubilacion import (
+    aplicar_jubilacion, ensure_columna_jubilacion, fecha_jubilacion_de,
+    pendientes_de_jubilar,
+)
 from app.services.isapi_client import relojes_configurados
 from app.services.reloj_sync import sincronizar_todos
 from app.services.asistencia_recalc import anios_con_huecos, recalcular_todos
@@ -18,6 +22,7 @@ from app.services.asistencia_recalc import anios_con_huecos, recalcular_todos
 log = logging.getLogger(__name__)
 
 INTERVALO_MINUTOS = 5
+HORA_JUBILACIONES = 2  # 2 AM, antes del recalculo de asistencia de las 3
 HORA_RECALCULO_ASISTENCIA = 3  # 3 AM, fuera del horario de uso
 SEGUNDOS_AUTOREPARACION = 30  # margen para que el arranque termine primero
 
@@ -83,6 +88,39 @@ def _tick_autoreparacion():
         db.close()
 
 
+def _tick_jubilaciones():
+    """
+    Aplica las jubilaciones cuya fecha ya llego.
+
+    Es la pieza que hace util cargar una fecha futura: RRHH la carga cuando la
+    sabe y la persona sigue trabajando hasta ese dia.
+
+    Solo avanza. Nunca reactiva a nadie, ni siquiera si alguien edito la fecha
+    hacia adelante: volver a activar es siempre un acto explicito de RRHH desde
+    la interfaz.
+
+    Corre antes del recalculo de asistencia para que el rango del dia ya tenga
+    la cota superior puesta cuando aquel arranque.
+    """
+    db = SessionLocal()
+    try:
+        ensure_columna_jubilacion(db)
+        hoy = date.today()
+        ids = pendientes_de_jubilar(db, hoy)
+        if not ids:
+            log.info("Jubilaciones: no hay ninguna para aplicar hoy")
+            return
+        for eid in ids:
+            fecha = fecha_jubilacion_de(db, eid)
+            aplicar_jubilacion(db, eid, fecha, hoy)
+            log.info("Jubilacion aplicada: empleado %s, fecha %s", eid, fecha)
+        log.info("Jubilaciones: %s empleados pasaron a Jubilado", len(ids))
+    except Exception as e:
+        log.exception("Fallo inesperado en el tick de jubilaciones: %s", e)
+    finally:
+        db.close()
+
+
 def iniciar_scheduler():
     """Arranca el job. Si no hay relojes configurados, no arranca nada."""
     global _scheduler
@@ -104,6 +142,16 @@ def iniciar_scheduler():
         replace_existing=True,
     )
     _scheduler.add_job(
+        _tick_jubilaciones,
+        "cron",
+        hour=HORA_JUBILACIONES,
+        minute=0,
+        id="jubilaciones",
+        max_instances=1,
+        coalesce=True,
+        replace_existing=True,
+    )
+    _scheduler.add_job(
         _tick_asistencia,
         "cron",
         hour=HORA_RECALCULO_ASISTENCIA,
@@ -122,9 +170,10 @@ def iniciar_scheduler():
         replace_existing=True,
     )
     _scheduler.start()
-    log.info("Scheduler iniciado: sync cada %s min, recalculo a las %s:00, "
-             "autoreparacion en %s s",
-             INTERVALO_MINUTOS, HORA_RECALCULO_ASISTENCIA, SEGUNDOS_AUTOREPARACION)
+    log.info("Scheduler iniciado: sync cada %s min, jubilaciones a las %s:00, "
+             "recalculo a las %s:00, autoreparacion en %s s",
+             INTERVALO_MINUTOS, HORA_JUBILACIONES,
+             HORA_RECALCULO_ASISTENCIA, SEGUNDOS_AUTOREPARACION)
     return _scheduler
 
 
