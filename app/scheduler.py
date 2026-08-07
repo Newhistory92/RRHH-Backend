@@ -18,6 +18,7 @@ from app.database.jubilacion import (
 from app.services.jubilacion import jubilacion_cumplida
 from app.services.isapi_client import relojes_configurados
 from app.services.reloj_sync import sincronizar_todos
+from app.database.asistencia import get_config
 from app.services.asistencia_recalc import anios_con_huecos, recalcular_todos
 
 log = logging.getLogger(__name__)
@@ -48,15 +49,31 @@ def _tick():
 
 def _tick_asistencia():
     """
-    Recalculo nocturno del anio en curso. Recomputa todo el anio en lugar de
-    solo ayer: cuesta unos minutos a las 3 AM y a cambio se auto-repara,
-    corrigiendo cualquier inconsistencia que haya dejado un disparador fallido.
+    Recalculo nocturno de todos los anios desde el inicio del modulo.
+
+    Recalcula año por año (no solo el actual) para cubrir marcaciones
+    historicas que llegaron tarde al sistema. El costo es proporcional a
+    los años de historia; a las 3 AM ese costo es aceptable y la ganancia
+    es que cualquier hueco -- en cualquier año -- se repara solo al dia
+    siguiente sin intervencion manual.
     """
     db = SessionLocal()
     try:
-        resultado = recalcular_todos(db, date.today().year)
-        log.info("Recalculo de asistencia: %s empleados, %s jornadas",
-                 resultado["procesados"], resultado["filas"])
+        cfg = get_config(db)
+        inicio = cfg["fechaInicioModulo"]
+        inicio = inicio.date() if isinstance(inicio, datetime) else inicio
+        anio_inicio = inicio.year
+        anio_actual = date.today().year
+        total_filas = 0
+        total_emp = 0
+        for anio in range(anio_inicio, anio_actual + 1):
+            resultado = recalcular_todos(db, anio)
+            total_emp = resultado["procesados"]
+            total_filas += resultado["filas"]
+        log.info(
+            "Recalculo de asistencia: %s empleados, %s jornadas totales (%s-%s)",
+            total_emp, total_filas, anio_inicio, anio_actual,
+        )
     except Exception as e:
         log.exception("Fallo inesperado en el recalculo de asistencia: %s", e)
     finally:
@@ -130,25 +147,17 @@ def _tick_jubilaciones():
 
 
 def iniciar_scheduler():
-    """Arranca el job. Si no hay relojes configurados, no arranca nada."""
+    """
+    Arranca el scheduler. Los jobs de asistencia y jubilacion arrancan siempre;
+    el sync de relojes solo arranca si RELOJ_IPS esta configurado.
+    """
     global _scheduler
     if _scheduler is not None:
         return _scheduler
 
-    if not relojes_configurados():
-        log.warning("RELOJ_IPS vacio: el sync de relojes no se inicia")
-        return None
-
     _scheduler = BackgroundScheduler(timezone="America/Argentina/Buenos_Aires")
-    _scheduler.add_job(
-        _tick,
-        "interval",
-        minutes=INTERVALO_MINUTOS,
-        id="sync_relojes",
-        max_instances=1,       # nunca dos corridas simultaneas
-        coalesce=True,         # si se acumularon ticks, corre uno solo
-        replace_existing=True,
-    )
+
+    # ── Jobs de asistencia y jubilacion: siempre activos ───────────────────
     _scheduler.add_job(
         _tick_jubilaciones,
         "cron",
@@ -177,11 +186,28 @@ def iniciar_scheduler():
         max_instances=1,
         replace_existing=True,
     )
+
+    # ── Sync de relojes: solo si hay relojes configurados ──────────────────
+    if relojes_configurados():
+        _scheduler.add_job(
+            _tick,
+            "interval",
+            minutes=INTERVALO_MINUTOS,
+            id="sync_relojes",
+            max_instances=1,
+            coalesce=True,
+            replace_existing=True,
+        )
+        log.info("Sync de relojes activo: cada %s min", INTERVALO_MINUTOS)
+    else:
+        log.warning("RELOJ_IPS vacio: el sync de relojes no se inicia")
+
     _scheduler.start()
-    log.info("Scheduler iniciado: sync cada %s min, jubilaciones a las %s:00, "
-             "recalculo a las %s:00, autoreparacion en %s s",
-             INTERVALO_MINUTOS, HORA_JUBILACIONES,
-             HORA_RECALCULO_ASISTENCIA, SEGUNDOS_AUTOREPARACION)
+    log.info(
+        "Scheduler iniciado: jubilaciones a las %s:00, "
+        "recalculo historia a las %s:00, autoreparacion en %s s",
+        HORA_JUBILACIONES, HORA_RECALCULO_ASISTENCIA, SEGUNDOS_AUTOREPARACION,
+    )
     return _scheduler
 
 
