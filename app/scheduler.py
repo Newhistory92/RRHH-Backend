@@ -15,6 +15,7 @@ from app.database.jubilacion import (
     aplicar_jubilacion, ensure_columna_jubilacion, fecha_jubilacion_de,
     pendientes_de_jubilar,
 )
+from app.services.jubilacion import jubilacion_cumplida
 from app.services.isapi_client import relojes_configurados
 from app.services.reloj_sync import sincronizar_todos
 from app.services.asistencia_recalc import anios_con_huecos, recalcular_todos
@@ -112,6 +113,13 @@ def _tick_jubilaciones():
             return
         for eid in ids:
             fecha = fecha_jubilacion_de(db, eid)
+            if not fecha or not jubilacion_cumplida(fecha, hoy):
+                log.warning(
+                    "Jubilaciones: empleado %s no cumple la condicion al re-leer, "
+                    "probablemente la fecha fue editada entre queries. Se omite.",
+                    eid,
+                )
+                continue
             aplicar_jubilacion(db, eid, fecha, hoy)
             log.info("Jubilacion aplicada: empleado %s, fecha %s", eid, fecha)
         log.info("Jubilaciones: %s empleados pasaron a Jubilado", len(ids))
