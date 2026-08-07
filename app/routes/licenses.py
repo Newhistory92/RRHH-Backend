@@ -77,7 +77,7 @@ def get_tipos_disponibles(employee_id: int, db: Session = Depends(get_db)):
     """
     # 1. Obtener datos del empleado: tipoContrato, género, fecha de ingreso, rol
     emp_query = text("""
-        SELECT cl.tipoContrato, cl.fechaIngreso, e.gender,
+        SELECT cl.tipoContrato, cl.fechaIngreso, cl.fechaJubilacion, e.gender,
                r.name as roleName
         FROM Employee e
         LEFT JOIN CondicionLaboral cl ON e.id = cl.employeeId
@@ -160,7 +160,10 @@ def get_tipos_disponibles(employee_id: int, db: Session = Depends(get_db)):
         dias_totales = row["diasTotales"]
         if "vacaciones" in nombre_lower:
             if dias_totales == 0:
-                dias_vac = calcular_dias_vacaciones(tipo_contrato, fecha_ingreso)
+                dias_vac = calcular_dias_vacaciones(
+                    tipo_contrato, fecha_ingreso,
+                    emp_data.get("fechaJubilacion"),
+                )
                 if dias_vac > 0:
                     dias_totales = dias_vac
 
@@ -228,7 +231,15 @@ def normalizar_tipo_contrato(tipo_contrato: str) -> str:
 # ---------------------------------------------------------------------------
 # Cálculo de vacaciones según antigüedad y tipoContrato
 # ---------------------------------------------------------------------------
-def calcular_dias_vacaciones(tipo_contrato: str, fecha_ingreso) -> int:
+def calcular_dias_vacaciones(tipo_contrato: str, fecha_ingreso,
+                             fecha_corte: Optional[date] = None) -> int:
+    """
+    Dias de vacaciones por antiguedad y tipo de contrato.
+
+    fecha_corte congela la antiguedad en un dia concreto: es la fecha de
+    jubilacion, para que a alguien que ya se jubilo no le siga creciendo el
+    derecho con el paso del tiempo. En None cuenta hasta hoy.
+    """
     if not fecha_ingreso:
         return 0
 
@@ -240,7 +251,7 @@ def calcular_dias_vacaciones(tipo_contrato: str, fecha_ingreso) -> int:
     elif hasattr(fecha_ingreso, "date"):
         fecha_ingreso = fecha_ingreso.date()
 
-    today  = date.today()
+    today  = fecha_corte or date.today()
     meses  = (today.year - fecha_ingreso.year) * 12 + today.month - fecha_ingreso.month
     anios  = meses / 12.0
     tc     = tipo_contrato.lower()
@@ -521,8 +532,8 @@ def get_license_saldos(
     # ── 1. Condición laboral ─────────────────────────────────────────────────
     cl = db.execute(
         text("""
-            SELECT tipoContrato, fechaIngreso 
-            FROM CondicionLaboral 
+            SELECT tipoContrato, fechaIngreso, fechaJubilacion
+            FROM CondicionLaboral
             WHERE employeeId = :id
         """),
         {"id": employee_id}
@@ -657,7 +668,9 @@ def get_license_saldos(
         "fallecimiento en parto"
     ]
     # ── 5. Armar respuesta ───────────────────────────────────────────────────
-    dias_vac = calcular_dias_vacaciones(tipo_contrato, fecha_ingreso)
+    dias_vac = calcular_dias_vacaciones(
+        tipo_contrato, fecha_ingreso, cl.get("fechaJubilacion"),
+    )
 
     balances = []
 
