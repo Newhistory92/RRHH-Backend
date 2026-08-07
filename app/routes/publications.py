@@ -192,8 +192,8 @@ def _notificar_destinatarios(db: Session, publication_id: int, categoria: str, t
     msg_text = f"Nueva {categoria.lower()}: {titulo}"
     for r in destinatarios:
         db.execute(text("""
-            INSERT INTO Message (employeeId, text, days, startDate, endDate, status, createdAt)
-            VALUES (:empId, :msg, 0, :now, :now, 'active', GETDATE())
+            INSERT INTO Message (employeeId, text, days, startDate, endDate, status, category, createdAt)
+            VALUES (:empId, :msg, 0, :now, :now, 'active', 'notificacion', GETDATE())
         """), {"empId": r["id"], "msg": msg_text, "now": now})
 
 

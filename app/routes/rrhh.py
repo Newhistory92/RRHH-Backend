@@ -202,6 +202,7 @@ def get_all_employees(db: Session = Depends(get_db)):
         SELECT id, text, days, startDate, endDate, status, createdAt, employeeId
         FROM Message
         WHERE employeeId IN ({ids_param}) AND status = 'active'
+          AND (category IS NULL OR category = 'licencia')
         ORDER BY createdAt DESC
     """)).mappings().all()
     messages_by_emp = _group_by(messages_bulk, "employeeId")

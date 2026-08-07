@@ -30,6 +30,13 @@ def startup():
         print("[OK] columna biometricoId verificada")
         ensure_tablas_asistencia(db)
         print("[OK] tablas de asistencia verificadas")
+        from sqlalchemy import text as _text
+        db.execute(_text(
+            "IF COL_LENGTH('Message','category') IS NULL "
+            "ALTER TABLE Message ADD category NVARCHAR(20) NULL"
+        ))
+        db.commit()
+        print("[OK] columna Message.category verificada")
     finally:
         db.close()
     iniciar_scheduler()

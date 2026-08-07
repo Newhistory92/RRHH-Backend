@@ -854,8 +854,8 @@ def update_license_status(license_id: int, data: dict = Body(...), db: Session =
 
                 # Insertar notificación para el EMPLEADO solicitante
                 db.execute(text("""
-                    INSERT INTO Message (employeeId, text, days, startDate, endDate, status, createdAt)
-                    VALUES (:empId, :msg, :dur, :start, :end, 'active', GETDATE())
+                    INSERT INTO Message (employeeId, text, days, startDate, endDate, status, category, createdAt)
+                    VALUES (:empId, :msg, :dur, :start, :end, 'active', 'notificacion', GETDATE())
                 """), {
                     "empId": lic["employeeId"],
                     "msg": msg_text,
@@ -987,8 +987,8 @@ def rrhh_apply_license(data: dict = Body(...), db: Session = Depends(get_db)):
         else:
             start_str = start_date.strftime('%Y-%m-%d')
         db.execute(text("""
-            INSERT INTO Message (employeeId, text, days, startDate, endDate, status, createdAt)
-            VALUES (:empId, :msg, :dur, :start, :end, 'active', GETDATE())
+            INSERT INTO Message (employeeId, text, days, startDate, endDate, status, category, createdAt)
+            VALUES (:empId, :msg, :dur, :start, :end, 'active', 'notificacion', GETDATE())
         """), {
             "empId": real_employee_id,
             "msg": f"Tu licencia de {lic_type} para la fecha {start_str} fue aprobada y aplicada por RRHH.",

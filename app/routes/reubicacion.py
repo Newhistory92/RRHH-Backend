@@ -259,8 +259,8 @@ def update_estado(solicitud_id: int, data: dict = Body(...), db: Session = Depen
         msg_text += f" Observación: {observacion}"
 
     db.execute(text("""
-        INSERT INTO Message (employeeId, text, days, startDate, endDate, status, createdAt)
-        VALUES (:empId, :msg, 0, :now, :now, 'active', GETDATE())
+        INSERT INTO Message (employeeId, text, days, startDate, endDate, status, category, createdAt)
+        VALUES (:empId, :msg, 0, :now, :now, 'active', 'notificacion', GETDATE())
     """), {"empId": solicitud["employeeId"], "msg": msg_text, "now": now})
 
     db.commit()
@@ -441,8 +441,8 @@ def ejecutar_solicitud(solicitud_id: int, data: dict = Body(...), db: Session = 
 
     msg_text = f"Tu reubicación fue ejecutada. {destino_texto}"
     db.execute(text("""
-        INSERT INTO Message (employeeId, text, days, startDate, endDate, status, createdAt)
-        VALUES (:empId, :msg, 0, :now, :now, 'active', GETDATE())
+        INSERT INTO Message (employeeId, text, days, startDate, endDate, status, category, createdAt)
+        VALUES (:empId, :msg, 0, :now, :now, 'active', 'notificacion', GETDATE())
     """), {"empId": employee_id, "msg": msg_text, "now": now})
 
     db.commit()
