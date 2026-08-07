@@ -257,8 +257,7 @@ def recalcular_historia(db: Session, employee_id: int) -> int:
     """
     cfg = get_config(db)
     inicio = cfg["fechaInicioModulo"]
-    if not isinstance(inicio, date):
-        inicio = inicio.date()
+    inicio = inicio.date() if isinstance(inicio, datetime) else inicio
     total = 0
     for anio in range(inicio.year, date.today().year + 1):
         total += recalcular_anio(db, employee_id, anio)
@@ -306,8 +305,7 @@ def anios_con_huecos(db: Session, hoy: Optional[date] = None) -> list[int]:
     """
     cfg = get_config(db)
     inicio = cfg["fechaInicioModulo"]
-    if not isinstance(inicio, date):
-        inicio = inicio.date()
+    inicio = inicio.date() if isinstance(inicio, datetime) else inicio
     hoy = hoy or date.today()
 
     fila = db.execute(text("""
@@ -323,8 +321,7 @@ def anios_con_huecos(db: Session, hoy: Optional[date] = None) -> list[int]:
     if fila is None or fila["mas_atrasada"] is None:
         return []
     atrasada = fila["mas_atrasada"]
-    if not isinstance(atrasada, date):
-        atrasada = atrasada.date()
+    atrasada = atrasada.date() if isinstance(atrasada, datetime) else atrasada
     if atrasada >= hoy - timedelta(days=1):
         return []
     return list(range(max(atrasada.year, inicio.year), hoy.year + 1))
