@@ -38,13 +38,16 @@ _FILTRO_EMPLEADOS = (
 )
 
 
-def diagnosticar(db_os: Session, nombre_usuario: str) -> Optional[dict]:
+def diagnosticar(db_os: Session, nombre_usuario: str) -> dict:
     """
     Por que un usuario concreto no aparece en el tablero.
 
-    Devuelve cada condicion del filtro por separado en lugar de un si/no, que
-    es lo unico que permite distinguir "no existe" de "existe pero lo excluye
-    tal columna".
+    La comparacion recorta espacios de los dos lados: SQL Server ya ignora
+    los finales, pero uno inicial en el dato cargado alcanza para que
+    `u.nombreUsuario = 'X'` no encuentre nada aunque la fila exista.
+
+    Si ni asi aparece, junta candidatos con LIKE para mostrar como esta
+    guardado el nombre realmente, en vez de devolver un simple "no existe".
     """
     fila = db_os.execute(text("""
         SELECT u.nombreUsuario, u.esAfiliado, u.idPrestador, u.idClinica,
@@ -58,14 +61,28 @@ def diagnosticar(db_os: Session, nombre_usuario: str) -> Optional[dict]:
                CASE WHEN p.idPersona IS NULL THEN 0 ELSE 1 END AS tiene_persona
         FROM [ObraSocial].[dbo].[Usuario] u
         LEFT JOIN [ObraSocial].[dbo].[Persona] p ON p.idPersona = u.idPersona
-        WHERE u.nombreUsuario = :n
+        WHERE LTRIM(RTRIM(u.nombreUsuario)) = LTRIM(RTRIM(:n))
     """), {"n": nombre_usuario}).mappings().first()
-    return dict(fila) if fila else None
+
+    if fila is not None:
+        return {"encontrado": True, **dict(fila)}
+
+    candidatos = db_os.execute(text("""
+        SELECT TOP 10 u.nombreUsuario, u.idPersona,
+               DATALENGTH(u.nombreUsuario) AS bytes_del_nombre
+        FROM [ObraSocial].[dbo].[Usuario] u
+        WHERE u.nombreUsuario LIKE :patron
+    """), {"patron": f"%{nombre_usuario.strip()}%"}).mappings().all()
+
+    return {"encontrado": False, "candidatos": [dict(c) for c in candidatos]}
 
 
 def buscar_por_nombre(db_os: Session, nombre_usuario: str) -> Optional[dict]:
+    # LTRIM: un espacio inicial cargado en el dato no debe bloquear el login.
+    # SQL Server ya ignora los finales por si solo.
     fila = db_os.execute(
-        text(_SELECT_USUARIO + f" WHERE {_FILTRO_EMPLEADOS} AND u.nombreUsuario = :n"),
+        text(_SELECT_USUARIO + f" WHERE {_FILTRO_EMPLEADOS}"
+             " AND LTRIM(u.nombreUsuario) = LTRIM(:n)"),
         {"n": nombre_usuario},
     ).mappings().first()
     return dict(fila) if fila else None
