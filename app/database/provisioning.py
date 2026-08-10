@@ -51,17 +51,25 @@ def buscar_employee_por_dni(db: Session, dni: str) -> Optional[dict]:
 
 def employees_por_dni(db: Session, dnis: list[str]) -> dict[str, int]:
     """
-    {dni: employeeId} para los DNIs que ya existen en RRHH. Una sola consulta
-    para toda la lista: el tablero de importacion muestra cientos de filas.
+    {dni: employeeId} para los DNIs que ya existen en RRHH.
+
+    Se divide en bloques de 500 para no superar el limite de parametros de
+    pyodbc/SQL Server (~2100). En la practica la lista de empleados de la
+    institucion raramente supera esa cifra, pero es mas robusto dividirla.
     """
     if not dnis:
         return {}
-    binds = {f"d{i}": valor for i, valor in enumerate(dnis)}
-    marcadores = ", ".join(f":{clave}" for clave in binds)
-    filas = db.execute(text(
-        f"SELECT id, dni FROM Employee WHERE dni IN ({marcadores})"
-    ), binds).mappings().all()
-    return {str(f["dni"]).strip(): f["id"] for f in filas}
+    resultado: dict[str, int] = {}
+    chunk_size = 500
+    for offset in range(0, len(dnis), chunk_size):
+        chunk = dnis[offset: offset + chunk_size]
+        binds = {f"d{i}": valor for i, valor in enumerate(chunk)}
+        marcadores = ", ".join(f":{clave}" for clave in binds)
+        filas = db.execute(text(
+            f"SELECT id, dni FROM Employee WHERE dni IN ({marcadores})"
+        ), binds).mappings().all()
+        resultado.update({str(f["dni"]).strip(): f["id"] for f in filas})
+    return resultado
 
 
 def email_ocupado(db: Session, email: str) -> bool:

@@ -23,10 +23,20 @@ _SELECT_USUARIO = """
     LEFT JOIN [ObraSocial].[dbo].[Persona] p ON p.idPersona = u.idPersona
 """
 
+# Solo empleados de la institucion: excluye afiliados, prestadores, clinicas
+# y organismos externos. Es la condicion que distingue al personal interno.
+_FILTRO_EMPLEADOS = (
+    " u.esAfiliado = 0"
+    " AND u.idPrestador IS NULL"
+    " AND u.idClinica IS NULL"
+    " AND u.codOrganismoExterno IS NULL"
+    " AND u.codObraSocial IS NULL"
+)
+
 
 def buscar_por_nombre(db_os: Session, nombre_usuario: str) -> Optional[dict]:
     fila = db_os.execute(
-        text(_SELECT_USUARIO + " WHERE u.nombreUsuario = :n"),
+        text(_SELECT_USUARIO + f" WHERE {_FILTRO_EMPLEADOS} AND u.nombreUsuario = :n"),
         {"n": nombre_usuario},
     ).mappings().first()
     return dict(fila) if fila else None
@@ -39,7 +49,7 @@ def buscar_por_ids(db_os: Session, id_usuarios: list[str]) -> list[dict]:
     binds = {f"id{i}": valor for i, valor in enumerate(id_usuarios)}
     marcadores = ", ".join(f":{clave}" for clave in binds)
     filas = db_os.execute(
-        text(_SELECT_USUARIO + f" WHERE u.idUsuario IN ({marcadores})"),
+        text(_SELECT_USUARIO + f" WHERE {_FILTRO_EMPLEADOS} AND u.idUsuario IN ({marcadores})"),
         binds,
     ).mappings().all()
     return [dict(f) for f in filas]
@@ -47,6 +57,6 @@ def buscar_por_ids(db_os: Session, id_usuarios: list[str]) -> list[dict]:
 
 def listar(db_os: Session) -> list[dict]:
     filas = db_os.execute(
-        text(_SELECT_USUARIO + " ORDER BY p.apellidoPersona, p.nombrePersona")
+        text(_SELECT_USUARIO + f" WHERE {_FILTRO_EMPLEADOS} ORDER BY p.apellidoPersona, p.nombrePersona")
     ).mappings().all()
     return [dict(f) for f in filas]
