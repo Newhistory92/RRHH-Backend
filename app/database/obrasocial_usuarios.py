@@ -9,10 +9,13 @@ se puede vincular ni crear el empleado, asi que separarlos solo agregaria un
 viaje de ida y vuelta.
 """
 
+import logging
 from typing import Optional
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
+
+log = logging.getLogger(__name__)
 
 _SELECT_USUARIO = """
     SELECT u.idUsuario, u.nombreUsuario, u.claveUsuario, u.anulado, u.idPersona,
@@ -60,4 +63,14 @@ def listar(db_os: Session) -> list[dict]:
     filas = db_os.execute(
         text(_SELECT_USUARIO + f" WHERE {_FILTRO_EMPLEADOS} ORDER BY p.apellidoPersona, p.nombrePersona")
     ).mappings().all()
+
+    # Deja rastro de cuanto recorta el filtro. Si el tablero sale corto, la
+    # diferencia entre los dos numeros dice si sobra filtro o falta dato.
+    total = db_os.execute(
+        text("SELECT COUNT(*) FROM [ObraSocial].[dbo].[Usuario]")
+    ).scalar()
+    log.info(
+        "Usuarios institucionales: %s de %s pasaron el filtro de empleados",
+        len(filas), total,
+    )
     return [dict(f) for f in filas]

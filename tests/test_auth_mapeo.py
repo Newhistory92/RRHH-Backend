@@ -63,11 +63,39 @@ def test_persona_a_employee_mapea_todos_los_campos():
         "dni": "35123456",
         "name": "Emiliano Rojo",
         "email": "erojo@institucion.gob.ar",
-        "gender": "M",
+        "gender": "Masculino",
         "phone": "3794123456",
         "birthDate": datetime(1992, 5, 14),
         "photo": "data:image/png;base64,AAA",
     }
+
+
+# -- genero -------------------------------------------------------------------
+
+def test_genero_traduce_la_letra_a_la_palabra_del_frontend():
+    assert mapeo.genero({"sexoPersona": "M"}) == "Masculino"
+    assert mapeo.genero({"sexoPersona": "F"}) == "Femenino"
+
+
+def test_genero_tolera_minuscula_y_espacios():
+    assert mapeo.genero({"sexoPersona": " f "}) == "Femenino"
+
+
+def test_genero_sin_dato_es_cadena_vacia_no_nulo():
+    # Employee.gender es NOT NULL: un None reventaria el INSERT.
+    assert mapeo.genero({}) == ""
+    assert mapeo.genero({"sexoPersona": None}) == ""
+
+
+def test_genero_desconocido_no_inventa_un_valor():
+    assert mapeo.genero({"sexoPersona": "X"}) == ""
+
+
+def test_persona_sin_sexo_ni_telefono_no_produce_nulos():
+    persona = {**PERSONA_COMPLETA, "sexoPersona": None, "telefonoPersona": None}
+    datos = mapeo.persona_a_employee(persona, "EmilianoRojo")
+    assert datos["gender"] == ""
+    assert datos["phone"] == ""
 
 
 def test_persona_a_employee_normaliza_el_dni_numerico():
