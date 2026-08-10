@@ -104,25 +104,54 @@ def crear_employee(db: Session, datos: dict) -> int:
     return nuevo_id
 
 
+def id_es_identity(db: Session, tabla: str) -> bool:
+    """
+    Si la PK se autogenera o la tiene que calcular el llamador.
+
+    Employee.id es IDENTITY pero [User].id no lo es en este esquema, asi que
+    no se puede asumir lo mismo para las dos tablas.
+    """
+    fila = db.execute(text(
+        "SELECT COLUMNPROPERTY(OBJECT_ID(:tabla), 'id', 'IsIdentity') AS es_identity"
+    ), {"tabla": tabla}).mappings().first()
+    return bool(fila and fila["es_identity"])
+
+
 def crear_user(db: Session, usuario: str, email: str, password_hash: str,
                employee_id: int, origen: str, role_id: int = ROLE_USER) -> int:
     """
     El hash llega ya calculado. Cuando viene de un sistema externo que tambien
     usa bcrypt se copia tal cual, y el usuario nunca resetea su contrasena.
+
+    Si [User].id no es IDENTITY se calcula con MAX(id)+1 dentro del mismo
+    INSERT ... SELECT, para que el calculo y la escritura compartan la misma
+    sentencia y dos importaciones simultaneas no elijan el mismo numero.
     """
-    resultado = db.execute(text("""
-        INSERT INTO [User] (usuario, email, password, roleId, employeeId, origen, activo, updatedAt)
-        OUTPUT INSERTED.id
-        VALUES (:usuario, :email, :password, :roleId, :employeeId, :origen, 1, GETDATE())
-    """), {
+    params = {
         "usuario": usuario,
         "email": email,
         "password": password_hash,
         "roleId": role_id,
         "employeeId": employee_id,
         "origen": origen,
-    })
-    nuevo_id = resultado.scalar()
+    }
+
+    if id_es_identity(db, "[User]"):
+        sql = """
+            INSERT INTO [User] (usuario, email, password, roleId, employeeId, origen, activo, updatedAt)
+            OUTPUT INSERTED.id
+            VALUES (:usuario, :email, :password, :roleId, :employeeId, :origen, 1, GETDATE())
+        """
+    else:
+        sql = """
+            INSERT INTO [User] (id, usuario, email, password, roleId, employeeId, origen, activo, updatedAt)
+            OUTPUT INSERTED.id
+            SELECT ISNULL(MAX(id), 0) + 1, :usuario, :email, :password, :roleId,
+                   :employeeId, :origen, 1, GETDATE()
+            FROM [User] WITH (TABLOCKX)
+        """
+
+    nuevo_id = db.execute(text(sql), params).scalar()
     db.commit()
     return nuevo_id
 

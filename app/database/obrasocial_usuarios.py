@@ -38,6 +38,31 @@ _FILTRO_EMPLEADOS = (
 )
 
 
+def diagnosticar(db_os: Session, nombre_usuario: str) -> Optional[dict]:
+    """
+    Por que un usuario concreto no aparece en el tablero.
+
+    Devuelve cada condicion del filtro por separado en lugar de un si/no, que
+    es lo unico que permite distinguir "no existe" de "existe pero lo excluye
+    tal columna".
+    """
+    fila = db_os.execute(text("""
+        SELECT u.nombreUsuario, u.esAfiliado, u.idPrestador, u.idClinica,
+               u.codOrganismoExterno, u.codObraSocial, u.anulado, u.idPersona,
+               p.numeroDocPersona,
+               CASE WHEN COALESCE(u.esAfiliado, 0) = 0 THEN 1 ELSE 0 END AS pasa_afiliado,
+               CASE WHEN u.idPrestador IS NULL THEN 1 ELSE 0 END AS pasa_prestador,
+               CASE WHEN u.idClinica IS NULL THEN 1 ELSE 0 END AS pasa_clinica,
+               CASE WHEN COALESCE(u.codOrganismoExterno, '') = '' THEN 1 ELSE 0 END AS pasa_organismo,
+               CASE WHEN COALESCE(u.codObraSocial, '') = '' THEN 1 ELSE 0 END AS pasa_obrasocial,
+               CASE WHEN p.idPersona IS NULL THEN 0 ELSE 1 END AS tiene_persona
+        FROM [ObraSocial].[dbo].[Usuario] u
+        LEFT JOIN [ObraSocial].[dbo].[Persona] p ON p.idPersona = u.idPersona
+        WHERE u.nombreUsuario = :n
+    """), {"n": nombre_usuario}).mappings().first()
+    return dict(fila) if fila else None
+
+
 def buscar_por_nombre(db_os: Session, nombre_usuario: str) -> Optional[dict]:
     fila = db_os.execute(
         text(_SELECT_USUARIO + f" WHERE {_FILTRO_EMPLEADOS} AND u.nombreUsuario = :n"),

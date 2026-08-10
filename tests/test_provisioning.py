@@ -120,6 +120,11 @@ def test_crear_employee_pasa_todos_los_campos_del_mapeo():
     assert "updatedAt" in params
 
 
+def _insert_user(db):
+    """El (sql, params) del INSERT sobre [User], salteando el chequeo de identity."""
+    return next((par for par in db.ejecutadas if "INSERT INTO [User]" in par[0]))
+
+
 def test_crear_user_usa_rol_user_por_defecto():
     from app.database import provisioning as prov
 
@@ -131,11 +136,61 @@ def test_crear_user_usa_rol_user_por_defecto():
     )
 
     assert nuevo == 9
-    _, params = db.ejecutadas[0]
+    _, params = _insert_user(db)
     assert params["roleId"] == prov.ROLE_USER == 2
     assert params["origen"] == "obrasocial"
     assert params["employeeId"] == 300
     assert db.commits == 1
+
+
+# -- Generacion del id de [User] ----------------------------------------------
+
+def test_id_es_identity_lee_la_propiedad_de_la_columna():
+    from app.database import provisioning as prov
+
+    db = FakeSession({"COLUMNPROPERTY": [{"es_identity": 1}]})
+    assert prov.id_es_identity(db, "[User]") is True
+
+    _, params = db.ejecutadas[0]
+    assert params == {"tabla": "[User]"}
+
+
+def test_id_no_identity_cuando_la_propiedad_es_cero():
+    from app.database import provisioning as prov
+
+    db = FakeSession({"COLUMNPROPERTY": [{"es_identity": 0}]})
+    assert prov.id_es_identity(db, "[User]") is False
+
+
+def test_con_identity_el_insert_no_escribe_la_columna_id():
+    from app.database import provisioning as prov
+
+    db = FakeSession({
+        "COLUMNPROPERTY": [{"es_identity": 1}],
+        "INSERT INTO [User]": [{"id": 9}],
+    })
+    prov.crear_user(db, usuario="erojo", email="e@x.com", password_hash="h",
+                    employee_id=300, origen=prov.ORIGEN_OBRASOCIAL)
+
+    sql, _ = _insert_user(db)
+    assert "VALUES" in sql
+    assert "MAX(id)" not in sql
+
+
+def test_sin_identity_el_insert_calcula_el_id_en_la_misma_sentencia():
+    from app.database import provisioning as prov
+
+    db = FakeSession({
+        "COLUMNPROPERTY": [{"es_identity": 0}],
+        "INSERT INTO [User]": [{"id": 9}],
+    })
+    assert prov.crear_user(db, usuario="erojo", email="e@x.com", password_hash="h",
+                           employee_id=300, origen=prov.ORIGEN_OBRASOCIAL) == 9
+
+    sql, _ = _insert_user(db)
+    # El calculo y la escritura van juntos: nada entre el MAX y el INSERT.
+    assert "ISNULL(MAX(id), 0) + 1" in sql
+    assert "TABLOCKX" in sql
 
 
 def test_actualizar_password_escribe_el_hash_nuevo():

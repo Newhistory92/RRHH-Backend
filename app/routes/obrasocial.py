@@ -112,6 +112,21 @@ def get_usuarios(db: Session = Depends(get_db),
     return {"usuarios": [fila_usuario(u, vinculos) for u in externos]}
 
 
+@router.get("/diagnostico/{nombre_usuario}", dependencies=[SOLO_ADMIN])
+def diagnostico(nombre_usuario: str, db_os: Session = Depends(get_obrasocial_db)):
+    """
+    Por que un usuario no sale en el tablero. Cada clave `pasa_*` en 0 es una
+    condicion del filtro que lo esta dejando afuera.
+    """
+    fila = os_db.diagnosticar(db_os, nombre_usuario)
+    if fila is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No existe ningún usuario '{nombre_usuario}' en ObraSocial",
+        )
+    return fila
+
+
 @router.post("/importar", dependencies=[SOLO_ADMIN])
 async def importar(request: Request, db: Session = Depends(get_db),
                    db_os: Session = Depends(get_obrasocial_db)):
