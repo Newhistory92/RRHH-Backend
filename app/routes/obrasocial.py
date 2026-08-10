@@ -10,6 +10,8 @@ Ambos requieren rol ADMIN: exponen datos personales (documento, telefono,
 email) de toda la planta.
 """
 
+import os
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
@@ -123,6 +125,23 @@ def diagnostico(nombre_usuario: str, db_os: Session = Depends(get_obrasocial_db)
     valor cargado no es un match exacto del que se está buscando.
     """
     return os_db.diagnosticar(db_os, nombre_usuario)
+
+
+@router.get("/diagnostico-id/{id_usuario}", dependencies=[SOLO_ADMIN])
+def diagnostico_por_id(id_usuario: str, db_os: Session = Depends(get_obrasocial_db)):
+    """Busca por el GUID exacto: descarta problemas de texto/espacios/collation."""
+    return os_db.diagnosticar_por_id(db_os, id_usuario)
+
+
+@router.get("/conexion", dependencies=[SOLO_ADMIN])
+def conexion():
+    """
+    Host y base a los que esta conectado el backend, sin la contrasena. Sirve
+    para comparar contra el servidor que se ve en SSMS cuando un dato "deberia
+    estar" pero el backend no lo encuentra.
+    """
+    url = os.getenv("OBRASOCIAL_DATABASE_URL") or ""
+    return {"host_y_base": url.split("@")[-1] if "@" in url else url}
 
 
 @router.post("/importar", dependencies=[SOLO_ADMIN])

@@ -77,6 +77,43 @@ def diagnosticar(db_os: Session, nombre_usuario: str) -> dict:
     return {"encontrado": False, "candidatos": [dict(c) for c in candidatos]}
 
 
+def diagnosticar_por_id(db_os: Session, id_usuario: str) -> dict:
+    """
+    Igual que diagnosticar pero por idUsuario (GUID): descarta de un saque
+    cualquier problema de espacios o de collation en nombreUsuario, porque el
+    GUID se compara byte a byte.
+    """
+    fila = db_os.execute(text("""
+        SELECT u.idUsuario, u.nombreUsuario, u.esAfiliado, u.idPrestador, u.idClinica,
+               u.codOrganismoExterno, u.codObraSocial, u.anulado, u.idPersona,
+               p.numeroDocPersona,
+               CASE WHEN COALESCE(u.esAfiliado, 0) = 0 THEN 1 ELSE 0 END AS pasa_afiliado,
+               CASE WHEN u.idPrestador IS NULL THEN 1 ELSE 0 END AS pasa_prestador,
+               CASE WHEN u.idClinica IS NULL THEN 1 ELSE 0 END AS pasa_clinica,
+               CASE WHEN COALESCE(u.codOrganismoExterno, '') = '' THEN 1 ELSE 0 END AS pasa_organismo,
+               CASE WHEN COALESCE(u.codObraSocial, '') = '' THEN 1 ELSE 0 END AS pasa_obrasocial
+        FROM [ObraSocial].[dbo].[Usuario] u
+        LEFT JOIN [ObraSocial].[dbo].[Persona] p ON p.idPersona = u.idPersona
+        WHERE u.idUsuario = :id
+    """), {"id": id_usuario}).mappings().first()
+
+    if fila is not None:
+        return {"encontrado": True, **dict(fila)}
+
+    total = db_os.execute(
+        text("SELECT COUNT(*) FROM [ObraSocial].[dbo].[Usuario]")
+    ).scalar()
+    return {
+        "encontrado": False,
+        "total_usuarios_en_esta_base": total,
+        "mensaje": (
+            "El idUsuario no existe en la base a la que esta conectado el "
+            "backend. Si estas seguro de que existe, el backend probablemente "
+            "esta apuntando a un servidor/base distinto de donde lo viste."
+        ),
+    }
+
+
 def buscar_por_nombre(db_os: Session, nombre_usuario: str) -> Optional[dict]:
     # LTRIM: un espacio inicial cargado en el dato no debe bloquear el login.
     # SQL Server ya ignora los finales por si solo.
