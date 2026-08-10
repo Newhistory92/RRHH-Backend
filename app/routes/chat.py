@@ -1,0 +1,366 @@
+"""
+Chatbot de RRHH conectado a la base de datos via Google Gemini.
+
+POST /chat  — recibe el historial de la conversacion y devuelve la siguiente
+             respuesta del asistente. Gemini usa function calling para consultar
+             datos reales de la base antes de responder.
+
+Las herramientas solo leen la base (SELECT). Ningun tool modifica datos.
+Requiere GOOGLE_GENERATIVE_AI_API_KEY en el .env.
+"""
+
+import json
+import logging
+import os
+from typing import Any
+
+from google import genai
+from google.genai import types as gtypes
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+
+from app.auth_middleware import require_any_auth
+from app.database.database import SessionLocal
+
+log = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/chat", tags=["Chat"])
+
+SOLO_AUTH = Depends(require_any_auth)
+
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Modelos de entrada
+# ---------------------------------------------------------------------------
+
+class MensajeChat(BaseModel):
+    role: str      # "user" | "assistant"
+    content: str
+
+
+class PeticionChat(BaseModel):
+    messages: list[MensajeChat]
+
+
+# ---------------------------------------------------------------------------
+# Definiciones de herramientas para Gemini
+# ---------------------------------------------------------------------------
+
+TOOLS_GEMINI = [
+    gtypes.FunctionDeclaration(
+        name="estadisticas_generales",
+        description=(
+            "Devuelve estadísticas globales de la organización: total de empleados, "
+            "distribución por género, distribución por estado, cantidad de departamentos "
+            "y cantidad con licencia activa."
+        ),
+        parameters=gtypes.Schema(type=gtypes.Type.OBJECT, properties={}),
+    ),
+    gtypes.FunctionDeclaration(
+        name="buscar_empleado",
+        description=(
+            "Busca uno o varios empleados por nombre o apellido (búsqueda parcial). "
+            "Devuelve datos personales, departamento, oficina, cargo y contrato."
+        ),
+        parameters=gtypes.Schema(
+            type=gtypes.Type.OBJECT,
+            properties={
+                "nombre": gtypes.Schema(
+                    type=gtypes.Type.STRING,
+                    description="Nombre o apellido a buscar (parcial).",
+                )
+            },
+            required=["nombre"],
+        ),
+    ),
+    gtypes.FunctionDeclaration(
+        name="empleados_por_departamento",
+        description="Lista los empleados de un departamento con su nombre, cargo, contrato y estado.",
+        parameters=gtypes.Schema(
+            type=gtypes.Type.OBJECT,
+            properties={
+                "departamento": gtypes.Schema(
+                    type=gtypes.Type.STRING,
+                    description="Nombre o parte del nombre del departamento.",
+                )
+            },
+            required=["departamento"],
+        ),
+    ),
+    gtypes.FunctionDeclaration(
+        name="documentos_empleado",
+        description="Lista los documentos del legajo de un empleado dado su ID numérico.",
+        parameters=gtypes.Schema(
+            type=gtypes.Type.OBJECT,
+            properties={
+                "empleado_id": gtypes.Schema(
+                    type=gtypes.Type.INTEGER,
+                    description="ID numérico del empleado.",
+                )
+            },
+            required=["empleado_id"],
+        ),
+    ),
+    gtypes.FunctionDeclaration(
+        name="empleados_con_licencia",
+        description="Lista los empleados con licencia activa o pendiente, con tipo y fechas.",
+        parameters=gtypes.Schema(type=gtypes.Type.OBJECT, properties={}),
+    ),
+    gtypes.FunctionDeclaration(
+        name="listar_departamentos",
+        description="Lista todos los departamentos con la cantidad de empleados en cada uno.",
+        parameters=gtypes.Schema(type=gtypes.Type.OBJECT, properties={}),
+    ),
+    gtypes.FunctionDeclaration(
+        name="ausencias_recientes",
+        description="Ausencias registradas en los últimos N días (default 30). Incluye empleado, fecha y motivo.",
+        parameters=gtypes.Schema(
+            type=gtypes.Type.OBJECT,
+            properties={
+                "dias": gtypes.Schema(
+                    type=gtypes.Type.INTEGER,
+                    description="Cantidad de días hacia atrás. Por defecto 30.",
+                )
+            },
+        ),
+    ),
+]
+
+
+# ---------------------------------------------------------------------------
+# Implementación de las herramientas (solo SELECT)
+# ---------------------------------------------------------------------------
+
+def _estadisticas_generales(db: Session) -> dict:
+    total = db.execute(text("SELECT COUNT(*) FROM Employee")).scalar() or 0
+    por_genero = db.execute(text(
+        "SELECT gender, COUNT(*) as cnt FROM Employee GROUP BY gender"
+    )).mappings().all()
+    por_estado = db.execute(text(
+        "SELECT status, COUNT(*) as cnt FROM Employee WHERE status IS NOT NULL GROUP BY status"
+    )).mappings().all()
+    departamentos = db.execute(text("SELECT COUNT(*) FROM Department")).scalar() or 0
+    con_licencia = db.execute(text(
+        "SELECT COUNT(DISTINCT employeeId) FROM License "
+        "WHERE status IN ('activa','pendiente') AND endDate >= GETDATE()"
+    )).scalar() or 0
+    return {
+        "total_empleados": total,
+        "por_genero": [{"genero": r["gender"] or "Sin dato", "cantidad": r["cnt"]} for r in por_genero],
+        "por_estado": [{"estado": r["status"], "cantidad": r["cnt"]} for r in por_estado],
+        "total_departamentos": departamentos,
+        "empleados_con_licencia_activa": con_licencia,
+    }
+
+
+def _buscar_empleado(db: Session, nombre: str) -> list[dict]:
+    filas = db.execute(text("""
+        SELECT e.id, e.name, e.dni, e.email, e.gender, e.status,
+               d.nombre AS departamento, o.nombre AS oficina,
+               c.tipoContrato, c.categoria, c.position AS cargo
+        FROM Employee e
+        LEFT JOIN Department d ON e.departmentId = d.id
+        LEFT JOIN Office o ON e.officeId = o.id
+        LEFT JOIN CondicionLaboral c ON c.employeeId = e.id
+        WHERE e.name LIKE :patron
+        ORDER BY e.name
+    """), {"patron": f"%{nombre}%"}).mappings().all()
+    return [dict(f) for f in filas]
+
+
+def _empleados_por_departamento(db: Session, departamento: str) -> list[dict]:
+    filas = db.execute(text("""
+        SELECT e.id, e.name, e.status,
+               c.tipoContrato, c.categoria, c.position AS cargo,
+               o.nombre AS oficina
+        FROM Employee e
+        JOIN Department d ON e.departmentId = d.id
+        LEFT JOIN Office o ON e.officeId = o.id
+        LEFT JOIN CondicionLaboral c ON c.employeeId = e.id
+        WHERE d.nombre LIKE :patron
+        ORDER BY e.name
+    """), {"patron": f"%{departamento}%"}).mappings().all()
+    return [dict(f) for f in filas]
+
+
+def _documentos_empleado(db: Session, empleado_id: int) -> dict:
+    empleado = db.execute(text(
+        "SELECT id, name FROM Employee WHERE id = :id"
+    ), {"id": empleado_id}).mappings().first()
+    if not empleado:
+        return {"error": f"No existe el empleado con id {empleado_id}"}
+    docs = db.execute(text("""
+        SELECT tipo, descripcion, fileName, createdAt
+        FROM EmployeeDocument
+        WHERE employeeId = :id AND activo = 1
+        ORDER BY createdAt DESC
+    """), {"id": empleado_id}).mappings().all()
+    return {
+        "empleado": dict(empleado),
+        "documentos": [dict(d) for d in docs],
+    }
+
+
+def _empleados_con_licencia(db: Session) -> list[dict]:
+    filas = db.execute(text("""
+        SELECT e.id, e.name, l.type, l.startDate, l.endDate, l.status
+        FROM License l
+        JOIN Employee e ON l.employeeId = e.id
+        WHERE l.status IN ('activa','pendiente') AND l.endDate >= GETDATE()
+        ORDER BY l.startDate
+    """)).mappings().all()
+    return [dict(f) for f in filas]
+
+
+def _listar_departamentos(db: Session) -> list[dict]:
+    filas = db.execute(text("""
+        SELECT d.nombre, COUNT(e.id) AS empleados
+        FROM Department d
+        LEFT JOIN Employee e ON e.departmentId = d.id
+        GROUP BY d.nombre
+        ORDER BY d.nombre
+    """)).mappings().all()
+    return [dict(f) for f in filas]
+
+
+def _ausencias_recientes(db: Session, dias: int = 30) -> list[dict]:
+    filas = db.execute(text("""
+        SELECT e.name, a.fecha, a.motivo
+        FROM Ausencia a
+        JOIN Employee e ON a.employeeId = e.id
+        WHERE a.fecha >= DATEADD(DAY, :neg_dias, GETDATE())
+        ORDER BY a.fecha DESC
+    """), {"neg_dias": -abs(dias)}).mappings().all()
+    return [dict(f) for f in filas]
+
+
+def ejecutar_tool(nombre: str, args: dict, db: Session) -> Any:
+    if nombre == "estadisticas_generales":
+        return _estadisticas_generales(db)
+    if nombre == "buscar_empleado":
+        return _buscar_empleado(db, args["nombre"])
+    if nombre == "empleados_por_departamento":
+        return _empleados_por_departamento(db, args["departamento"])
+    if nombre == "documentos_empleado":
+        return _documentos_empleado(db, int(args["empleado_id"]))
+    if nombre == "empleados_con_licencia":
+        return _empleados_con_licencia(db)
+    if nombre == "listar_departamentos":
+        return _listar_departamentos(db)
+    if nombre == "ausencias_recientes":
+        return _ausencias_recientes(db, int(args.get("dias", 30)))
+    return {"error": f"Herramienta desconocida: {nombre}"}
+
+
+# ---------------------------------------------------------------------------
+# Prompt de sistema
+# ---------------------------------------------------------------------------
+
+SYSTEM_PROMPT = (
+    "Eres el asistente de Recursos Humanos de la organización. "
+    "Tienes acceso directo a la base de datos de RRHH mediante herramientas. "
+    "Cuando el usuario pregunta sobre empleados, estadísticas, documentos, licencias "
+    "o departamentos, SIEMPRE usa las herramientas para obtener datos reales antes "
+    "de responder. No inventes datos. "
+    "Responde en español, de forma clara y concisa. Si los resultados son una lista "
+    "larga, muestra un resumen y ofrece más detalle si se necesita. "
+    "Nunca expongas IDs internos al usuario salvo que los pida explícitamente."
+)
+
+
+# ---------------------------------------------------------------------------
+# Endpoint
+# ---------------------------------------------------------------------------
+
+@router.post("", dependencies=[SOLO_AUTH])
+def chat(peticion: PeticionChat, db: Session = Depends(get_db)):
+    api_key = os.getenv("GOOGLE_GENERATIVE_AI_API_KEY")
+    if not api_key:
+        raise HTTPException(
+            status_code=500,
+            detail="GOOGLE_GENERATIVE_AI_API_KEY no configurada en el servidor.",
+        )
+
+    cliente = genai.Client(api_key=api_key)
+
+    # Convertir historial al formato de Gemini
+    # Gemini usa "model" en lugar de "assistant"
+    historial: list[gtypes.ContentUnion] = []
+    for m in peticion.messages[:-1]:
+        rol = "model" if m.role == "assistant" else "user"
+        historial.append(gtypes.Content(role=rol, parts=[gtypes.Part(text=m.content)]))
+
+    ultimo = peticion.messages[-1]
+    config = gtypes.GenerateContentConfig(
+        system_instruction=SYSTEM_PROMPT,
+        tools=[gtypes.Tool(function_declarations=TOOLS_GEMINI)],
+    )
+
+    # Agentic loop: Gemini puede pedir varias herramientas en cadena
+    MAX_ITERACIONES = 10
+    contenido_actual: gtypes.ContentUnion = gtypes.Content(
+        role="user",
+        parts=[gtypes.Part(text=ultimo.content)],
+    )
+
+    for _ in range(MAX_ITERACIONES):
+        historial.append(contenido_actual)
+
+        respuesta = cliente.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=historial,
+            config=config,
+        )
+
+        candidato = respuesta.candidates[0]
+        historial.append(candidato.content)
+
+        # Recopilar function calls de esta respuesta
+        llamadas = [
+            p.function_call
+            for p in candidato.content.parts
+            if p.function_call is not None
+        ]
+
+        if not llamadas:
+            # Gemini terminó: extraer texto
+            texto = "".join(
+                p.text for p in candidato.content.parts
+                if p.text is not None
+            )
+            return {"result": texto}
+
+        # Ejecutar herramientas y preparar el siguiente turno
+        partes_resultado = []
+        for fc in llamadas:
+            try:
+                dato = ejecutar_tool(fc.name, dict(fc.args), db)
+            except Exception as e:
+                log.exception("Error ejecutando tool '%s'", fc.name)
+                dato = {"error": str(e)}
+
+            partes_resultado.append(
+                gtypes.Part(
+                    function_response=gtypes.FunctionResponse(
+                        name=fc.name,
+                        response={"result": json.dumps(dato, default=str, ensure_ascii=False)},
+                    )
+                )
+            )
+
+        contenido_actual = gtypes.Content(role="user", parts=partes_resultado)
+
+    raise HTTPException(
+        status_code=500,
+        detail="El asistente no pudo completar la respuesta.",
+    )

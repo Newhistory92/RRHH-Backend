@@ -4,7 +4,6 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from datetime import datetime, timedelta, timezone
 from jose import jwt
-import bcrypt
 import os
 from dotenv import load_dotenv
 from app.database.database import SessionLocal
@@ -14,6 +13,7 @@ from app.database.token_blacklist import (
     cleanup_expired,
     ensure_table,
 )
+from app.services.auth_providers import get_provider, nombre_proveedor
 
 load_dotenv()
 
@@ -66,48 +66,26 @@ def init_blacklist():
 # ---------------------------------------------------------------------------
 @router.post("/login")
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    usuario = form_data.username
-    password = form_data.password
-    print(f"🔐 Intento de login para usuario: {usuario}")
+    resultado = get_provider().autenticar(db, form_data.username, form_data.password)
 
-    # Buscar usuario por nombre o email
-    query = text("SELECT * FROM [User] WHERE usuario = :usuario OR email = :usuario")
-    result = db.execute(query, {"usuario": usuario}).fetchone()
-
-    if not result:
-        raise HTTPException(status_code=401, detail="Usuario no encontrado")
-
-    user = dict(result._mapping)
-
-    # Verificar si está activo
-    if not user.get("activo", True):
-        raise HTTPException(status_code=403, detail="Usuario inhabilitado")
-
-    # Verificar contraseña
-    if not bcrypt.checkpw(password.encode("utf-8"), user["password"].encode("utf-8")):
-        raise HTTPException(status_code=401, detail="Contraseña incorrecta")
-
-    # Obtener información del rol
-    query_role = text("SELECT name FROM Role WHERE id = :roleId")
-    role_result = db.execute(query_role, {"roleId": user["roleId"]}).fetchone()
+    role_result = db.execute(
+        text("SELECT name FROM Role WHERE id = :roleId"), {"roleId": resultado.roleId}
+    ).fetchone()
     role_name = role_result.name if role_result else "Desconocido"
 
-    # Crear token JWT
     expire = datetime.now(timezone.utc) + timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS)
-    payload = {"sub": user["usuario"], "roleId": user["roleId"], "exp": expire}
+    payload = {"sub": resultado.usuario, "roleId": resultado.roleId, "exp": expire}
     token = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
-    print(f"✅ Usuario {user['usuario']} autenticado correctamente con rol: {role_name}")
-
-    employee_id = user.get("employeeId")
+    print(f"✅ Usuario {resultado.usuario} autenticado correctamente con rol: {role_name}")
 
     return {
         "access_token": token,
         "token_type": "bearer",
-        "usuario": user["usuario"],
-        "roleId": user["roleId"],
+        "usuario": resultado.usuario,
+        "roleId": resultado.roleId,
         "roleName": role_name,
-        "employeeId": employee_id,
+        "employeeId": resultado.employeeId,
     }
 
 
@@ -205,3 +183,16 @@ async def verify_token_route(request: Request, db: Session = Depends(get_db)):
         raise HTTPException(status_code=401, detail="Token expirado")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Token inválido")
+
+
+# ---------------------------------------------------------------------------
+# ⚙️ CONFIG — Modo de autenticación activo
+# ---------------------------------------------------------------------------
+@router.get("/config")
+def get_auth_config():
+    """
+    Publico a proposito: el frontend lo consulta antes de cualquier login para
+    saber que pantallas mostrar. No expone nada sensible, solo que modo esta
+    activo.
+    """
+    return {"authProvider": nombre_proveedor()}

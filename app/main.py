@@ -2,12 +2,13 @@ import os
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from app.cors_config import setup_cors
-from app.routes import employee, user, auth, role, active, rrhh, departments, tests, feedback, licenses, obrasocial, stats, configtest, contracts, professions, schedules, reubicacion, publications, activos_config, activos, activos_modelos, relojes, asistencia, asistencia_ausencias
+from app.routes import employee, user, auth, role, active, rrhh, departments, tests, feedback, licenses, obrasocial, stats, configtest, contracts, professions, schedules, reubicacion, publications, activos_config, activos, activos_modelos, relojes, asistencia, asistencia_ausencias, chat
 from app.routes.auth import init_blacklist
 from app.scheduler import iniciar_scheduler, detener_scheduler
 from app.database.database import SessionLocal
 from app.database.marcaciones import ensure_columna_biometrico
 from app.database.asistencia import ensure_tables as ensure_tablas_asistencia
+from app.database.provisioning import ensure_columna_origen
 
 app = FastAPI(title="Backend RRHH", version="1.0")
 
@@ -37,6 +38,8 @@ def startup():
         ))
         db.commit()
         print("[OK] columna Message.category verificada")
+        ensure_columna_origen(db)
+        print("[OK] columna origen de [User] verificada")
     finally:
         db.close()
     iniciar_scheduler()
@@ -72,6 +75,7 @@ app.include_router(activos.router)
 app.include_router(relojes.router)
 app.include_router(asistencia.router)
 app.include_router(asistencia_ausencias.router)
+app.include_router(chat.router)
 
 @app.get("/")
 def root():
