@@ -317,7 +317,7 @@ def chat(peticion: PeticionChat, db: Session = Depends(get_db)):
         historial.append(contenido_actual)
 
         respuesta = cliente.models.generate_content(
-            model="gemini-1.5-flash",
+            model="gemini-2.5-flash",
             contents=historial,
             config=config,
         )
