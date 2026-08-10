@@ -1,11 +1,12 @@
 """
-Chatbot de RRHH conectado a la base de datos.
+Chatbot de RRHH conectado a la base de datos via Google Gemini.
 
 POST /chat  — recibe el historial de la conversacion y devuelve la siguiente
-             respuesta del asistente. Claude usa tool use para consultar datos
-             reales de la base antes de responder.
+             respuesta del asistente. Gemini usa function calling para consultar
+             datos reales de la base antes de responder.
 
 Las herramientas solo leen la base (SELECT). Ningun tool modifica datos.
+Requiere GOOGLE_GENERATIVE_AI_API_KEY en el .env.
 """
 
 import json
@@ -13,7 +14,8 @@ import logging
 import os
 from typing import Any
 
-import anthropic
+from google import genai
+from google.genai import types as gtypes
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -42,7 +44,7 @@ def get_db():
 # ---------------------------------------------------------------------------
 
 class MensajeChat(BaseModel):
-    role: str          # "user" | "assistant"
+    role: str      # "user" | "assistant"
     content: str
 
 
@@ -51,117 +53,87 @@ class PeticionChat(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Definiciones de herramientas para Claude
+# Definiciones de herramientas para Gemini
 # ---------------------------------------------------------------------------
 
-TOOLS: list[dict] = [
-    {
-        "name": "estadisticas_generales",
-        "description": (
+TOOLS_GEMINI = [
+    gtypes.FunctionDeclaration(
+        name="estadisticas_generales",
+        description=(
             "Devuelve estadísticas globales de la organización: total de empleados, "
-            "distribución por género, distribución por estado (activo/inactivo/jubilado), "
-            "cantidad de departamentos y cantidad con licencia activa."
+            "distribución por género, distribución por estado, cantidad de departamentos "
+            "y cantidad con licencia activa."
         ),
-        "input_schema": {
-            "type": "object",
-            "properties": {},
-            "required": [],
-        },
-    },
-    {
-        "name": "buscar_empleado",
-        "description": (
+        parameters=gtypes.Schema(type=gtypes.Type.OBJECT, properties={}),
+    ),
+    gtypes.FunctionDeclaration(
+        name="buscar_empleado",
+        description=(
             "Busca uno o varios empleados por nombre o apellido (búsqueda parcial). "
-            "Devuelve datos personales, departamento, oficina, cargo y contrato. "
-            "Usar cuando el usuario pregunta por una persona específica."
+            "Devuelve datos personales, departamento, oficina, cargo y contrato."
         ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "nombre": {
-                    "type": "string",
-                    "description": "Nombre o apellido a buscar (parcial, sin distinción de mayúsculas).",
-                }
+        parameters=gtypes.Schema(
+            type=gtypes.Type.OBJECT,
+            properties={
+                "nombre": gtypes.Schema(
+                    type=gtypes.Type.STRING,
+                    description="Nombre o apellido a buscar (parcial).",
+                )
             },
-            "required": ["nombre"],
-        },
-    },
-    {
-        "name": "empleados_por_departamento",
-        "description": (
-            "Lista los empleados de un departamento específico con su nombre, cargo, "
-            "tipo de contrato y estado."
+            required=["nombre"],
         ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "departamento": {
-                    "type": "string",
-                    "description": "Nombre o parte del nombre del departamento.",
-                }
+    ),
+    gtypes.FunctionDeclaration(
+        name="empleados_por_departamento",
+        description="Lista los empleados de un departamento con su nombre, cargo, contrato y estado.",
+        parameters=gtypes.Schema(
+            type=gtypes.Type.OBJECT,
+            properties={
+                "departamento": gtypes.Schema(
+                    type=gtypes.Type.STRING,
+                    description="Nombre o parte del nombre del departamento.",
+                )
             },
-            "required": ["departamento"],
-        },
-    },
-    {
-        "name": "documentos_empleado",
-        "description": (
-            "Lista los documentos del legajo de un empleado (DNI, resoluciones, "
-            "certificados, etc.) dado su ID numérico."
+            required=["departamento"],
         ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "empleado_id": {
-                    "type": "integer",
-                    "description": "ID numérico del empleado.",
-                }
+    ),
+    gtypes.FunctionDeclaration(
+        name="documentos_empleado",
+        description="Lista los documentos del legajo de un empleado dado su ID numérico.",
+        parameters=gtypes.Schema(
+            type=gtypes.Type.OBJECT,
+            properties={
+                "empleado_id": gtypes.Schema(
+                    type=gtypes.Type.INTEGER,
+                    description="ID numérico del empleado.",
+                )
             },
-            "required": ["empleado_id"],
-        },
-    },
-    {
-        "name": "empleados_con_licencia",
-        "description": (
-            "Devuelve la lista de empleados que actualmente tienen una licencia activa "
-            "o pendiente, con el tipo y fechas de la licencia."
+            required=["empleado_id"],
         ),
-        "input_schema": {
-            "type": "object",
-            "properties": {},
-            "required": [],
-        },
-    },
-    {
-        "name": "listar_departamentos",
-        "description": (
-            "Lista todos los departamentos de la organización con la cantidad de "
-            "empleados en cada uno."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {},
-            "required": [],
-        },
-    },
-    {
-        "name": "ausencias_recientes",
-        "description": (
-            "Devuelve las ausencias registradas en los últimos N días (por defecto 30). "
-            "Incluye nombre del empleado, fecha y motivo."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "dias": {
-                    "type": "integer",
-                    "description": "Cantidad de días hacia atrás a consultar. Por defecto 30.",
-                    "default": 30,
-                }
+    ),
+    gtypes.FunctionDeclaration(
+        name="empleados_con_licencia",
+        description="Lista los empleados con licencia activa o pendiente, con tipo y fechas.",
+        parameters=gtypes.Schema(type=gtypes.Type.OBJECT, properties={}),
+    ),
+    gtypes.FunctionDeclaration(
+        name="listar_departamentos",
+        description="Lista todos los departamentos con la cantidad de empleados en cada uno.",
+        parameters=gtypes.Schema(type=gtypes.Type.OBJECT, properties={}),
+    ),
+    gtypes.FunctionDeclaration(
+        name="ausencias_recientes",
+        description="Ausencias registradas en los últimos N días (default 30). Incluye empleado, fecha y motivo.",
+        parameters=gtypes.Schema(
+            type=gtypes.Type.OBJECT,
+            properties={
+                "dias": gtypes.Schema(
+                    type=gtypes.Type.INTEGER,
+                    description="Cantidad de días hacia atrás. Por defecto 30.",
+                )
             },
-            "required": [],
-        },
-    },
+        ),
+    ),
 ]
 
 
@@ -272,22 +244,21 @@ def _ausencias_recientes(db: Session, dias: int = 30) -> list[dict]:
     return [dict(f) for f in filas]
 
 
-def ejecutar_tool(nombre: str, inputs: dict, db: Session) -> Any:
-    """Despacha la herramienta y retorna el resultado como dato Python."""
+def ejecutar_tool(nombre: str, args: dict, db: Session) -> Any:
     if nombre == "estadisticas_generales":
         return _estadisticas_generales(db)
     if nombre == "buscar_empleado":
-        return _buscar_empleado(db, inputs["nombre"])
+        return _buscar_empleado(db, args["nombre"])
     if nombre == "empleados_por_departamento":
-        return _empleados_por_departamento(db, inputs["departamento"])
+        return _empleados_por_departamento(db, args["departamento"])
     if nombre == "documentos_empleado":
-        return _documentos_empleado(db, inputs["empleado_id"])
+        return _documentos_empleado(db, int(args["empleado_id"]))
     if nombre == "empleados_con_licencia":
         return _empleados_con_licencia(db)
     if nombre == "listar_departamentos":
         return _listar_departamentos(db)
     if nombre == "ausencias_recientes":
-        return _ausencias_recientes(db, inputs.get("dias", 30))
+        return _ausencias_recientes(db, int(args.get("dias", 30)))
     return {"error": f"Herramienta desconocida: {nombre}"}
 
 
@@ -295,15 +266,16 @@ def ejecutar_tool(nombre: str, inputs: dict, db: Session) -> Any:
 # Prompt de sistema
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = """Eres el asistente de Recursos Humanos de la organización.
-Tienes acceso directo a la base de datos de RRHH mediante herramientas.
-Cuando el usuario pregunta sobre empleados, estadísticas, documentos, licencias
-o departamentos, SIEMPRE usa las herramientas para obtener datos reales antes
-de responder. No inventes datos.
-
-Responde en español, de forma clara y concisa. Si los resultados son una lista
-larga, muestra un resumen y ofrece más detalle si se necesita.
-Nunca expongas IDs internos al usuario salvo que los pida explícitamente."""
+SYSTEM_PROMPT = (
+    "Eres el asistente de Recursos Humanos de la organización. "
+    "Tienes acceso directo a la base de datos de RRHH mediante herramientas. "
+    "Cuando el usuario pregunta sobre empleados, estadísticas, documentos, licencias "
+    "o departamentos, SIEMPRE usa las herramientas para obtener datos reales antes "
+    "de responder. No inventes datos. "
+    "Responde en español, de forma clara y concisa. Si los resultados son una lista "
+    "larga, muestra un resumen y ofrece más detalle si se necesita. "
+    "Nunca expongas IDs internos al usuario salvo que los pida explícitamente."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -312,67 +284,81 @@ Nunca expongas IDs internos al usuario salvo que los pida explícitamente."""
 
 @router.post("", dependencies=[SOLO_AUTH])
 def chat(peticion: PeticionChat, db: Session = Depends(get_db)):
-    api_key = os.getenv("ANTHROPIC_API_KEY")
+    api_key = os.getenv("GOOGLE_GENERATIVE_AI_API_KEY")
     if not api_key:
         raise HTTPException(
             status_code=500,
-            detail="ANTHROPIC_API_KEY no configurada en el servidor.",
+            detail="GOOGLE_GENERATIVE_AI_API_KEY no configurada en el servidor.",
         )
 
-    cliente = anthropic.Anthropic(api_key=api_key)
+    cliente = genai.Client(api_key=api_key)
 
-    # Convertir el historial al formato que espera la API de Anthropic
-    historial = [{"role": m.role, "content": m.content} for m in peticion.messages]
+    # Convertir historial al formato de Gemini
+    # Gemini usa "model" en lugar de "assistant"
+    historial: list[gtypes.ContentUnion] = []
+    for m in peticion.messages[:-1]:
+        rol = "model" if m.role == "assistant" else "user"
+        historial.append(gtypes.Content(role=rol, parts=[gtypes.Part(text=m.content)]))
 
-    # Agentic loop: Claude puede pedir varias herramientas en cadena
+    ultimo = peticion.messages[-1]
+    config = gtypes.GenerateContentConfig(
+        system_instruction=SYSTEM_PROMPT,
+        tools=[gtypes.Tool(function_declarations=TOOLS_GEMINI)],
+    )
+
+    # Agentic loop: Gemini puede pedir varias herramientas en cadena
     MAX_ITERACIONES = 10
+    contenido_actual: gtypes.ContentUnion = gtypes.Content(
+        role="user",
+        parts=[gtypes.Part(text=ultimo.content)],
+    )
+
     for _ in range(MAX_ITERACIONES):
-        respuesta = cliente.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=2048,
-            system=SYSTEM_PROMPT,
-            tools=TOOLS,
-            messages=historial,
+        historial.append(contenido_actual)
+
+        respuesta = cliente.models.generate_content(
+            model="gemini-1.5-flash",
+            contents=historial,
+            config=config,
         )
 
-        # Si Claude terminó sin pedir herramientas, devolver la respuesta
-        if respuesta.stop_reason == "end_turn":
-            texto = next(
-                (b.text for b in respuesta.content if hasattr(b, "text")),
-                "",
+        candidato = respuesta.candidates[0]
+        historial.append(candidato.content)
+
+        # Recopilar function calls de esta respuesta
+        llamadas = [
+            p.function_call
+            for p in candidato.content.parts
+            if p.function_call is not None
+        ]
+
+        if not llamadas:
+            # Gemini terminó: extraer texto
+            texto = "".join(
+                p.text for p in candidato.content.parts
+                if p.text is not None
             )
             return {"result": texto}
 
-        # Claude pidió herramientas: ejecutarlas y agregar resultados al historial
-        if respuesta.stop_reason == "tool_use":
-            # Agregar la respuesta de Claude (con los tool_use) al historial
-            historial.append({
-                "role": "assistant",
-                "content": respuesta.content,
-            })
+        # Ejecutar herramientas y preparar el siguiente turno
+        partes_resultado = []
+        for fc in llamadas:
+            try:
+                dato = ejecutar_tool(fc.name, dict(fc.args), db)
+            except Exception as e:
+                log.exception("Error ejecutando tool '%s'", fc.name)
+                dato = {"error": str(e)}
 
-            # Construir el bloque tool_result para cada herramienta solicitada
-            resultados = []
-            for bloque in respuesta.content:
-                if bloque.type != "tool_use":
-                    continue
-                try:
-                    dato = ejecutar_tool(bloque.name, bloque.input, db)
-                except Exception as e:
-                    log.exception("Error ejecutando tool '%s'", bloque.name)
-                    dato = {"error": str(e)}
+            partes_resultado.append(
+                gtypes.Part(
+                    function_response=gtypes.FunctionResponse(
+                        name=fc.name,
+                        response={"result": json.dumps(dato, default=str, ensure_ascii=False)},
+                    )
+                )
+            )
 
-                resultados.append({
-                    "type": "tool_result",
-                    "tool_use_id": bloque.id,
-                    "content": json.dumps(dato, default=str, ensure_ascii=False),
-                })
-
-            historial.append({"role": "user", "content": resultados})
-            continue
-
-        # Cualquier otro stop_reason (max_tokens, etc.)
-        break
+        contenido_actual = gtypes.Content(role="user", parts=partes_resultado)
 
     raise HTTPException(
         status_code=500,
