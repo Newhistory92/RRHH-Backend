@@ -24,13 +24,14 @@ _SELECT_USUARIO = """
 """
 
 # Solo empleados de la institucion: excluye afiliados, prestadores, clinicas
-# y organismos externos. Es la condicion que distingue al personal interno.
+# y organismos externos. COALESCE cubre el caso donde la columna es nullable
+# y tiene NULL en lugar de 0/False (ambos significan "no es afiliado").
 _FILTRO_EMPLEADOS = (
-    " u.esAfiliado = 0"
+    " COALESCE(u.esAfiliado, 0) = 0"
     " AND u.idPrestador IS NULL"
     " AND u.idClinica IS NULL"
-    " AND u.codOrganismoExterno IS NULL"
-    " AND u.codObraSocial IS NULL"
+    " AND COALESCE(u.codOrganismoExterno, '') = ''"
+    " AND COALESCE(u.codObraSocial, '') = ''"
 )
 
 
