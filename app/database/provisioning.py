@@ -106,16 +106,22 @@ def crear_employee(db: Session, datos: dict) -> int:
 
 ID_IDENTITY = "identity"
 ID_GUID = "guid"
+ID_GUID_TEXTO = "guid_texto"
 ID_ENTERO_MANUAL = "entero_manual"
+
+# Tipos de columna que guardan el GUID como cadena en vez de como
+# uniqueidentifier nativo. [User].id es uno de estos en este esquema.
+_TIPOS_TEXTO = {"nvarchar", "varchar", "nchar", "char"}
 
 
 def estrategia_id(db: Session, tabla: str) -> str:
     """
     Como se obtiene el valor de la PK `id` en esa tabla.
 
-    El esquema no es uniforme: Employee.id es un int IDENTITY, pero [User].id
-    es un uniqueidentifier que la aplicacion tiene que generar. Asumir uno de
-    los dos casos rompe el otro, asi que se consulta el catalogo.
+    El esquema no es uniforme: Employee.id es un int IDENTITY, mientras que
+    [User].id es un GUID guardado como texto. Sumarle 1 al MAX de esa columna
+    es justo el error que rompia la importacion, asi que el tipo se consulta
+    en el catalogo en vez de asumirse.
     """
     fila = db.execute(text("""
         SELECT TYPE_NAME(c.system_type_id) AS tipo, c.is_identity
@@ -127,8 +133,12 @@ def estrategia_id(db: Session, tabla: str) -> str:
         return ID_ENTERO_MANUAL
     if fila["is_identity"]:
         return ID_IDENTITY
-    if (fila["tipo"] or "").lower() == "uniqueidentifier":
+
+    tipo = (fila["tipo"] or "").lower()
+    if tipo == "uniqueidentifier":
         return ID_GUID
+    if tipo in _TIPOS_TEXTO:
+        return ID_GUID_TEXTO
     return ID_ENTERO_MANUAL
 
 
@@ -165,6 +175,15 @@ def crear_user(db: Session, usuario: str, email: str, password_hash: str,
             INSERT INTO [User] (id, usuario, email, password, roleId, employeeId, origen, activo, updatedAt)
             OUTPUT INSERTED.id
             VALUES (NEWID(), :usuario, :email, :password, :roleId, :employeeId, :origen, 1, GETDATE())
+        """
+    elif estrategia == ID_GUID_TEXTO:
+        # LOWER para seguir el formato de los ids que ya estan cargados: NEWID()
+        # devuelve mayusculas y la tabla los tiene en minusculas.
+        sql = """
+            INSERT INTO [User] (id, usuario, email, password, roleId, employeeId, origen, activo, updatedAt)
+            OUTPUT INSERTED.id
+            VALUES (LOWER(CONVERT(NVARCHAR(36), NEWID())), :usuario, :email, :password,
+                    :roleId, :employeeId, :origen, 1, GETDATE())
         """
     else:
         sql = """

@@ -169,6 +169,14 @@ def test_estrategia_guid_cuando_la_columna_es_uniqueidentifier():
     assert prov.estrategia_id(db, "[User]") == prov.ID_GUID
 
 
+def test_estrategia_guid_texto_cuando_el_guid_se_guarda_como_cadena():
+    from app.database import provisioning as prov
+
+    for tipo in ("nvarchar", "varchar", "nchar", "char"):
+        db = FakeSession({"FROM sys.columns": [{"tipo": tipo, "is_identity": 0}]})
+        assert prov.estrategia_id(db, "[User]") == prov.ID_GUID_TEXTO
+
+
 def test_estrategia_entero_manual_cuando_es_int_sin_identity():
     from app.database import provisioning as prov
 
@@ -200,6 +208,21 @@ def test_con_guid_el_insert_genera_el_id_con_newid():
     sql, _ = _insert_user(db)
     assert "NEWID()" in sql
     # Sumarle 1 a un GUID es justo el error que rompia la importacion.
+    assert "MAX(id)" not in sql
+
+
+def test_con_guid_de_texto_el_insert_genera_un_guid_en_minusculas():
+    from app.database import provisioning as prov
+
+    guid = "83849ced-bee8-40b6-b7d0-22bf78a53f5e"
+    db = _sesion_user(tipo="nvarchar", id_devuelto=guid)
+
+    assert prov.crear_user(db, usuario="erojo", email="e@x.com", password_hash="h",
+                           employee_id=300, origen=prov.ORIGEN_OBRASOCIAL) == guid
+
+    sql, _ = _insert_user(db)
+    assert "LOWER(CONVERT(NVARCHAR(36), NEWID()))" in sql
+    # Sumarle 1 a un GUID guardado como texto es el error que rompia todo.
     assert "MAX(id)" not in sql
 
 

@@ -19,6 +19,8 @@ cae tambien y no hay login posible por ningun camino. Por eso no hay ningun
 fallback ni modo degradado -- seria codigo muerto.
 """
 
+import logging
+
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
@@ -28,6 +30,8 @@ from app.database.database import SessionLocalObraSocial
 from app.services.auth_providers.base import ResultadoAuth
 from app.services.auth_providers.local import verificar_password
 from app.services.auth_providers.mapeo import persona_a_employee, placeholder_email
+
+log = logging.getLogger(__name__)
 
 
 def provisionar(db: Session, externo: dict) -> tuple:
@@ -132,7 +136,23 @@ class ObraSocialAuthProvider:
         # Validar antes de provisionar: una contrasena incorrecta no debe
         # dejar un Employee huerfano en la base.
         verificar_password(password, externo["claveUsuario"])
-        employee_id, _ = provisionar(db, externo)
+        try:
+            employee_id, _ = provisionar(db, externo)
+        except HTTPException:
+            raise
+        except Exception as e:
+            # Un fallo de la base al dar el alta no es culpa de la credencial.
+            # Sin este traductor sale como 500 con stacktrace y el usuario no
+            # se entera de que su login estuvo bien y lo que fallo fue el alta.
+            db.rollback()
+            log.exception("Fallo el alta automatica de '%s'", externo["nombreUsuario"])
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Tus credenciales son correctas, pero falló el alta "
+                    f"automática de tu usuario en RRHH: {e}"
+                ),
+            ) from e
         return ResultadoAuth(
             usuario=externo["nombreUsuario"],
             roleId=prov.ROLE_USER,
