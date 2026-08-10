@@ -121,14 +121,21 @@ def test_crear_employee_pasa_todos_los_campos_del_mapeo():
 
 
 def _insert_user(db):
-    """El (sql, params) del INSERT sobre [User], salteando el chequeo de identity."""
+    """El (sql, params) del INSERT sobre [User], salteando el chequeo del catalogo."""
     return next((par for par in db.ejecutadas if "INSERT INTO [User]" in par[0]))
+
+
+def _sesion_user(tipo="int", es_identity=0, id_devuelto=9):
+    return FakeSession({
+        "FROM sys.columns": [{"tipo": tipo, "is_identity": es_identity}],
+        "INSERT INTO [User]": [{"id": id_devuelto}],
+    })
 
 
 def test_crear_user_usa_rol_user_por_defecto():
     from app.database import provisioning as prov
 
-    db = FakeSession({"INSERT INTO [User]": [{"id": 9}]})
+    db = _sesion_user()
     nuevo = prov.crear_user(
         db, usuario="erojo", email="erojo@institucion.gob.ar",
         password_hash="$2b$10$hash", employee_id=300,
@@ -145,45 +152,61 @@ def test_crear_user_usa_rol_user_por_defecto():
 
 # -- Generacion del id de [User] ----------------------------------------------
 
-def test_id_es_identity_lee_la_propiedad_de_la_columna():
+def test_estrategia_identity_cuando_la_columna_es_identity():
     from app.database import provisioning as prov
 
-    db = FakeSession({"COLUMNPROPERTY": [{"es_identity": 1}]})
-    assert prov.id_es_identity(db, "[User]") is True
+    db = FakeSession({"FROM sys.columns": [{"tipo": "int", "is_identity": 1}]})
+    assert prov.estrategia_id(db, "[User]") == prov.ID_IDENTITY
 
     _, params = db.ejecutadas[0]
     assert params == {"tabla": "[User]"}
 
 
-def test_id_no_identity_cuando_la_propiedad_es_cero():
+def test_estrategia_guid_cuando_la_columna_es_uniqueidentifier():
     from app.database import provisioning as prov
 
-    db = FakeSession({"COLUMNPROPERTY": [{"es_identity": 0}]})
-    assert prov.id_es_identity(db, "[User]") is False
+    db = FakeSession({"FROM sys.columns": [{"tipo": "uniqueidentifier", "is_identity": 0}]})
+    assert prov.estrategia_id(db, "[User]") == prov.ID_GUID
+
+
+def test_estrategia_entero_manual_cuando_es_int_sin_identity():
+    from app.database import provisioning as prov
+
+    db = FakeSession({"FROM sys.columns": [{"tipo": "int", "is_identity": 0}]})
+    assert prov.estrategia_id(db, "[User]") == prov.ID_ENTERO_MANUAL
 
 
 def test_con_identity_el_insert_no_escribe_la_columna_id():
     from app.database import provisioning as prov
 
-    db = FakeSession({
-        "COLUMNPROPERTY": [{"es_identity": 1}],
-        "INSERT INTO [User]": [{"id": 9}],
-    })
+    db = _sesion_user(es_identity=1)
     prov.crear_user(db, usuario="erojo", email="e@x.com", password_hash="h",
                     employee_id=300, origen=prov.ORIGEN_OBRASOCIAL)
 
     sql, _ = _insert_user(db)
-    assert "VALUES" in sql
+    assert "MAX(id)" not in sql
+    assert "NEWID()" not in sql
+
+
+def test_con_guid_el_insert_genera_el_id_con_newid():
+    from app.database import provisioning as prov
+
+    guid = "83849ced-bee8-40b6-b7d0-22bf78a53f5e"
+    db = _sesion_user(tipo="uniqueidentifier", id_devuelto=guid)
+
+    assert prov.crear_user(db, usuario="erojo", email="e@x.com", password_hash="h",
+                           employee_id=300, origen=prov.ORIGEN_OBRASOCIAL) == guid
+
+    sql, _ = _insert_user(db)
+    assert "NEWID()" in sql
+    # Sumarle 1 a un GUID es justo el error que rompia la importacion.
     assert "MAX(id)" not in sql
 
 
 def test_sin_identity_el_insert_calcula_el_id_en_la_misma_sentencia():
     from app.database import provisioning as prov
 
-    db = FakeSession({
-        "COLUMNPROPERTY": [{"es_identity": 0}],
-        "INSERT INTO [User]": [{"id": 9}],
-    })
+    db = _sesion_user(tipo="int", es_identity=0)
     assert prov.crear_user(db, usuario="erojo", email="e@x.com", password_hash="h",
                            employee_id=300, origen=prov.ORIGEN_OBRASOCIAL) == 9
 

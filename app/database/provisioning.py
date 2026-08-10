@@ -104,28 +104,44 @@ def crear_employee(db: Session, datos: dict) -> int:
     return nuevo_id
 
 
-def id_es_identity(db: Session, tabla: str) -> bool:
-    """
-    Si la PK se autogenera o la tiene que calcular el llamador.
+ID_IDENTITY = "identity"
+ID_GUID = "guid"
+ID_ENTERO_MANUAL = "entero_manual"
 
-    Employee.id es IDENTITY pero [User].id no lo es en este esquema, asi que
-    no se puede asumir lo mismo para las dos tablas.
+
+def estrategia_id(db: Session, tabla: str) -> str:
     """
-    fila = db.execute(text(
-        "SELECT COLUMNPROPERTY(OBJECT_ID(:tabla), 'id', 'IsIdentity') AS es_identity"
-    ), {"tabla": tabla}).mappings().first()
-    return bool(fila and fila["es_identity"])
+    Como se obtiene el valor de la PK `id` en esa tabla.
+
+    El esquema no es uniforme: Employee.id es un int IDENTITY, pero [User].id
+    es un uniqueidentifier que la aplicacion tiene que generar. Asumir uno de
+    los dos casos rompe el otro, asi que se consulta el catalogo.
+    """
+    fila = db.execute(text("""
+        SELECT TYPE_NAME(c.system_type_id) AS tipo, c.is_identity
+        FROM sys.columns c
+        WHERE c.object_id = OBJECT_ID(:tabla) AND c.name = 'id'
+    """), {"tabla": tabla}).mappings().first()
+
+    if fila is None:
+        return ID_ENTERO_MANUAL
+    if fila["is_identity"]:
+        return ID_IDENTITY
+    if (fila["tipo"] or "").lower() == "uniqueidentifier":
+        return ID_GUID
+    return ID_ENTERO_MANUAL
 
 
 def crear_user(db: Session, usuario: str, email: str, password_hash: str,
-               employee_id: int, origen: str, role_id: int = ROLE_USER) -> int:
+               employee_id: int, origen: str, role_id: int = ROLE_USER):
     """
     El hash llega ya calculado. Cuando viene de un sistema externo que tambien
     usa bcrypt se copia tal cual, y el usuario nunca resetea su contrasena.
 
-    Si [User].id no es IDENTITY se calcula con MAX(id)+1 dentro del mismo
-    INSERT ... SELECT, para que el calculo y la escritura compartan la misma
-    sentencia y dos importaciones simultaneas no elijan el mismo numero.
+    El id se resuelve segun el tipo real de la columna: IDENTITY lo deja a la
+    base, uniqueidentifier usa NEWID(), y un entero sin identity se calcula con
+    MAX(id)+1 dentro del mismo INSERT ... SELECT para que dos importaciones
+    simultaneas no elijan el mismo numero.
     """
     params = {
         "usuario": usuario,
@@ -136,11 +152,19 @@ def crear_user(db: Session, usuario: str, email: str, password_hash: str,
         "origen": origen,
     }
 
-    if id_es_identity(db, "[User]"):
+    estrategia = estrategia_id(db, "[User]")
+
+    if estrategia == ID_IDENTITY:
         sql = """
             INSERT INTO [User] (usuario, email, password, roleId, employeeId, origen, activo, updatedAt)
             OUTPUT INSERTED.id
             VALUES (:usuario, :email, :password, :roleId, :employeeId, :origen, 1, GETDATE())
+        """
+    elif estrategia == ID_GUID:
+        sql = """
+            INSERT INTO [User] (id, usuario, email, password, roleId, employeeId, origen, activo, updatedAt)
+            OUTPUT INSERTED.id
+            VALUES (NEWID(), :usuario, :email, :password, :roleId, :employeeId, :origen, 1, GETDATE())
         """
     else:
         sql = """

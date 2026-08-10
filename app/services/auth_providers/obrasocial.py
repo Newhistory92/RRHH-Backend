@@ -30,10 +30,13 @@ from app.services.auth_providers.local import verificar_password
 from app.services.auth_providers.mapeo import persona_a_employee, placeholder_email
 
 
-def provisionar(db: Session, externo: dict) -> tuple[int, int]:
+def provisionar(db: Session, externo: dict) -> tuple:
     """
     Crea (o reutiliza) el Employee y crea el [User] para una persona de
     ObraSocial. Retorna (employee_id, user_id).
+
+    employee_id es siempre un int; user_id sigue el tipo de [User].id, que en
+    este esquema es un GUID.
 
     No valida contrasena: el login la valida antes de llamar, y la importacion
     desde RRHH no la necesita.
