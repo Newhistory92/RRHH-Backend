@@ -1,15 +1,18 @@
 """
-Middleware de autorización para FastAPI.
+Middleware de autorizacion para FastAPI.
 
-Provee dos dependencias reutilizables:
-  - get_current_user: extrae y valida el JWT, retorna datos del usuario
-  - require_roles:    factory que crea una dependencia que verifica el rol
+Provee tres dependencias reutilizables:
+  - get_current_user:  valida el JWT y arma el usuario con sus permisos
+  - require_auth:      exige token valido, sin pedir permiso puntual
+  - require_permission: exige un codigo de permiso concreto
 
-Roles asumidos (basado en roleId=2 asignado al registrar):
-  ROLE_ADMIN = 1
-  ROLE_USER  = 2
+Los permisos salen de la base en CADA request (ver permisos_de_rol). El JWT
+lleva el roleId solo como pista: si el admin cambia el rol de alguien, el
+cambio aplica en el request siguiente y no queda congelado hasta que expire
+el token.
 
-Si tu tabla Role tiene IDs distintos, actualizar las constantes aquí abajo.
+No hay ids de rol en este modulo: la autorizacion habla de codigos de
+permiso, y que rol tiene cuales vive en la tabla RolePermission.
 """
 
 from fastapi import Depends, HTTPException
@@ -21,19 +24,13 @@ import os
 from dotenv import load_dotenv
 from app.database.database import SessionLocal
 from app.database.token_blacklist import is_blacklisted
+from app.database.permissions import permisos_de_rol
+from app.permisos import tiene_permiso
 
 load_dotenv()
 
 SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 ALGORITHM  = "HS256"
-
-# ---------------------------------------------------------------------------
-# Constantes de roles — ajustar según los IDs reales en la tabla Role
-# ---------------------------------------------------------------------------
-ROLE_ADMIN = 1
-ROLE_USER  = 2
-ROLE_RRHH  = ROLE_ADMIN  # actualizar cuando el rol RRHH tenga ID propio
-# Si existen más roles (ej. RRHH=3) agregalos aquí como constantes
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 
@@ -115,38 +112,48 @@ def get_current_user(
         "usuario":    usuario,
         "roleId":     role_id,
         "employeeId": employee_id,
+        "permisos":   permisos_de_rol(db, role_id),
     }
 
 
 # ---------------------------------------------------------------------------
-# Factory: require_roles(*roles)
+# Autorizacion por permiso
 # ---------------------------------------------------------------------------
-def require_roles(*allowed_roles: int):
+def _autorizar(user: dict, requerido: str) -> dict:
     """
-    Retorna una dependencia FastAPI que verifica que el usuario autenticado
-    tenga uno de los roles especificados.
+    Chequeo puro: devuelve el usuario o lanza 403.
+
+    Separado de la dependencia para poder testearlo sin FastAPI ni base.
+    """
+    if not tiene_permiso(user.get("permisos") or set(), requerido):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Acceso denegado. Se requiere el permiso: {requerido}",
+        )
+    return user
+
+
+def require_permission(code: str):
+    """
+    Dependencia que exige un codigo de permiso.
 
     Uso:
-        @router.get("/", dependencies=[Depends(require_roles(ROLE_ADMIN, ROLE_RRHH))])
+        @router.get("/", dependencies=[Depends(require_permission("rrhh.gestionar"))])
 
-    O en la firma del endpoint si necesitás el usuario:
-        def my_endpoint(user = Depends(require_roles(ROLE_ADMIN))):
+    O en la firma si necesitas el usuario:
+        def endpoint(user = Depends(require_permission("rrhh.gestionar"))):
             ...
-
-    Lanza 403 si el rol no está permitido.
     """
     def _check(user: dict = Depends(get_current_user)) -> dict:
-        if user["roleId"] not in allowed_roles:
-            raise HTTPException(
-                status_code=403,
-                detail=f"Acceso denegado. Se requiere uno de los roles: {list(allowed_roles)}",
-            )
-        return user
+        return _autorizar(user, code)
     return _check
 
 
-# ---------------------------------------------------------------------------
-# Shorthand preconfigurados para los roles más comunes
-# ---------------------------------------------------------------------------
-require_admin       = require_roles(ROLE_ADMIN)
-require_any_auth    = require_roles(ROLE_ADMIN, ROLE_USER)   # cualquier usuario logueado
+def require_auth(user: dict = Depends(get_current_user)) -> dict:
+    """
+    Exige token valido, sin permiso puntual.
+
+    Para endpoints que cualquier empleado logueado puede usar y que ya
+    filtran por employeeId adentro (por ejemplo /asistencia/mi).
+    """
+    return user
