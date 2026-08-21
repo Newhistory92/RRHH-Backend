@@ -14,6 +14,8 @@ from app.database.token_blacklist import (
     cleanup_expired,
     ensure_table,
 )
+from app.auth_middleware import require_auth
+from app.database.permissions import permisos_de_rol
 
 load_dotenv()
 
@@ -101,6 +103,8 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
 
     employee_id = user.get("employeeId")
 
+    permisos = permisos_de_rol(db, user["roleId"])
+
     return {
         "access_token": token,
         "token_type": "bearer",
@@ -108,6 +112,7 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
         "roleId": user["roleId"],
         "roleName": role_name,
         "employeeId": employee_id,
+        "permisos": sorted(permisos),
     }
 
 
@@ -205,3 +210,24 @@ async def verify_token_route(request: Request, db: Session = Depends(get_db)):
         raise HTTPException(status_code=401, detail="Token expirado")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Token inválido")
+
+
+# ---------------------------------------------------------------------------
+# 🔑 Permisos del usuario actual
+# ---------------------------------------------------------------------------
+def listar_permisos(user: dict = Depends(require_auth)):
+    """
+    Codigos de permiso del usuario logueado, ordenados.
+
+    El frontend lo llama al montar para rearmar el sidebar sin depender de
+    lo que quedo guardado en localStorage al loguear.
+    """
+    return {"permisos": sorted(user.get("permisos") or set())}
+
+
+@router.get("/permisos")
+def get_permisos(user: dict = Depends(require_auth)):
+    """
+    GET /auth/permisos — Retorna los permisos del usuario actual.
+    """
+    return listar_permisos(user)
