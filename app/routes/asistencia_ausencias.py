@@ -14,7 +14,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.auth_middleware import (
-    ROLE_ADMIN, ROLE_RRHH, get_current_user, require_roles,
+    get_current_user, require_permission,
 )
 from app.database.asistencia import ensure_tables as ensure_tablas_asistencia
 from app.database.asistencia_justificaciones import (
@@ -29,7 +29,7 @@ from app.services.asistencia_recalc import recalcular_anio
 
 router = APIRouter(prefix="/asistencia", tags=["Asistencia"])
 
-SOLO_RRHH = Depends(require_roles(ROLE_ADMIN, ROLE_RRHH))
+GESTIONAR_ASISTENCIA = Depends(require_permission("asistencia.gestionar"))
 
 
 def get_db():
@@ -93,7 +93,7 @@ def _licencia_que_cubre(licencias: list[dict], dia: date) -> dict | None:
     return None
 
 
-@router.get("/empleado/{employee_id}/ausencias", dependencies=[SOLO_RRHH])
+@router.get("/empleado/{employee_id}/ausencias", dependencies=[GESTIONAR_ASISTENCIA])
 def get_ausencias(employee_id: int, desde: str | None = None,
                   hasta: str | None = None, db: Session = Depends(get_db)):
     """
@@ -147,7 +147,7 @@ def get_ausencias(employee_id: int, desde: str | None = None,
 
 
 @router.post("/empleado/{employee_id}/ausencias/{fecha}/justificar",
-             dependencies=[SOLO_RRHH])
+             dependencies=[GESTIONAR_ASISTENCIA])
 def post_justificar(employee_id: int, fecha: str, data: dict = Body(...),
                     usuario: dict = Depends(get_current_user),
                     db: Session = Depends(get_db)):
@@ -197,7 +197,7 @@ def post_justificar(employee_id: int, fecha: str, data: dict = Body(...),
 
 
 @router.delete("/empleado/{employee_id}/ausencias/{fecha}/justificar",
-               dependencies=[SOLO_RRHH])
+               dependencies=[GESTIONAR_ASISTENCIA])
 def delete_justificar(employee_id: int, fecha: str,
                       db: Session = Depends(get_db)):
     """Anula la justificacion. El dia vuelve a contar como ausencia."""
