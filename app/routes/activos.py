@@ -12,7 +12,7 @@ from sqlalchemy import text
 from datetime import datetime
 from typing import Optional
 from app.database.database import SessionLocal
-from app.auth_middleware import require_any_auth, require_roles, ROLE_ADMIN, get_current_user
+from app.auth_middleware import require_permission, get_current_user
 from app.database.activos import (
     ensure_tables, RESPONSABLE_TIPOS, registrar_historial, estado_disponible_id,
     listar_activos, obtener_activo, buscar_por_codigo,
@@ -22,8 +22,6 @@ from app.database.activos import (
 from app.database.activos_modelos import ensure_tables as ensure_tables_modelos, asignar_modelo, evaluar_pc as evaluar_pc_modelos
 
 router = APIRouter(prefix="/activos", tags=["Activos"])
-
-require_admin = require_roles(ROLE_ADMIN)
 
 
 def get_db():
@@ -104,7 +102,7 @@ def _validar_comunes(db: Session, data: dict) -> tuple:
 
 
 # ─── Lectura ─────────────────────────────────────────────────────────────────
-@router.get("", dependencies=[Depends(require_any_auth)])
+@router.get("", dependencies=[Depends(require_permission("activos.inventario"))])
 def get_activos(categoriaId: Optional[int] = None, grupo: Optional[str] = None,
                 estadoId: Optional[int] = None, texto: Optional[str] = None,
                 departamentoId: Optional[int] = None, oficinaId: Optional[int] = None,
@@ -116,7 +114,7 @@ def get_activos(categoriaId: Optional[int] = None, grupo: Optional[str] = None,
                                        empleado_id=empleadoId)}
 
 
-@router.get("/buscar", dependencies=[Depends(require_any_auth)])
+@router.get("/buscar", dependencies=[Depends(require_permission("activos.inventario"))])
 def get_por_codigo(codigo: str, db: Session = Depends(get_db)):
     ensure_tables(db)
     activo = buscar_por_codigo(db, codigo)
@@ -125,13 +123,13 @@ def get_por_codigo(codigo: str, db: Session = Depends(get_db)):
     return activo
 
 
-@router.get("/componentes-libres", dependencies=[Depends(require_any_auth)])
+@router.get("/componentes-libres", dependencies=[Depends(require_permission("activos.inventario"))])
 def get_componentes_libres(categoriaId: Optional[int] = None, db: Session = Depends(get_db)):
     ensure_tables(db)
     return {"componentes": componentes_libres(db, categoriaId)}
 
 
-@router.get("/pcparts", dependencies=[Depends(require_any_auth)])
+@router.get("/pcparts", dependencies=[Depends(require_permission("activos.inventario"))])
 def get_pcparts(categoria: str, texto: str = "", db: Session = Depends(get_db)):
     ensure_tables(db)
     pcparts_cat = MAPEO_PCPARTS.get(categoria)
@@ -140,7 +138,7 @@ def get_pcparts(categoria: str, texto: str = "", db: Session = Depends(get_db)):
     return {"resultados": buscar_pcparts(db, pcparts_cat, texto)}
 
 
-@router.get("/{activo_id}", dependencies=[Depends(require_any_auth)])
+@router.get("/{activo_id}", dependencies=[Depends(require_permission("activos.inventario"))])
 def get_activo(activo_id: int, db: Session = Depends(get_db)):
     ensure_tables(db)
     activo = obtener_activo(db, activo_id, incluir_evaluacion=True)
@@ -149,13 +147,13 @@ def get_activo(activo_id: int, db: Session = Depends(get_db)):
     return activo
 
 
-@router.get("/{activo_id}/componentes", dependencies=[Depends(require_any_auth)])
+@router.get("/{activo_id}/componentes", dependencies=[Depends(require_permission("activos.inventario"))])
 def get_componentes(activo_id: int, db: Session = Depends(get_db)):
     ensure_tables(db)
     return {"componentes": listar_componentes_de(db, activo_id)}
 
 
-@router.get("/{activo_id}/historial", dependencies=[Depends(require_any_auth)])
+@router.get("/{activo_id}/historial", dependencies=[Depends(require_permission("activos.inventario"))])
 def get_historial(activo_id: int, db: Session = Depends(get_db)):
     ensure_tables(db)
     actual = obtener_activo(db, activo_id)
@@ -165,7 +163,7 @@ def get_historial(activo_id: int, db: Session = Depends(get_db)):
 
 
 # ─── Escritura ───────────────────────────────────────────────────────────────
-@router.post("", dependencies=[Depends(require_admin)])
+@router.post("", dependencies=[Depends(require_permission("activos.inventario"))])
 def crear_activo(data: dict = Body(...), db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
     ensure_tables(db)
     ensure_tables_modelos(db)
@@ -200,7 +198,7 @@ def crear_activo(data: dict = Body(...), db: Session = Depends(get_db), current_
     return {"id": new_id}
 
 
-@router.put("/{activo_id}", dependencies=[Depends(require_admin)])
+@router.put("/{activo_id}", dependencies=[Depends(require_permission("activos.inventario"))])
 def actualizar_activo(activo_id: int, data: dict = Body(...), db: Session = Depends(get_db),
                       current_user: dict = Depends(get_current_user)):
     ensure_tables(db)
@@ -256,7 +254,7 @@ def actualizar_activo(activo_id: int, data: dict = Body(...), db: Session = Depe
     return {"message": "Activo actualizado"}
 
 
-@router.patch("/{activo_id}/estado", dependencies=[Depends(require_admin)])
+@router.patch("/{activo_id}/estado", dependencies=[Depends(require_permission("activos.inventario"))])
 def cambiar_estado(activo_id: int, data: dict = Body(...), db: Session = Depends(get_db),
                    current_user: dict = Depends(get_current_user)):
     ensure_tables(db)
@@ -277,7 +275,7 @@ def cambiar_estado(activo_id: int, data: dict = Body(...), db: Session = Depends
     return {"message": "Estado actualizado"}
 
 
-@router.delete("/{activo_id}", dependencies=[Depends(require_admin)])
+@router.delete("/{activo_id}", dependencies=[Depends(require_permission("activos.inventario"))])
 def baja_activo(activo_id: int, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
     ensure_tables(db)
     actual = obtener_activo(db, activo_id)
@@ -380,7 +378,7 @@ def _quitar(db: Session, comp_id: int, pc_id: int, comp: dict, usuario,
     registrar_historial(db, pc_id, "componente_quitado", "componente", comp["nombre"], None, usuario)
 
 
-@router.post("/{activo_id}/componentes", dependencies=[Depends(require_admin)])
+@router.post("/{activo_id}/componentes", dependencies=[Depends(require_permission("activos.inventario"))])
 def instalar_componente(activo_id: int, data: dict = Body(...), db: Session = Depends(get_db),
                         current_user: dict = Depends(get_current_user)):
     ensure_tables(db)
@@ -391,7 +389,7 @@ def instalar_componente(activo_id: int, data: dict = Body(...), db: Session = De
     return {"message": "Componente instalado"}
 
 
-@router.delete("/{pc_id}/componentes/{componente_id}", dependencies=[Depends(require_admin)])
+@router.delete("/{pc_id}/componentes/{componente_id}", dependencies=[Depends(require_permission("activos.inventario"))])
 def quitar_componente(pc_id: int, componente_id: int, db: Session = Depends(get_db),
                       current_user: dict = Depends(get_current_user)):
     ensure_tables(db)
@@ -406,7 +404,7 @@ def quitar_componente(pc_id: int, componente_id: int, db: Session = Depends(get_
     return {"message": "Componente quitado"}
 
 
-@router.post("/{activo_id}/componentes/reemplazar", dependencies=[Depends(require_admin)])
+@router.post("/{activo_id}/componentes/reemplazar", dependencies=[Depends(require_permission("activos.inventario"))])
 def reemplazar_componente(activo_id: int, data: dict = Body(...), db: Session = Depends(get_db),
                           current_user: dict = Depends(get_current_user)):
     ensure_tables(db)
@@ -443,7 +441,7 @@ def reemplazar_componente(activo_id: int, data: dict = Body(...), db: Session = 
 
 
 # ─── Trazabilidad: historial, transferencia y danos (subsistema 4) ───────────
-@router.patch("/{activo_id}/responsable", dependencies=[Depends(require_admin)])
+@router.patch("/{activo_id}/responsable", dependencies=[Depends(require_permission("activos.inventario"))])
 def transferir_responsable(activo_id: int, data: dict = Body(...), db: Session = Depends(get_db),
                            current_user: dict = Depends(get_current_user)):
     ensure_tables(db)
@@ -472,7 +470,7 @@ def transferir_responsable(activo_id: int, data: dict = Body(...), db: Session =
     return {"message": "Responsable actualizado"}
 
 
-@router.patch("/{activo_id}/modelo", dependencies=[Depends(require_admin)])
+@router.patch("/{activo_id}/modelo", dependencies=[Depends(require_permission("activos.inventario"))])
 def asignar_modelo_pc(activo_id: int, data: dict = Body(...), db: Session = Depends(get_db),
                       current_user: dict = Depends(get_current_user)):
     ensure_tables(db)
@@ -511,7 +509,7 @@ DANOS_EXT_VALIDAS = {"jpg", "jpeg", "png", "webp", "gif"}
 DANOS_TAMANO_MAX = 5 * 1024 * 1024  # 5 MB
 
 
-@router.post("/{activo_id}/danos", dependencies=[Depends(require_admin)])
+@router.post("/{activo_id}/danos", dependencies=[Depends(require_permission("activos.inventario"))])
 async def reportar_dano(activo_id: int, descripcion: str = Form(...), foto: Optional[UploadFile] = File(None),
                         db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
     ensure_tables(db)
