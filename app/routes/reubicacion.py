@@ -10,13 +10,11 @@ from datetime import datetime
 from typing import Optional
 import json
 from app.database.database import SessionLocal
-from app.auth_middleware import require_any_auth, get_current_user, require_roles, ROLE_ADMIN
+from app.auth_middleware import require_auth, require_permission, get_current_user
+from app.permisos import tiene_permiso
 from app.database.reubicacion import ensure_table, VALID_TIPOS
 
 router = APIRouter(prefix="/reubicacion", tags=["Reubicacion"])
-
-ROLE_RRHH = ROLE_ADMIN
-require_rrhh_auth = require_roles(ROLE_ADMIN, ROLE_RRHH)
 
 
 def _parse_json_list(value) -> list:
@@ -40,14 +38,14 @@ def get_db():
 
 def _check_self_or_admin(employee_id: int, current_user: dict) -> None:
     """Evita que un empleado cree o lea solicitudes en nombre de otro."""
-    if employee_id != current_user.get("employeeId") and current_user.get("roleId") != ROLE_ADMIN:
+    if employee_id != current_user.get("employeeId") and not tiene_permiso(current_user.get("permisos", set()), "reubicacion.gestionar"):
         raise HTTPException(status_code=403, detail="No tenes permiso para acceder a esta informacion.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # POST /reubicacion/request
 # ─────────────────────────────────────────────────────────────────────────────
-@router.post("/request", dependencies=[Depends(require_any_auth)])
+@router.post("/request", dependencies=[Depends(require_auth)])
 def create_solicitud(data: dict = Body(...), db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
     """
     Crea una solicitud de reubicacion. Nace siempre en estado 'Pendiente'.
@@ -100,7 +98,7 @@ def create_solicitud(data: dict = Body(...), db: Session = Depends(get_db), curr
 # ─────────────────────────────────────────────────────────────────────────────
 # GET /reubicacion/mis-solicitudes/{employee_id}
 # ─────────────────────────────────────────────────────────────────────────────
-@router.get("/mis-solicitudes/{employee_id}", dependencies=[Depends(require_any_auth)])
+@router.get("/mis-solicitudes/{employee_id}", dependencies=[Depends(require_auth)])
 def get_mis_solicitudes(employee_id: int, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
     """Historial de solicitudes de reubicacion del empleado, mas recientes primero."""
     _check_self_or_admin(employee_id, current_user)
@@ -135,7 +133,7 @@ def get_mis_solicitudes(employee_id: int, db: Session = Depends(get_db), current
 # ─────────────────────────────────────────────────────────────────────────────
 # GET /reubicacion/solicitudes — tablero de RRHH
 # ─────────────────────────────────────────────────────────────────────────────
-@router.get("/solicitudes", dependencies=[Depends(require_rrhh_auth)])
+@router.get("/solicitudes", dependencies=[Depends(require_permission("reubicacion.gestionar"))])
 def get_solicitudes(
     estado: Optional[str] = None,
     officeId: Optional[int] = None,
@@ -222,7 +220,7 @@ def get_solicitudes(
 # ─────────────────────────────────────────────────────────────────────────────
 # PATCH /reubicacion/{solicitud_id}/estado — aprobar/rechazar
 # ─────────────────────────────────────────────────────────────────────────────
-@router.patch("/{solicitud_id}/estado", dependencies=[Depends(require_rrhh_auth)])
+@router.patch("/{solicitud_id}/estado", dependencies=[Depends(require_permission("reubicacion.gestionar"))])
 def update_estado(solicitud_id: int, data: dict = Body(...), db: Session = Depends(get_db)):
     """Aprueba o rechaza una solicitud de reubicacion, notificando al empleado."""
     estado = data.get("estado")
@@ -272,7 +270,7 @@ def update_estado(solicitud_id: int, data: dict = Body(...), db: Session = Depen
 # POST /reubicacion/analizar/iniciar — marca Pendiente/En análisis como
 # En análisis y las devuelve para que el orquestador (Next.js) las procese.
 # ─────────────────────────────────────────────────────────────────────────────
-@router.post("/analizar/iniciar", dependencies=[Depends(require_rrhh_auth)])
+@router.post("/analizar/iniciar", dependencies=[Depends(require_permission("reubicacion.gestionar"))])
 def iniciar_analisis(db: Session = Depends(get_db)):
     """Marca las solicitudes Pendiente o En análisis como En análisis y las devuelve."""
     ensure_table(db)
@@ -314,7 +312,7 @@ def iniciar_analisis(db: Session = Depends(get_db)):
 # PATCH /reubicacion/{solicitud_id}/recomendacion — guarda la recomendacion
 # del motor de IA y pasa la solicitud a 'Recomendada'.
 # ─────────────────────────────────────────────────────────────────────────────
-@router.patch("/{solicitud_id}/recomendacion", dependencies=[Depends(require_rrhh_auth)])
+@router.patch("/{solicitud_id}/recomendacion", dependencies=[Depends(require_permission("reubicacion.gestionar"))])
 def guardar_recomendacion(solicitud_id: int, data: dict = Body(...), db: Session = Depends(get_db)):
     """Guarda la recomendacion de IA (destino, score, explicacion) y pasa a Recomendada."""
     office_id_sugerido = data.get("officeIdSugerido")
@@ -366,7 +364,7 @@ def guardar_recomendacion(solicitud_id: int, data: dict = Body(...), db: Session
 # PATCH /reubicacion/{solicitud_id}/ejecutar — mueve al empleado en el
 # organigrama (Employee.officeId/departmentId/managerId) y pasa a 'Ejecutada'.
 # ─────────────────────────────────────────────────────────────────────────────
-@router.patch("/{solicitud_id}/ejecutar", dependencies=[Depends(require_rrhh_auth)])
+@router.patch("/{solicitud_id}/ejecutar", dependencies=[Depends(require_permission("reubicacion.gestionar"))])
 def ejecutar_solicitud(solicitud_id: int, data: dict = Body(...), db: Session = Depends(get_db)):
     """Ejecuta una solicitud Aprobada: mueve al empleado en el organigrama y notifica.
 

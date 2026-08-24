@@ -18,7 +18,8 @@ from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from app.database.database import SessionLocal
-from app.auth_middleware import require_any_auth, get_current_user, require_roles, ROLE_ADMIN
+from app.auth_middleware import require_auth, require_permission, get_current_user
+from app.permisos import tiene_permiso
 from datetime import datetime, timezone
 import random
 from app.database.feedback_preguntas import ensure_table as ensure_preguntas_table, get_preguntas
@@ -31,9 +32,6 @@ from app.database.feedback_config import (
 )
 
 router = APIRouter(prefix="/feedback", tags=["Feedback"])
-
-ROLE_RRHH = ROLE_ADMIN
-require_rrhh_auth = require_roles(ROLE_ADMIN, ROLE_RRHH)
 
 
 def get_db():
@@ -56,14 +54,14 @@ def _is_jerarquico(db: Session, employee_id: int) -> bool:
 
 def _check_self_or_admin(employee_id: int, current_user: dict) -> None:
     """Evita que un empleado actue (o lea el estado) en nombre de otro."""
-    if employee_id != current_user.get("employeeId") and current_user.get("roleId") != ROLE_ADMIN:
+    if employee_id != current_user.get("employeeId") and not tiene_permiso(current_user.get("permisos", set()), "feedback.configurar"):
         raise HTTPException(status_code=403, detail="No tenes permiso para acceder a esta informacion.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # GET /feedback/peers/{employee_id}
 # ─────────────────────────────────────────────────────────────────────────────
-@router.get("/peers/{employee_id}", dependencies=[Depends(require_any_auth)])
+@router.get("/peers/{employee_id}", dependencies=[Depends(require_permission("feedback.participar"))])
 def get_evaluable_peers(employee_id: int, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
     """
     Devuelve el pool de personas que el empleado puede evaluar: companeros
@@ -139,7 +137,7 @@ def get_evaluable_peers(employee_id: int, db: Session = Depends(get_db), current
 # ─────────────────────────────────────────────────────────────────────────────
 # GET /feedback/siguiente/{employee_id}
 # ─────────────────────────────────────────────────────────────────────────────
-@router.get("/siguiente/{employee_id}", dependencies=[Depends(require_any_auth)])
+@router.get("/siguiente/{employee_id}", dependencies=[Depends(require_permission("feedback.participar"))])
 def get_siguiente_pregunta(employee_id: int, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
     """
     Elige al azar un par (evaluado, pregunta) pendiente del ciclo activo
@@ -196,7 +194,7 @@ def get_siguiente_pregunta(employee_id: int, db: Session = Depends(get_db), curr
 # ─────────────────────────────────────────────────────────────────────────────
 # POST /feedback/submit
 # ─────────────────────────────────────────────────────────────────────────────
-@router.post("/submit", dependencies=[Depends(require_any_auth)])
+@router.post("/submit", dependencies=[Depends(require_permission("feedback.participar"))])
 def submit_feedback(data: dict = Body(...), db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
     """
     Guarda una respuesta individual en RespuestaFeedback (escala 1-5 o
@@ -291,7 +289,7 @@ def submit_feedback(data: dict = Body(...), db: Session = Depends(get_db), curre
 # ─────────────────────────────────────────────────────────────────────────────
 # GET /feedback/status/{employee_id}  — progreso del evaluador
 # ─────────────────────────────────────────────────────────────────────────────
-@router.get("/status/{employee_id}", dependencies=[Depends(require_any_auth)])
+@router.get("/status/{employee_id}", dependencies=[Depends(require_permission("feedback.participar"))])
 def get_feedback_status(employee_id: int, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
     """Progreso del ciclo activo: pares totales aplicables vs. respondidos."""
     _check_self_or_admin(employee_id, current_user)
@@ -329,7 +327,7 @@ def get_feedback_status(employee_id: int, db: Session = Depends(get_db), current
 # ─────────────────────────────────────────────────────────────────────────────
 # GET /feedback/received/{employee_id} — indicadores para RRHH
 # ─────────────────────────────────────────────────────────────────────────────
-@router.get("/received/{employee_id}", dependencies=[Depends(require_any_auth)])
+@router.get("/received/{employee_id}", dependencies=[Depends(require_permission("feedback.participar"))])
 def get_received_feedback(employee_id: int, db: Session = Depends(get_db)):
     """
     Indicadores de Feedback 360 recibidos por el empleado: fortalezas y
@@ -393,7 +391,7 @@ def get_received_feedback(employee_id: int, db: Session = Depends(get_db)):
 # ─────────────────────────────────────────────────────────────────────────────
 # GET /feedback/preguntas — Banco de preguntas de Feedback 360
 # ─────────────────────────────────────────────────────────────────────────────
-@router.get("/preguntas", dependencies=[Depends(require_any_auth)])
+@router.get("/preguntas", dependencies=[Depends(require_permission("feedback.participar"))])
 def list_preguntas(
     soloLiderazgo: bool | None = None,
     esAmbienteGeneral: bool | None = None,
@@ -408,7 +406,7 @@ def list_preguntas(
 # ─────────────────────────────────────────────────────────────────────────────
 # GET / PUT /feedback/config — Periodicidad del ciclo de evaluacion
 # ─────────────────────────────────────────────────────────────────────────────
-@router.get("/config", dependencies=[Depends(require_any_auth)])
+@router.get("/config", dependencies=[Depends(require_permission("feedback.participar"))])
 def get_feedback_config(db: Session = Depends(get_db)):
     ensure_config_table(db)
     periodicidad = get_periodicidad(db)
@@ -416,7 +414,7 @@ def get_feedback_config(db: Session = Depends(get_db)):
     return {"periodicidad": periodicidad, "periodoActual": periodo.isoformat()}
 
 
-@router.put("/config", dependencies=[Depends(require_rrhh_auth)])
+@router.put("/config", dependencies=[Depends(require_permission("feedback.configurar"))])
 def update_feedback_config(data: dict = Body(...), db: Session = Depends(get_db)):
     ensure_config_table(db)
     periodicidad = data.get("periodicidad")
@@ -430,7 +428,7 @@ def update_feedback_config(data: dict = Body(...), db: Session = Depends(get_db)
 # ─────────────────────────────────────────────────────────────────────────────
 # POST /feedback/verificar — Boton temporal "Verificar Evaluacion de Equipo"
 # ─────────────────────────────────────────────────────────────────────────────
-@router.post("/verificar", dependencies=[Depends(require_rrhh_auth)])
+@router.post("/verificar", dependencies=[Depends(require_permission("feedback.configurar"))])
 def verificar_reglas(db: Session = Depends(get_db)):
     """Corre chequeos de reglas de negocio sobre los datos reales de RespuestaFeedback."""
     ensure_preguntas_table(db)
@@ -475,7 +473,7 @@ def verificar_reglas(db: Session = Depends(get_db)):
 # ─────────────────────────────────────────────────────────────────────────────
 # GET /feedback/estadisticas-globales — radar y rankings por departamento
 # ─────────────────────────────────────────────────────────────────────────────
-@router.get("/estadisticas-globales", dependencies=[Depends(require_any_auth)])
+@router.get("/estadisticas-globales", dependencies=[Depends(require_permission("feedback.participar"))])
 def get_estadisticas_globales(departmentId: int, db: Session = Depends(get_db)):
     """
     Radar de habilidades (promedio del departamento seleccionado vs.
