@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from app.database.database import SessionLocal
-from app.auth_middleware import require_roles, ROLE_ADMIN, ROLE_USER, ROLE_RRHH
+from app.auth_middleware import require_permission
 from app.routes.departments import ensure_capacity_columns
 from datetime import datetime, date
 from app.database.jubilacion import (
@@ -63,7 +63,7 @@ def _group_by(rows, key: str) -> dict:
 # ---------------------------------------------------------------------------
 # GET /rrhh/employees — Lista completa de empleados (O(9) queries)
 # ---------------------------------------------------------------------------
-@router.get("/employees", dependencies=[Depends(require_roles(ROLE_ADMIN, ROLE_RRHH))])
+@router.get("/employees", dependencies=[Depends(require_permission("rrhh.gestionar"))])
 def get_all_employees(db: Session = Depends(get_db)):
     # ── 1. Query principal: empleados con datos de departamento, oficina,
     #       manager, condición laboral, horario y satisfacción ──────────────
@@ -410,7 +410,7 @@ def get_all_employees(db: Session = Depends(get_db)):
 # ---------------------------------------------------------------------------
 # PUT /rrhh/employee/{id}/condicion-laboral
 # ---------------------------------------------------------------------------
-@router.put("/employee/{employee_id}/condicion-laboral", dependencies=[Depends(require_roles(ROLE_ADMIN, ROLE_RRHH))])
+@router.put("/employee/{employee_id}/condicion-laboral", dependencies=[Depends(require_permission("rrhh.gestionar"))])
 def update_condicion_laboral(employee_id: int, data: dict = Body(...), db: Session = Depends(get_db)):
     """
     Actualiza la condición laboral del empleado.
@@ -476,7 +476,7 @@ def decimal_to_minutes(decimal_hour: float) -> int:
 # ---------------------------------------------------------------------------
 # PUT /rrhh/employee/{id}/horario
 # ---------------------------------------------------------------------------
-@router.put("/employee/{employee_id}/horario", dependencies=[Depends(require_roles(ROLE_ADMIN, ROLE_RRHH))])
+@router.put("/employee/{employee_id}/horario", dependencies=[Depends(require_permission("rrhh.gestionar"))])
 def update_horario(employee_id: int, data: dict = Body(...), db: Session = Depends(get_db)):
     """Actualiza o asigna un horario al empleado. Calcula horasTrabajo automáticamente."""
     print("🟢 Datos recibidos para Horario:", data)
@@ -542,7 +542,7 @@ def update_horario(employee_id: int, data: dict = Body(...), db: Session = Depen
 # ---------------------------------------------------------------------------
 # POST /rrhh/employee/{id}/permission
 # ---------------------------------------------------------------------------
-@router.post("/employee/{employee_id}/permission", dependencies=[Depends(require_roles(ROLE_ADMIN, ROLE_RRHH))])
+@router.post("/employee/{employee_id}/permission", dependencies=[Depends(require_permission("rrhh.gestionar"))])
 def create_permission(employee_id: int, data: dict = Body(...), db: Session = Depends(get_db)):
     """Registra un permiso de salida/retorno para el empleado."""
     print("🟢 Datos recibidos para Permission:", data)
@@ -601,7 +601,7 @@ def create_permission(employee_id: int, data: dict = Body(...), db: Session = De
 # ---------------------------------------------------------------------------
 # GET /rrhh/org-analysis-data — Datos completos para análisis organizacional IA
 # ---------------------------------------------------------------------------
-@router.get("/org-analysis-data", dependencies=[Depends(require_roles(ROLE_ADMIN, ROLE_RRHH))])
+@router.get("/org-analysis-data", dependencies=[Depends(require_permission("rrhh.gestionar"))])
 def get_org_analysis_data(db: Session = Depends(get_db)):
     """
     Devuelve empleados con sus habilidades blandas/técnicas y departamentos
@@ -808,7 +808,7 @@ def get_org_analysis_data(db: Session = Depends(get_db)):
 # ---------------------------------------------------------------------------
 # Documentos adjuntos del legajo de un empleado
 # ---------------------------------------------------------------------------
-@router.get("/employee/{employee_id}/documents", dependencies=[Depends(require_roles(ROLE_ADMIN, ROLE_RRHH))])
+@router.get("/employee/{employee_id}/documents", dependencies=[Depends(require_permission("rrhh.gestionar"))])
 def list_employee_documents(employee_id: int, db: Session = Depends(get_db)):
     """Lista los documentos activos de un empleado (sin fileData)."""
     ensure_employee_document_table(db)
@@ -818,7 +818,7 @@ def list_employee_documents(employee_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Error al obtener documentos: {str(e)}")
 
 
-@router.post("/employee/{employee_id}/documents", dependencies=[Depends(require_roles(ROLE_ADMIN, ROLE_RRHH))])
+@router.post("/employee/{employee_id}/documents", dependencies=[Depends(require_permission("rrhh.gestionar"))])
 def upload_employee_document(employee_id: int, data: dict = Body(...), db: Session = Depends(get_db)):
     """Carga un nuevo documento para el empleado."""
     ensure_employee_document_table(db)
@@ -839,7 +839,7 @@ def upload_employee_document(employee_id: int, data: dict = Body(...), db: Sessi
         raise HTTPException(status_code=500, detail=f"Error al guardar documento: {str(e)}")
 
 
-@router.get("/employee/{employee_id}/documents/{document_id}/download", dependencies=[Depends(require_roles(ROLE_ADMIN, ROLE_RRHH))])
+@router.get("/employee/{employee_id}/documents/{document_id}/download", dependencies=[Depends(require_permission("rrhh.gestionar"))])
 def download_employee_document(employee_id: int, document_id: int, db: Session = Depends(get_db)):
     """Devuelve un documento completo (incluyendo fileData) para ver/descargar."""
     ensure_employee_document_table(db)
@@ -849,7 +849,7 @@ def download_employee_document(employee_id: int, document_id: int, db: Session =
     return doc
 
 
-@router.delete("/employee/{employee_id}/documents/{document_id}", dependencies=[Depends(require_roles(ROLE_ADMIN, ROLE_RRHH))])
+@router.delete("/employee/{employee_id}/documents/{document_id}", dependencies=[Depends(require_permission("rrhh.gestionar"))])
 def delete_employee_document_endpoint(employee_id: int, document_id: int, db: Session = Depends(get_db)):
     """Soft delete de un documento del empleado."""
     ensure_employee_document_table(db)
@@ -869,7 +869,7 @@ def delete_employee_document_endpoint(employee_id: int, document_id: int, db: Se
 # PUT /rrhh/employee/{id}/jubilacion
 # ---------------------------------------------------------------------------
 @router.put("/employee/{employee_id}/jubilacion",
-            dependencies=[Depends(require_roles(ROLE_ADMIN, ROLE_RRHH))])
+            dependencies=[Depends(require_permission("rrhh.gestionar"))])
 def put_jubilacion(employee_id: int, data: dict = Body(...),
                    db: Session = Depends(get_db)):
     """
@@ -910,7 +910,7 @@ def put_jubilacion(employee_id: int, data: dict = Body(...),
 # GET /rrhh/jubilados
 # ---------------------------------------------------------------------------
 @router.get("/jubilados",
-            dependencies=[Depends(require_roles(ROLE_ADMIN, ROLE_RRHH))])
+            dependencies=[Depends(require_permission("rrhh.gestionar"))])
 def get_jubilados(db: Session = Depends(get_db)):
     """
     El tablero de jubilados: los que ya tienen la jubilacion efectiva.

@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from app.database.database import SessionLocal
-from app.auth_middleware import require_admin, require_any_auth
+from app.auth_middleware import require_auth, require_permission
 
 router = APIRouter(prefix="/contracts", tags=["Contracts"])
 
@@ -13,7 +13,7 @@ def get_db():
     finally:
         db.close()
 
-@router.get("/types", dependencies=[Depends(require_any_auth)])
+@router.get("/types", dependencies=[Depends(require_auth)])
 def get_contract_types(db: Session = Depends(get_db)):
     """Get all active contract types."""
     try:
@@ -22,7 +22,7 @@ def get_contract_types(db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error al obtener tipos de contrato: {str(e)}")
 
-@router.post("/types", dependencies=[Depends(require_admin)])
+@router.post("/types", dependencies=[Depends(require_permission("rrhh.gestionar"))])
 def save_contract_type(data: dict = Body(...), db: Session = Depends(get_db)):
     """Create or update a contract type."""
     nombre = data.get("nombre")
@@ -61,7 +61,7 @@ def save_contract_type(data: dict = Body(...), db: Session = Depends(get_db)):
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Error al guardar tipo de contrato: {str(e)}")
 
-@router.delete("/types/{contract_id}", dependencies=[Depends(require_admin)])
+@router.delete("/types/{contract_id}", dependencies=[Depends(require_permission("rrhh.gestionar"))])
 def delete_contract_type(contract_id: int, db: Session = Depends(get_db)):
     """Soft delete a contract type."""
     try:

@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from app.database.database import SessionLocal
-from app.auth_middleware import require_roles, require_any_auth, ROLE_ADMIN
+from app.auth_middleware import require_permission
 from pydantic import BaseModel
 from typing import Optional, List, Any
 from sqlalchemy.exc import IntegrityError
@@ -62,7 +62,7 @@ def validar_tope_departamento(
 
 
 # 🟢 GET: Traer todos los departamentos con sus oficinas, empleados y habilidades
-@router.get("/", dependencies=[Depends(require_any_auth)])
+@router.get("/", dependencies=[Depends(require_permission("organigrama.ver"))])
 def get_departments_with_employees_and_offices(db: Session = Depends(get_db)):
     """
     Devuelve una lista de departamentos con sus oficinas, empleados y habilidades asignadas.
@@ -243,7 +243,7 @@ def get_departments_with_employees_and_offices(db: Session = Depends(get_db)):
 
 
 # 🟢 POST: Crear un nuevo departamento con habilidades y empleados
-@router.post("/", dependencies=[Depends(require_roles(ROLE_ADMIN))])
+@router.post("/", dependencies=[Depends(require_permission("organigrama.gestionar"))])
 async def create_department(request: Request, db: Session = Depends(get_db)):
     """
     Crea un nuevo departamento, registra sus habilidades (Skill) y asigna empleados.
@@ -362,7 +362,7 @@ class UpdateDepartmentRequest(BaseModel):
     habilidades_requeridas: Optional[List[Any]] = None
 
 # --- PUT: Actualizar un departamento ---
-@router.put("/{dep_id}", dependencies=[Depends(require_roles(ROLE_ADMIN))])
+@router.put("/{dep_id}", dependencies=[Depends(require_permission("organigrama.gestionar"))])
 def update_department(dep_id: int, payload: UpdateDepartmentRequest, db: Session = Depends(get_db)):
     ensure_capacity_columns(db)
     result = db.execute(text("SELECT id FROM Department WHERE id = :id"), {"id": dep_id}).fetchone()
@@ -451,7 +451,7 @@ def update_department(dep_id: int, payload: UpdateDepartmentRequest, db: Session
 
 
 # --- DELETE: Eliminar un departamento ---
-@router.delete("/{dep_id}", dependencies=[Depends(require_roles(ROLE_ADMIN))])
+@router.delete("/{dep_id}", dependencies=[Depends(require_permission("organigrama.gestionar"))])
 def delete_department(dep_id: int, db: Session = Depends(get_db)):
     db.execute(text("DELETE FROM Department WHERE id = :id"), {"id": dep_id})
     db.commit()
@@ -460,7 +460,7 @@ def delete_department(dep_id: int, db: Session = Depends(get_db)):
 
 
 # --- POST: Crear una oficina dentro de un departamento ---
-@router.post("/{dep_id}/offices", dependencies=[Depends(require_roles(ROLE_ADMIN))])
+@router.post("/{dep_id}/offices", dependencies=[Depends(require_permission("organigrama.gestionar"))])
 async def create_office(dep_id: int, request: Request, db: Session = Depends(get_db)):
     """
     Crea una nueva oficina dentro de un departamento.
@@ -535,7 +535,7 @@ async def create_office(dep_id: int, request: Request, db: Session = Depends(get
 
 
 # --- PUT: Asignar empleado a un departamento ---
-@router.put("/{dep_id}/assign-employee/{emp_id}", dependencies=[Depends(require_roles(ROLE_ADMIN))])
+@router.put("/{dep_id}/assign-employee/{emp_id}", dependencies=[Depends(require_permission("organigrama.gestionar"))])
 def assign_employee_to_department(dep_id: int, emp_id: int, db: Session = Depends(get_db)):
     dep = db.execute(text("SELECT id FROM Department WHERE id = :id"), {"id": dep_id}).fetchone()
     emp = db.execute(text("SELECT id FROM Employee WHERE id = :id"), {"id": emp_id}).fetchone()
@@ -552,7 +552,7 @@ def assign_employee_to_department(dep_id: int, emp_id: int, db: Session = Depend
 
 
 # --- PUT: Asignar empleado a una oficina ---
-@router.put("/office/{office_id}/assign-employee/{emp_id}", dependencies=[Depends(require_roles(ROLE_ADMIN))])
+@router.put("/office/{office_id}/assign-employee/{emp_id}", dependencies=[Depends(require_permission("organigrama.gestionar"))])
 def assign_employee_to_office(office_id: int, emp_id: int, db: Session = Depends(get_db)):
     off = db.execute(text("SELECT id FROM Office WHERE id = :id"), {"id": office_id}).fetchone()
     emp = db.execute(text("SELECT id FROM Employee WHERE id = :id"), {"id": emp_id}).fetchone()
@@ -567,7 +567,7 @@ def assign_employee_to_office(office_id: int, emp_id: int, db: Session = Depends
 
 
 # 🟢 PUT: Actualizar oficina
-@router.put("/office/{office_id}", dependencies=[Depends(require_roles(ROLE_ADMIN))])
+@router.put("/office/{office_id}", dependencies=[Depends(require_permission("organigrama.gestionar"))])
 async def update_office(office_id: int, request: Request, db: Session = Depends(get_db)):
     ensure_capacity_columns(db)
     data = await request.json()
@@ -662,7 +662,7 @@ async def update_office(office_id: int, request: Request, db: Session = Depends(
 
 
 # 🟢 DELETE: Eliminar oficina
-@router.delete("/office/{office_id}", dependencies=[Depends(require_roles(ROLE_ADMIN))])
+@router.delete("/office/{office_id}", dependencies=[Depends(require_permission("organigrama.gestionar"))])
 def delete_office(office_id: int, db: Session = Depends(get_db)):
     # Desvincular empleados antes de borrar
     db.execute(text("UPDATE Employee SET officeId = NULL WHERE officeId = :id"), {"id": office_id})
