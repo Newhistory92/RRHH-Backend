@@ -4,7 +4,7 @@ from sqlalchemy import text
 import os
 import json
 from app.database.database import SessionLocal
-from app.auth_middleware import require_roles, ROLE_ADMIN, require_any_auth
+from app.auth_middleware import require_auth, require_permission
 
 router = APIRouter(prefix="/records", tags=["Records"])
 
@@ -38,12 +38,12 @@ ALLOWED_TABLES = [
     "Certification"
 ]
 
-@router.get("/status", dependencies=[Depends(require_any_auth)])
+@router.get("/status", dependencies=[Depends(require_auth)])
 async def get_tables_status(db: Session = Depends(get_db)):
     # Usar cache del JSON File en vez de depender de tablas con rows vacías
     return get_config()
 
-@router.put("/{table_name}/toggle", dependencies=[Depends(require_roles(ROLE_ADMIN))])
+@router.put("/{table_name}/toggle", dependencies=[Depends(require_permission("admin.gestionar"))])
 async def toggle_table_active(table_name: str, request: Request, db: Session = Depends(get_db)):
     body = await request.json()
     new_status = body.get("activo")

@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from app.database.database import SessionLocal
-from app.auth_middleware import require_roles, ROLE_ADMIN
+from app.auth_middleware import require_permission
 from datetime import datetime
 
 router = APIRouter(prefix="/roles", tags=["Roles"])
@@ -16,7 +16,7 @@ def get_db():
         db.close()
 
 # 🟢 GET - Obtener todos los roles
-@router.get("/", dependencies=[Depends(require_roles(ROLE_ADMIN))])
+@router.get("/", dependencies=[Depends(require_permission("admin.gestionar"))])
 def get_all_roles(db: Session = Depends(get_db)):
     query = text("SELECT * FROM Role ORDER BY id ASC")
     result = db.execute(query).fetchall()
@@ -25,7 +25,7 @@ def get_all_roles(db: Session = Depends(get_db)):
 
 
 # 🟡 POST - Crear nuevo rol
-@router.post("/", dependencies=[Depends(require_roles(ROLE_ADMIN))])
+@router.post("/", dependencies=[Depends(require_permission("admin.gestionar"))])
 def create_role(role_data: dict, db: Session = Depends(get_db)):
     name = role_data.get("name")
     description = role_data.get("description", "")
@@ -54,7 +54,7 @@ def create_role(role_data: dict, db: Session = Depends(get_db)):
 
 
 # 🟠 PUT - Actualizar un rol existente
-@router.put("/{role_id}", dependencies=[Depends(require_roles(ROLE_ADMIN))])
+@router.put("/{role_id}", dependencies=[Depends(require_permission("admin.gestionar"))])
 def update_role(role_id: int, role_data: dict, db: Session = Depends(get_db)):
     name = role_data.get("name")
     description = role_data.get("description")

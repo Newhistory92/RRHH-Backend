@@ -2,9 +2,9 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import text
 from sqlalchemy.orm import Session
-from app.auth_middleware import require_any_auth
+from app.auth_middleware import require_permission
 from app.database.database import SessionLocal, SessionLocalObraSocial
-router = APIRouter(prefix="/stats", tags=["Statistics"], dependencies=[Depends(require_any_auth)])
+router = APIRouter(prefix="/stats", tags=["Statistics"], dependencies=[Depends(require_permission("estadisticas.ver"))])
 def get_db():
     db = SessionLocal()
     try:

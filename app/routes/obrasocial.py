@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from app.database.database import SessionLocalObraSocial
+from app.auth_middleware import require_permission
 
 router = APIRouter(prefix="/obrasocial", tags=["ObraSocial"])
 
@@ -12,7 +13,7 @@ def get_obrasocial_db():
     finally:
         db.close()
 
-@router.get("/usuarios")
+@router.get("/usuarios", dependencies=[Depends(require_permission("admin.gestionar"))])
 def get_usuarios_acceso(db: Session = Depends(get_obrasocial_db)):
     """
     Obtiene todos los usuarios de [ObraSocial].[dbo].[UsuarioAcceso]

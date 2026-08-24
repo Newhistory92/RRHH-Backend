@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Body, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from app.database.database import SessionLocal
-from app.auth_middleware import require_admin, require_any_auth
+from app.auth_middleware import require_permission
 from app.database.academic_title_mapping import (
     ensure_table as ensure_academic_title_mapping_table,
     get_active_mappings,
@@ -22,7 +22,7 @@ def get_db():
         db.close()
 
 
-@router.get("/technical", dependencies=[Depends(require_any_auth)])
+@router.get("/technical", dependencies=[Depends(require_permission("test.gestionar"))])
 def get_technical_config(db: Session = Depends(get_db)):
     """
     Returns the professions and testsByProfession structure as expected by the frontend.
@@ -118,7 +118,7 @@ def get_technical_config(db: Session = Depends(get_db)):
     }
 
 
-@router.post("/technical", dependencies=[Depends(require_admin)])
+@router.post("/technical", dependencies=[Depends(require_permission("test.gestionar"))])
 def save_technical_test(
     profession: str = Query(...),
     data: dict = Body(...),
@@ -250,7 +250,7 @@ def save_technical_test(
     return {"success": True, "id": skill_id}
 
 
-@router.delete("/technical/{test_id}", dependencies=[Depends(require_admin)])
+@router.delete("/technical/{test_id}", dependencies=[Depends(require_permission("test.gestionar"))])
 def delete_technical_test(test_id: str, db: Session = Depends(get_db)):
     """
     Soft-deletes a technical test by setting activo = 0.
@@ -276,7 +276,7 @@ def delete_technical_test(test_id: str, db: Session = Depends(get_db)):
     return {"success": True}
 
 
-@router.get("/soft", dependencies=[Depends(require_any_auth)])
+@router.get("/soft", dependencies=[Depends(require_permission("test.gestionar"))])
 def get_soft_skills(db: Session = Depends(get_db)):
     """
     Returns list of active soft skills.
@@ -297,7 +297,7 @@ def get_soft_skills(db: Session = Depends(get_db)):
     ]
 
 
-@router.post("/soft", dependencies=[Depends(require_admin)])
+@router.post("/soft", dependencies=[Depends(require_permission("test.gestionar"))])
 def save_soft_skill(data: dict = Body(...), db: Session = Depends(get_db)):
     """
     Creates or reactivates a soft skill.
@@ -339,7 +339,7 @@ def save_soft_skill(data: dict = Body(...), db: Session = Depends(get_db)):
     return {"success": True, "id": skill_id}
 
 
-@router.delete("/soft/{skill_id}", dependencies=[Depends(require_admin)])
+@router.delete("/soft/{skill_id}", dependencies=[Depends(require_permission("test.gestionar"))])
 def delete_soft_skill(skill_id: int, db: Session = Depends(get_db)):
     """
     Soft-deletes a soft skill by setting activo = 0.
@@ -360,7 +360,7 @@ def delete_soft_skill(skill_id: int, db: Session = Depends(get_db)):
     return {"success": True}
 
 
-@router.get("/academic-title-mappings", dependencies=[Depends(require_any_auth)])
+@router.get("/academic-title-mappings", dependencies=[Depends(require_permission("test.gestionar"))])
 def get_academic_title_mappings(db: Session = Depends(get_db)):
     """Lista los mapeos titulo academico -> profesion activos."""
     ensure_academic_title_mapping_table(db)
@@ -370,7 +370,7 @@ def get_academic_title_mappings(db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Error al obtener mapeos: {str(e)}")
 
 
-@router.post("/academic-title-mappings", dependencies=[Depends(require_admin)])
+@router.post("/academic-title-mappings", dependencies=[Depends(require_permission("test.gestionar"))])
 def save_academic_title_mapping(data: dict = Body(...), db: Session = Depends(get_db)):
     """Crea o actualiza un mapeo titulo academico -> profesion."""
     ensure_academic_title_mapping_table(db)
@@ -389,7 +389,7 @@ def save_academic_title_mapping(data: dict = Body(...), db: Session = Depends(ge
         raise HTTPException(status_code=500, detail=f"Error al guardar mapeo: {str(e)}")
 
 
-@router.delete("/academic-title-mappings/{mapping_id}", dependencies=[Depends(require_admin)])
+@router.delete("/academic-title-mappings/{mapping_id}", dependencies=[Depends(require_permission("test.gestionar"))])
 def delete_academic_title_mapping(mapping_id: int, db: Session = Depends(get_db)):
     """Soft delete de un mapeo titulo academico -> profesion."""
     ensure_academic_title_mapping_table(db)

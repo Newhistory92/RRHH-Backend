@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from app.database.database import SessionLocal
-from app.auth_middleware import require_roles, ROLE_ADMIN
+from app.auth_middleware import require_permission
 import bcrypt
 from datetime import datetime
 router = APIRouter(prefix="/users", tags=["Users"])
@@ -45,6 +45,10 @@ def register_user(data: dict, db: Session = Depends(get_db)):
     # Hashear la contraseña
     hashed_password = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
+    default_role = db.execute(text("SELECT id FROM Role WHERE name = 'User'")).fetchone()
+    if not default_role:
+        raise HTTPException(status_code=500, detail="Rol 'User' no encontrado en la base de datos")
+
     # Insertar usuario con rol por defecto "User"
     insert_query = text("""
         INSERT INTO [User] (usuario, email, password, roleId, updatedAt)
@@ -56,7 +60,7 @@ def register_user(data: dict, db: Session = Depends(get_db)):
             "usuario": usuario,
             "email": email,
             "password": hashed_password,
-            "roleId": 2
+            "roleId": default_role.id
         })
         db.commit()
     except Exception as e:
@@ -70,7 +74,7 @@ def register_user(data: dict, db: Session = Depends(get_db)):
 # ===============================================
 # GET: obtener todos los usuarios
 # ===============================================
-@router.get("/", dependencies=[Depends(require_roles(ROLE_ADMIN))])
+@router.get("/", dependencies=[Depends(require_permission("admin.gestionar"))])
 def get_all_users(db: Session = Depends(get_db)):
     query = text("""
         SELECT 
@@ -100,7 +104,7 @@ def get_all_users(db: Session = Depends(get_db)):
     return {"users": users}
 
 
-@router.post("/employee", dependencies=[Depends(require_roles(ROLE_ADMIN))])
+@router.post("/employee", dependencies=[Depends(require_permission("admin.gestionar"))])
 async def create_employee(request: Request, db: Session = Depends(get_db)):
     # Leer el JSON que llega del frontend
     body = await request.json()
@@ -174,7 +178,7 @@ async def create_employee(request: Request, db: Session = Depends(get_db)):
     return {"message": "Empleado creado y vinculado correctamente", "employee_id": employee_id}
 
 
-@router.put("/employee", dependencies=[Depends(require_roles(ROLE_ADMIN))])
+@router.put("/employee", dependencies=[Depends(require_permission("admin.gestionar"))])
 async def update_employee(request: Request, db: Session = Depends(get_db)):
     body = await request.json()
 
@@ -235,7 +239,7 @@ async def update_employee(request: Request, db: Session = Depends(get_db)):
 # PUT: actualizar el rol de un usuario
 # ===============================================
 
-@router.put("/{user_id}/role", dependencies=[Depends(require_roles(ROLE_ADMIN))])
+@router.put("/{user_id}/role", dependencies=[Depends(require_permission("admin.gestionar"))])
 async def update_user_role(user_id: str, request: Request, db: Session = Depends(get_db)):
     # Leer el JSON que llega del frontend
     body = await request.json()
@@ -265,7 +269,7 @@ async def update_user_role(user_id: str, request: Request, db: Session = Depends
 
 
 
-@router.put("/{user_id}/activo", dependencies=[Depends(require_roles(ROLE_ADMIN))])
+@router.put("/{user_id}/activo", dependencies=[Depends(require_permission("admin.gestionar"))])
 async def update_user_activo(user_id: str, request: Request, db: Session = Depends(get_db)):
     """
     Cambia el estado 'activo' de un usuario.
