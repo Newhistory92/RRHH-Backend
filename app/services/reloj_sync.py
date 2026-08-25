@@ -243,13 +243,19 @@ def sincronizar_reloj(db: Session, reloj_ip: str,
                 _sincronizar_ventana(db, reloj_ip, v_desde, v_hasta, resultado),
             )
 
-        # Riesgo conocido: si el equipo reinicia su correlativo, los eventos
-        # nuevos colisionarian con los viejos y se descartarian en silencio.
+        # El correlativo bajo: el equipo hizo un reset de fabrica o se cambio
+        # el dispositivo. La unicidad usa 4 columnas (relojIp, serialNo,
+        # biometricoId, fechaHora), por lo que un serialNo reciclado en una
+        # fecha o persona distintas genera una clave diferente y se inserta
+        # normalmente. Solo colisionaria un evento identico en las 4 columnas,
+        # lo que es un duplicado real y debe descartarse.
         if previo_max is not None and max_visto and max_visto < previo_max:
             log.warning(
-                "Reloj %s: serialNo maximo recibido (%s) es menor al almacenado (%s). "
-                "Posible reinicio del correlativo: las marcaciones nuevas podrian "
-                "estar descartandose por la unicidad.",
+                "Reloj %s: correlativo reiniciado (recibido=%s, almacenado=%s). "
+                "Probable reset de fabrica o reemplazo del equipo. "
+                "Las marcaciones nuevas se insertan normalmente: la clave unica "
+                "(relojIp, serialNo, biometricoId, fechaHora) distingue eventos "
+                "por fecha y persona, no solo por serialNo.",
                 reloj_ip, max_visto, previo_max,
             )
 
