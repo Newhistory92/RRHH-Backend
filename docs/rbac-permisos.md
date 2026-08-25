@@ -5,8 +5,14 @@
 ## Principio
 
 Ningún rol se identifica por ID numérico en la lógica de autorización. Todo se
-basa en **códigos de permiso** (`string`) almacenados en las tablas `Permission`
-y `RolePermission` de la base de datos.
+basa en **códigos de permiso** (`string`) almacenados en las tablas
+`AuthPermission` y `AuthRolePermission` de la base de datos.
+
+> **Ojo con el nombre.** Las tablas llevan el prefijo `Auth` a propósito: en
+> esta base ya existe una tabla `Permission` de negocio, que guarda los
+> permisos laborales de los empleados (salida y regreso dentro del horario de
+> trabajo) y la usan `rrhh.py` y `asistencia_recalc.py`. Son dos conceptos
+> distintos que comparten nombre en castellano. No unificarlas.
 
 ---
 

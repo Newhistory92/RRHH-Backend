@@ -1,4 +1,15 @@
 import os
+import sys
+
+# La consola de Windows usa cp1252, que no sabe codificar los emoji que hay
+# repartidos en los print() de los routers (auth, licenses, employee, etc.).
+# Sin esto, un print con un emoji levanta UnicodeEncodeError y tumba el
+# request -- o el arranque. Con errors="replace" el emoji sale como "?" y el
+# servidor sigue andando.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from app.cors_config import setup_cors
@@ -27,7 +38,7 @@ def init_permisos():
     try:
         ensure_permission_tables(db)
         roles = sembrar(db)
-        print(f"✅ Permisos sembrados. Roles: {roles}")
+        print(f"[OK] Permisos sembrados. Roles: {roles}")
     finally:
         db.close()
 

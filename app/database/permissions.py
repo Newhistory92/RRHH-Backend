@@ -1,9 +1,16 @@
 """
-Persistencia de permisos: DDL idempotente, seed y consulta.
+Persistencia de permisos de autorizacion: DDL idempotente, seed y consulta.
 
 El DDL sigue el patron de app/database/marcaciones.py: se puede correr en
 cada arranque sin romper nada. El seed tambien es idempotente — inserta lo
 que falta y no pisa lo que el admin haya cambiado desde la UI.
+
+Las tablas se llaman AuthPermission / AuthRolePermission y NO Permission /
+RolePermission a proposito: en esta base ya existe una tabla `Permission`
+de negocio, que guarda los permisos laborales de los empleados (salida y
+regreso en horario de trabajo). La usan rrhh.py y asistencia_recalc.py.
+Son dos conceptos distintos que comparten nombre en castellano; el prefijo
+Auth evita pisar datos reales.
 """
 
 import logging
@@ -17,26 +24,26 @@ log = logging.getLogger(__name__)
 
 
 def ensure_tables(db: Session) -> None:
-    """Crea Permission y RolePermission si no existen. Seguro de repetir."""
+    """Crea AuthPermission y AuthRolePermission si no existen. Seguro de repetir."""
     db.execute(text("""
-        IF OBJECT_ID('dbo.Permission', 'U') IS NULL
-        CREATE TABLE dbo.Permission (
+        IF OBJECT_ID('dbo.AuthPermission', 'U') IS NULL
+        CREATE TABLE dbo.AuthPermission (
             id          INT IDENTITY(1,1) PRIMARY KEY,
             code        NVARCHAR(64)  NOT NULL,
             description NVARCHAR(255) NULL,
-            CONSTRAINT UQ_Permission_code UNIQUE (code)
+            CONSTRAINT UQ_AuthPermission_code UNIQUE (code)
         )
     """))
     db.execute(text("""
-        IF OBJECT_ID('dbo.RolePermission', 'U') IS NULL
-        CREATE TABLE dbo.RolePermission (
+        IF OBJECT_ID('dbo.AuthRolePermission', 'U') IS NULL
+        CREATE TABLE dbo.AuthRolePermission (
             roleId       INT NOT NULL,
             permissionId INT NOT NULL,
-            CONSTRAINT PK_RolePermission PRIMARY KEY (roleId, permissionId),
-            CONSTRAINT FK_RolePermission_Role
+            CONSTRAINT PK_AuthRolePermission PRIMARY KEY (roleId, permissionId),
+            CONSTRAINT FK_AuthRolePermission_Role
                 FOREIGN KEY (roleId) REFERENCES dbo.Role(id),
-            CONSTRAINT FK_RolePermission_Permission
-                FOREIGN KEY (permissionId) REFERENCES dbo.Permission(id)
+            CONSTRAINT FK_AuthRolePermission_Permission
+                FOREIGN KEY (permissionId) REFERENCES dbo.AuthPermission(id)
                 ON DELETE CASCADE
         )
     """))
@@ -65,15 +72,15 @@ def _asegurar_permisos(db: Session) -> dict[str, int]:
     """Crea los codigos que falten y devuelve code->id."""
     for code in sorted(PERMISOS) + [COMODIN]:
         db.execute(text("""
-            IF NOT EXISTS (SELECT 1 FROM Permission WHERE code = :code)
-            INSERT INTO Permission (code, description)
+            IF NOT EXISTS (SELECT 1 FROM AuthPermission WHERE code = :code)
+            INSERT INTO AuthPermission (code, description)
             VALUES (:code, :description)
         """), {
             "code": code,
             "description": DESCRIPCIONES.get(code, "Acceso total"),
         })
 
-    filas = db.execute(text("SELECT id, code FROM Permission")).mappings().all()
+    filas = db.execute(text("SELECT id, code FROM AuthPermission")).mappings().all()
     return {f["code"]: f["id"] for f in filas}
 
 
@@ -100,10 +107,10 @@ def sembrar(db: Session) -> dict[str, int]:
                 continue
             db.execute(text("""
                 IF NOT EXISTS (
-                    SELECT 1 FROM RolePermission
+                    SELECT 1 FROM AuthRolePermission
                     WHERE roleId = :roleId AND permissionId = :permissionId
                 )
-                INSERT INTO RolePermission (roleId, permissionId)
+                INSERT INTO AuthRolePermission (roleId, permissionId)
                 VALUES (:roleId, :permissionId)
             """), {"roleId": role_id, "permissionId": permission_id})
 
@@ -122,8 +129,8 @@ def permisos_de_rol(db: Session, role_id: int | None) -> set[str]:
         return set()
     filas = db.execute(text("""
         SELECT p.code
-        FROM RolePermission rp
-        JOIN Permission p ON p.id = rp.permissionId
+        FROM AuthRolePermission rp
+        JOIN AuthPermission p ON p.id = rp.permissionId
         WHERE rp.roleId = :roleId
     """), {"roleId": role_id}).mappings().all()
     return {f["code"] for f in filas}
