@@ -15,7 +15,7 @@ import os
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
-from app.auth_middleware import ROLE_ADMIN, require_roles
+from app.auth_middleware import require_permission
 from app.database import obrasocial_usuarios as os_db
 from app.database import provisioning as prov
 from app.database.database import SessionLocal, SessionLocalObraSocial
@@ -23,7 +23,7 @@ from app.services.auth_providers.obrasocial import provisionar
 
 router = APIRouter(prefix="/obrasocial", tags=["ObraSocial"])
 
-SOLO_ADMIN = Depends(require_roles(ROLE_ADMIN))
+SOLO_ADMIN = Depends(require_permission("admin.gestionar"))
 
 
 def get_db():

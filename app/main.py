@@ -9,6 +9,7 @@ from app.database.database import SessionLocal
 from app.database.marcaciones import ensure_columna_biometrico
 from app.database.asistencia import ensure_tables as ensure_tablas_asistencia
 from app.database.provisioning import ensure_columna_origen
+from app.database.permissions import ensure_tables as ensure_permission_tables, sembrar
 
 app = FastAPI(title="Backend RRHH", version="1.0")
 
@@ -19,12 +20,26 @@ setup_cors(app)
 os.makedirs("uploads/publications", exist_ok=True)
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
+
+def init_permisos():
+    """Crea las tablas de permisos y siembra la asignacion inicial."""
+    db = SessionLocal()
+    try:
+        ensure_permission_tables(db)
+        roles = sembrar(db)
+        print(f"✅ Permisos sembrados. Roles: {roles}")
+    finally:
+        db.close()
+
+
 # Inicializar tabla TokenBlacklist en DB al arrancar
 @app.on_event("startup")
 def startup():
     print("[*] Iniciando app...")
     init_blacklist()
     print("[OK] init_blacklist ejecutado")
+    init_permisos()
+    print("[OK] init_permisos ejecutado")
     db = SessionLocal()
     try:
         ensure_columna_biometrico(db)

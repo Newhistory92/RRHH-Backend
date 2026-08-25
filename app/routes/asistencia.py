@@ -12,8 +12,9 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.auth_middleware import (
-    ROLE_ADMIN, ROLE_RRHH, get_current_user, require_any_auth, require_roles,
+    get_current_user, require_auth, require_permission,
 )
+from app.permisos import tiene_permiso
 from app.database.asistencia import (
     biometricos_huerfanos, dias_abuso_de, dias_abuso_todos, ensure_tables,
     get_config, get_jornada, jornadas_abuso_todos, jornadas_de,
@@ -29,7 +30,7 @@ from app.services.asistencia_recalc import recalcular_anio, recalcular_todos
 
 router = APIRouter(prefix="/asistencia", tags=["Asistencia"])
 
-SOLO_RRHH = Depends(require_roles(ROLE_ADMIN, ROLE_RRHH))
+GESTIONAR_ASISTENCIA = Depends(require_permission("asistencia.gestionar"))
 
 
 def get_db():
@@ -53,7 +54,7 @@ def _rango(desde: str | None, hasta: str | None) -> tuple[date, date]:
     return d, h
 
 
-@router.get("/tablero", dependencies=[SOLO_RRHH])
+@router.get("/tablero", dependencies=[GESTIONAR_ASISTENCIA])
 def get_tablero(desde: str | None = None, hasta: str | None = None,
                 db: Session = Depends(get_db)):
     ensure_tables(db)
@@ -69,7 +70,7 @@ def get_tablero(desde: str | None = None, hasta: str | None = None,
     return {"desde": d.isoformat(), "hasta": h.isoformat(), "empleados": filas}
 
 
-@router.get("/alertas-tolerancia", dependencies=[SOLO_RRHH])
+@router.get("/alertas-tolerancia", dependencies=[GESTIONAR_ASISTENCIA])
 def get_alertas_tolerancia(desde: str | None = None, hasta: str | None = None,
                            db: Session = Depends(get_db)):
     ensure_tables(db)
@@ -98,20 +99,20 @@ def get_alertas_tolerancia(desde: str | None = None, hasta: str | None = None,
             "empleados": empleados, "diasRachaAlerta": cfg["diasRachaAlerta"]}
 
 
-@router.get("/incompletas", dependencies=[SOLO_RRHH])
+@router.get("/incompletas", dependencies=[GESTIONAR_ASISTENCIA])
 def get_incompletas(db: Session = Depends(get_db)):
     ensure_tables(db)
     return {"jornadas": jornadas_incompletas(db)}
 
 
-@router.get("/biometricos-huerfanos", dependencies=[SOLO_RRHH])
+@router.get("/biometricos-huerfanos", dependencies=[GESTIONAR_ASISTENCIA])
 def get_biometricos_huerfanos(db: Session = Depends(get_db)):
     """IDs del reloj con marcaciones recientes que no estan vinculados a ningun empleado."""
     ensure_tables(db)
     return {"huerfanos": biometricos_huerfanos(db)}
 
 
-@router.post("/reset-inicio", dependencies=[SOLO_RRHH])
+@router.post("/reset-inicio", dependencies=[GESTIONAR_ASISTENCIA])
 def post_reset_inicio(db: Session = Depends(get_db)):
     """
     Limpia jornadas anteriores a hoy y mueve fechaInicioModulo al dia de hoy.
@@ -122,7 +123,7 @@ def post_reset_inicio(db: Session = Depends(get_db)):
     return {"ok": True, "fechaInicioModulo": nueva_fecha.isoformat()}
 
 
-@router.post("/jornadas/{jornada_id}/correccion", dependencies=[SOLO_RRHH])
+@router.post("/jornadas/{jornada_id}/correccion", dependencies=[GESTIONAR_ASISTENCIA])
 def post_correccion_jornada(jornada_id: int, data: dict = Body(...),
                             usuario: dict = Depends(get_current_user),
                             db: Session = Depends(get_db)):
@@ -168,7 +169,7 @@ def post_correccion_jornada(jornada_id: int, data: dict = Body(...),
     return {"ok": True, "employeeId": jornada["employeeId"], "anio": anio}
 
 
-@router.delete("/jornadas/{jornada_id}/correccion", dependencies=[SOLO_RRHH])
+@router.delete("/jornadas/{jornada_id}/correccion", dependencies=[GESTIONAR_ASISTENCIA])
 def delete_correccion_jornada(jornada_id: int, db: Session = Depends(get_db)):
     """
     Elimina la carga manual del dia. El proximo recalculo restaura los
@@ -206,7 +207,7 @@ def get_empleado(employee_id: int, desde: str | None = None,
                  hasta: str | None = None,
                  usuario: dict = Depends(get_current_user),
                  db: Session = Depends(get_db)):
-    if usuario["roleId"] not in [ROLE_ADMIN, ROLE_RRHH] and usuario.get("employeeId") != employee_id:
+    if not tiene_permiso(usuario["permisos"], "asistencia.gestionar") and usuario.get("employeeId") != employee_id:
         raise HTTPException(status_code=403, detail="Sin permiso para ver este empleado")
     ensure_tables(db)
     d, h = _rango(desde, hasta)
@@ -218,7 +219,7 @@ def get_empleado(employee_id: int, desde: str | None = None,
     }
 
 
-@router.get("/mi", dependencies=[Depends(require_any_auth)])
+@router.get("/mi", dependencies=[Depends(require_auth)])
 def get_mi_asistencia(desde: str | None = None, hasta: str | None = None,
                       usuario: dict = Depends(get_current_user),
                       db: Session = Depends(get_db)):
@@ -246,13 +247,13 @@ def get_mi_asistencia(desde: str | None = None, hasta: str | None = None,
     }
 
 
-@router.get("/config", dependencies=[SOLO_RRHH])
+@router.get("/config", dependencies=[GESTIONAR_ASISTENCIA])
 def get_asistencia_config(db: Session = Depends(get_db)):
     ensure_tables(db)
     return get_config(db)
 
 
-@router.put("/config", dependencies=[SOLO_RRHH])
+@router.put("/config", dependencies=[GESTIONAR_ASISTENCIA])
 def put_asistencia_config(data: dict = Body(...), db: Session = Depends(get_db)):
     ensure_tables(db)
     try:
@@ -300,7 +301,7 @@ def put_asistencia_config(data: dict = Body(...), db: Session = Depends(get_db))
                          estricta_entrada, estricta_salida, dias_racha)
 
 
-@router.post("/recalcular", dependencies=[SOLO_RRHH], status_code=202)
+@router.post("/recalcular", dependencies=[GESTIONAR_ASISTENCIA], status_code=202)
 def post_recalcular(background_tasks: BackgroundTasks,
                     data: dict = Body(default={}),
                     usuario: dict = Depends(get_current_user),
@@ -350,7 +351,7 @@ def post_recalcular(background_tasks: BackgroundTasks,
             "mensaje": "El recalculo se ejecuta en segundo plano. Consulta GET /asistencia/recalculos para ver el resultado."}
 
 
-@router.get("/incidencias", dependencies=[SOLO_RRHH])
+@router.get("/incidencias", dependencies=[GESTIONAR_ASISTENCIA])
 def get_incidencias(tipo: str | None = None, desde: str | None = None,
                     hasta: str | None = None, db: Session = Depends(get_db)):
     ensure_tables(db)
@@ -359,7 +360,7 @@ def get_incidencias(tipo: str | None = None, desde: str | None = None,
             "incidencias": incidencias_abiertas(db, tipo, d, h)}
 
 
-@router.get("/recalculos", dependencies=[SOLO_RRHH])
+@router.get("/recalculos", dependencies=[GESTIONAR_ASISTENCIA])
 def get_recalculos(limite: int = 50, db: Session = Depends(get_db)):
     ensure_tables(db)
     if not (1 <= limite <= 200):

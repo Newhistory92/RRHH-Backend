@@ -12,7 +12,8 @@ from sqlalchemy import text
 from datetime import datetime
 from typing import Optional
 from app.database.database import SessionLocal
-from app.auth_middleware import require_any_auth, get_current_user, require_roles, ROLE_ADMIN
+from app.auth_middleware import require_auth, require_permission, get_current_user
+from app.permisos import tiene_permiso
 from app.database.publications import (
     ensure_table,
     VALID_CATEGORIAS,
@@ -36,9 +37,6 @@ from app.database.publications_attachments import (
 
 router = APIRouter(prefix="/publications", tags=["Publications"])
 
-ROLE_RRHH = ROLE_ADMIN
-require_rrhh_auth = require_roles(ROLE_ADMIN, ROLE_RRHH)
-
 
 def get_db():
     db = SessionLocal()
@@ -50,7 +48,7 @@ def get_db():
 
 def _check_self_or_admin(employee_id: int, current_user: dict) -> None:
     """Evita que un empleado lea el feed de otro."""
-    if employee_id != current_user.get("employeeId") and current_user.get("roleId") != ROLE_ADMIN:
+    if employee_id != current_user.get("employeeId") and not tiene_permiso(current_user.get("permisos", set()), "publicaciones.gestionar"):
         raise HTTPException(status_code=403, detail="No tenes permiso para acceder a esta informacion.")
 
 
@@ -200,7 +198,7 @@ def _notificar_destinatarios(db: Session, publication_id: int, categoria: str, t
 UPLOAD_DIR = "uploads/publications"
 
 
-@router.post("/attachments", dependencies=[Depends(require_rrhh_auth)])
+@router.post("/attachments", dependencies=[Depends(require_permission("publicaciones.gestionar"))])
 async def upload_attachment(file: UploadFile = File(...), rol: str = Form(...), db: Session = Depends(get_db)):
     """Sube un adjunto a disco y devuelve su metadata. Valida tipo y tamano
     antes de escribir. rol = 'inline' (embebido en el cuerpo) | 'adjunto' (descargable)."""
@@ -238,7 +236,7 @@ async def upload_attachment(file: UploadFile = File(...), rol: str = Form(...), 
 # ─────────────────────────────────────────────────────────────────────────────
 # POST /publications — crear publicacion (HR/Admin)
 # ─────────────────────────────────────────────────────────────────────────────
-@router.post("", dependencies=[Depends(require_rrhh_auth)])
+@router.post("", dependencies=[Depends(require_permission("publicaciones.gestionar"))])
 def create_publication(data: dict = Body(...), db: Session = Depends(get_db)):
     """Crea una publicacion con sus destinos, en una transaccion."""
     fecha_pub, fecha_exp, fijada, targets = _validar_payload(data)
@@ -289,7 +287,7 @@ def create_publication(data: dict = Body(...), db: Session = Depends(get_db)):
 # ─────────────────────────────────────────────────────────────────────────────
 # PUT /publications/{publication_id} — editar publicacion (HR/Admin)
 # ─────────────────────────────────────────────────────────────────────────────
-@router.put("/{publication_id}", dependencies=[Depends(require_rrhh_auth)])
+@router.put("/{publication_id}", dependencies=[Depends(require_permission("publicaciones.gestionar"))])
 def update_publication(publication_id: int, data: dict = Body(...), db: Session = Depends(get_db)):
     """Edita una publicacion y reescribe su set de destinos, en una transaccion."""
     fecha_pub, fecha_exp, fijada, targets = _validar_payload(data)
@@ -340,7 +338,7 @@ def update_publication(publication_id: int, data: dict = Body(...), db: Session 
 # ─────────────────────────────────────────────────────────────────────────────
 # DELETE /publications/{publication_id} — soft-delete (HR/Admin)
 # ─────────────────────────────────────────────────────────────────────────────
-@router.delete("/{publication_id}", dependencies=[Depends(require_rrhh_auth)])
+@router.delete("/{publication_id}", dependencies=[Depends(require_permission("publicaciones.gestionar"))])
 def delete_publication(publication_id: int, db: Session = Depends(get_db)):
     """Baja logica de una publicacion (activo=0)."""
     ensure_table(db)
@@ -377,7 +375,7 @@ def _targets_de(db: Session, publication_id: int) -> list:
 # ─────────────────────────────────────────────────────────────────────────────
 # GET /publications — listado admin (HR/Admin), con filtros opcionales
 # ─────────────────────────────────────────────────────────────────────────────
-@router.get("", dependencies=[Depends(require_rrhh_auth)])
+@router.get("", dependencies=[Depends(require_permission("publicaciones.gestionar"))])
 def list_publications(
     categoria: Optional[str] = None,
     estado: Optional[str] = None,
@@ -449,7 +447,7 @@ def list_publications(
 # ─────────────────────────────────────────────────────────────────────────────
 # GET /publications/feed — feed filtrado del empleado (self-or-admin)
 # ─────────────────────────────────────────────────────────────────────────────
-@router.get("/feed", dependencies=[Depends(require_any_auth)])
+@router.get("/feed", dependencies=[Depends(require_permission("inicio.ver"))])
 def get_feed(
     employeeId: int,
     texto: Optional[str] = None,
@@ -531,7 +529,7 @@ def get_feed(
 # ─────────────────────────────────────────────────────────────────────────────
 # GET /publications/{publication_id} — detalle para edicion (HR/Admin)
 # ─────────────────────────────────────────────────────────────────────────────
-@router.get("/{publication_id}", dependencies=[Depends(require_rrhh_auth)])
+@router.get("/{publication_id}", dependencies=[Depends(require_permission("publicaciones.gestionar"))])
 def get_publication(publication_id: int, db: Session = Depends(get_db)):
     """Detalle de una publicacion con sus destinos."""
     ensure_table(db)

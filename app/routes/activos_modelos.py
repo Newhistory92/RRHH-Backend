@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from typing import Optional
 from app.database.database import SessionLocal
-from app.auth_middleware import require_any_auth, require_roles, ROLE_ADMIN
+from app.auth_middleware import require_permission
 from app.database.activos_modelos import (
     ensure_tables, CAMPOS_SPEC_POR_CATEGORIA, campos_disponibles,
     listar_modelos, obtener_modelo, crear_modelo, actualizar_modelo, baja_modelo,
@@ -19,8 +19,6 @@ from app.database.activos_modelos import (
 )
 
 router = APIRouter(prefix="/activos/modelos", tags=["Activos - Modelos"])
-
-require_admin = require_roles(ROLE_ADMIN)
 
 
 def get_db():
@@ -38,19 +36,19 @@ def _validar_nombre(data: dict) -> str:
     return nombre
 
 
-@router.get("", dependencies=[Depends(require_any_auth)])
+@router.get("", dependencies=[Depends(require_permission("activos.modelos"))])
 def get_modelos(db: Session = Depends(get_db)):
     ensure_tables(db)
     return {"modelos": listar_modelos(db)}
 
 
-@router.get("/campos", dependencies=[Depends(require_any_auth)])
+@router.get("/campos", dependencies=[Depends(require_permission("activos.modelos"))])
 def get_campos(db: Session = Depends(get_db)):
     ensure_tables(db)
     return {"categorias": campos_disponibles(db)}
 
 
-@router.get("/evaluar/{pc_id}", dependencies=[Depends(require_any_auth)])
+@router.get("/evaluar/{pc_id}", dependencies=[Depends(require_permission("activos.modelos"))])
 def get_evaluacion(pc_id: int, modeloId: int, db: Session = Depends(get_db)):
     ensure_tables(db)
     pc = db.execute(text("""
@@ -68,7 +66,7 @@ def get_evaluacion(pc_id: int, modeloId: int, db: Session = Depends(get_db)):
     return evaluar_pc(db, pc_id, modeloId)
 
 
-@router.get("/{modelo_id}", dependencies=[Depends(require_any_auth)])
+@router.get("/{modelo_id}", dependencies=[Depends(require_permission("activos.modelos"))])
 def get_modelo(modelo_id: int, db: Session = Depends(get_db)):
     ensure_tables(db)
     modelo = obtener_modelo(db, modelo_id)
@@ -77,7 +75,7 @@ def get_modelo(modelo_id: int, db: Session = Depends(get_db)):
     return modelo
 
 
-@router.post("", dependencies=[Depends(require_admin)])
+@router.post("", dependencies=[Depends(require_permission("activos.modelos"))])
 def post_modelo(data: dict = Body(...), db: Session = Depends(get_db)):
     ensure_tables(db)
     nombre = _validar_nombre(data)
@@ -88,7 +86,7 @@ def post_modelo(data: dict = Body(...), db: Session = Depends(get_db)):
     return {"id": new_id}
 
 
-@router.put("/{modelo_id}", dependencies=[Depends(require_admin)])
+@router.put("/{modelo_id}", dependencies=[Depends(require_permission("activos.modelos"))])
 def put_modelo(modelo_id: int, data: dict = Body(...), db: Session = Depends(get_db)):
     ensure_tables(db)
     if not obtener_modelo(db, modelo_id):
@@ -101,7 +99,7 @@ def put_modelo(modelo_id: int, data: dict = Body(...), db: Session = Depends(get
     return {"message": "Modelo actualizado"}
 
 
-@router.delete("/{modelo_id}", dependencies=[Depends(require_admin)])
+@router.delete("/{modelo_id}", dependencies=[Depends(require_permission("activos.modelos"))])
 def delete_modelo(modelo_id: int, db: Session = Depends(get_db)):
     ensure_tables(db)
     if not obtener_modelo(db, modelo_id):
@@ -111,7 +109,7 @@ def delete_modelo(modelo_id: int, db: Session = Depends(get_db)):
     return {"message": "Modelo dado de baja"}
 
 
-@router.post("/{modelo_id}/requisitos", dependencies=[Depends(require_admin)])
+@router.post("/{modelo_id}/requisitos", dependencies=[Depends(require_permission("activos.modelos"))])
 def post_requisito(modelo_id: int, data: dict = Body(...), db: Session = Depends(get_db)):
     ensure_tables(db)
     if not obtener_modelo(db, modelo_id):
@@ -147,7 +145,7 @@ def post_requisito(modelo_id: int, data: dict = Body(...), db: Session = Depends
     return {"id": new_id}
 
 
-@router.delete("/{modelo_id}/requisitos/{requisito_id}", dependencies=[Depends(require_admin)])
+@router.delete("/{modelo_id}/requisitos/{requisito_id}", dependencies=[Depends(require_permission("activos.modelos"))])
 def delete_requisito(modelo_id: int, requisito_id: int, db: Session = Depends(get_db)):
     ensure_tables(db)
     if not quitar_requisito(db, modelo_id, requisito_id):

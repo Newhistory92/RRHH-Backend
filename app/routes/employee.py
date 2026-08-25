@@ -2,7 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from app.database.database import SessionLocal
-from app.auth_middleware import require_roles, require_any_auth, ROLE_ADMIN, get_current_user
+from app.auth_middleware import require_auth, require_permission, get_current_user
+from app.permisos import tiene_permiso
 from datetime import datetime
 from app.database.employee_documents import get_documents as get_employee_documents_data, get_document as get_employee_document_data
 from app.services.asistencia_recalc import recalcular_historia
@@ -25,7 +26,7 @@ router = APIRouter(prefix="/employee", tags=["Employee"])
 # ===============================================
 # GET: Obtener información completa de un empleado
 # ===============================================
-@router.get("/{employee_id}", dependencies=[Depends(require_any_auth)])
+@router.get("/{employee_id}", dependencies=[Depends(require_auth)])
 def get_employee_details(employee_id: int, db: Session = Depends(get_db)):
     print(employee_id)
     
@@ -608,9 +609,9 @@ def get_employee_details(employee_id: int, db: Session = Depends(get_db)):
 
 
 
-@router.put("/{employee_id}", dependencies=[Depends(require_any_auth)])
+@router.put("/{employee_id}", dependencies=[Depends(require_auth)])
 def update_employee(employee_id: int, data: dict = Body(...), db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
-    if current_user["employeeId"] != employee_id and current_user["roleId"] != ROLE_ADMIN:
+    if current_user["employeeId"] != employee_id and not tiene_permiso(current_user["permisos"], "rrhh.gestionar"):
         raise HTTPException(status_code=403, detail="No tenés permiso para editar este empleado")
 
     print("🟢 Datos recibidos para actualizar empleado:", {k: v for k, v in data.items() if k != "photo"})
@@ -825,7 +826,7 @@ def update_employee(employee_id: int, data: dict = Body(...), db: Session = Depe
     return {"message": "Empleado y formaciones actualizados correctamente"}
 
 
-@router.delete("/Academic/{record_id}", dependencies=[Depends(require_roles(ROLE_ADMIN))])
+@router.delete("/Academic/{record_id}", dependencies=[Depends(require_permission("rrhh.gestionar"))])
 def delete_academic_record(record_id: int, db: Session = Depends(get_db)):
     """
     Elimina un registro académico (AcademicRecord) por su ID.
@@ -852,10 +853,10 @@ def delete_academic_record(record_id: int, db: Session = Depends(get_db)):
     return {"message": "Registro académico eliminado correctamente", "id": record_id}
 
 
-@router.get("/{employee_id}/documents", dependencies=[Depends(require_any_auth)])
+@router.get("/{employee_id}/documents", dependencies=[Depends(require_auth)])
 def list_my_documents(employee_id: int, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
     """Lista los documentos del propio empleado (o cualquiera, si es Admin). Solo lectura."""
-    if current_user["employeeId"] != employee_id and current_user["roleId"] != ROLE_ADMIN:
+    if current_user["employeeId"] != employee_id and not tiene_permiso(current_user["permisos"], "rrhh.gestionar"):
         raise HTTPException(status_code=403, detail="No tenés permiso para ver estos documentos")
     try:
         return {"documents": get_employee_documents_data(db, employee_id)}
@@ -863,10 +864,10 @@ def list_my_documents(employee_id: int, db: Session = Depends(get_db), current_u
         raise HTTPException(status_code=500, detail=f"Error al obtener documentos: {str(e)}")
 
 
-@router.get("/{employee_id}/documents/{document_id}/download", dependencies=[Depends(require_any_auth)])
+@router.get("/{employee_id}/documents/{document_id}/download", dependencies=[Depends(require_auth)])
 def download_my_document(employee_id: int, document_id: int, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
     """Devuelve un documento completo (incluyendo fileData) para ver/descargar. Solo lectura."""
-    if current_user["employeeId"] != employee_id and current_user["roleId"] != ROLE_ADMIN:
+    if current_user["employeeId"] != employee_id and not tiene_permiso(current_user["permisos"], "rrhh.gestionar"):
         raise HTTPException(status_code=403, detail="No tenés permiso para ver este documento")
     doc = get_employee_document_data(db, employee_id, document_id)
     if not doc:

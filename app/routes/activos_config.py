@@ -10,7 +10,7 @@ from sqlalchemy import text
 from datetime import datetime
 from typing import Optional
 from app.database.database import SessionLocal
-from app.auth_middleware import require_any_auth, require_roles, ROLE_ADMIN
+from app.auth_middleware import require_permission
 from app.database.activos_config import (
     ensure_tables, VALID_GRUPOS,
     listar_categorias, listar_fabricantes, listar_proveedores, listar_estados,
@@ -18,8 +18,6 @@ from app.database.activos_config import (
 )
 
 router = APIRouter(prefix="/activos/config", tags=["Activos Config"])
-
-require_admin = require_roles(ROLE_ADMIN)
 
 
 def get_db():
@@ -38,13 +36,13 @@ def _nombre_valido(data: dict) -> str:
 
 
 # ─── Categorias ──────────────────────────────────────────────────────────────
-@router.get("/categorias", dependencies=[Depends(require_any_auth)])
+@router.get("/categorias", dependencies=[Depends(require_permission("activos.configurar"))])
 def get_categorias(grupo: Optional[str] = None, db: Session = Depends(get_db)):
     ensure_tables(db)
     return {"categorias": listar_categorias(db, grupo)}
 
 
-@router.post("/categorias", dependencies=[Depends(require_admin)])
+@router.post("/categorias", dependencies=[Depends(require_permission("activos.configurar"))])
 def crear_categoria(data: dict = Body(...), db: Session = Depends(get_db)):
     ensure_tables(db)
     nombre = _nombre_valido(data)
@@ -73,7 +71,7 @@ def crear_categoria(data: dict = Body(...), db: Session = Depends(get_db)):
     return {"id": new_id}
 
 
-@router.put("/categorias/{cat_id}", dependencies=[Depends(require_admin)])
+@router.put("/categorias/{cat_id}", dependencies=[Depends(require_permission("activos.configurar"))])
 def actualizar_categoria(cat_id: int, data: dict = Body(...), db: Session = Depends(get_db)):
     ensure_tables(db)
     nombre = _nombre_valido(data)
@@ -102,7 +100,7 @@ def actualizar_categoria(cat_id: int, data: dict = Body(...), db: Session = Depe
     return {"message": "Categoria actualizada"}
 
 
-@router.delete("/categorias/{cat_id}", dependencies=[Depends(require_admin)])
+@router.delete("/categorias/{cat_id}", dependencies=[Depends(require_permission("activos.configurar"))])
 def baja_categoria(cat_id: int, db: Session = Depends(get_db)):
     ensure_tables(db)
     existing = db.execute(text("SELECT id FROM ActivoCategoria WHERE id = :id AND activo = 1"), {"id": cat_id}).first()
@@ -114,13 +112,13 @@ def baja_categoria(cat_id: int, db: Session = Depends(get_db)):
 
 
 # ─── Fabricantes ─────────────────────────────────────────────────────────────
-@router.get("/fabricantes", dependencies=[Depends(require_any_auth)])
+@router.get("/fabricantes", dependencies=[Depends(require_permission("activos.configurar"))])
 def get_fabricantes(db: Session = Depends(get_db)):
     ensure_tables(db)
     return {"fabricantes": listar_fabricantes(db)}
 
 
-@router.post("/fabricantes", dependencies=[Depends(require_admin)])
+@router.post("/fabricantes", dependencies=[Depends(require_permission("activos.configurar"))])
 def crear_fabricante(data: dict = Body(...), db: Session = Depends(get_db)):
     ensure_tables(db)
     nombre = _nombre_valido(data)
@@ -134,7 +132,7 @@ def crear_fabricante(data: dict = Body(...), db: Session = Depends(get_db)):
     return {"id": new_id}
 
 
-@router.put("/fabricantes/{fab_id}", dependencies=[Depends(require_admin)])
+@router.put("/fabricantes/{fab_id}", dependencies=[Depends(require_permission("activos.configurar"))])
 def actualizar_fabricante(fab_id: int, data: dict = Body(...), db: Session = Depends(get_db)):
     ensure_tables(db)
     nombre = _nombre_valido(data)
@@ -147,7 +145,7 @@ def actualizar_fabricante(fab_id: int, data: dict = Body(...), db: Session = Dep
     return {"message": "Fabricante actualizado"}
 
 
-@router.delete("/fabricantes/{fab_id}", dependencies=[Depends(require_admin)])
+@router.delete("/fabricantes/{fab_id}", dependencies=[Depends(require_permission("activos.configurar"))])
 def baja_fabricante(fab_id: int, db: Session = Depends(get_db)):
     ensure_tables(db)
     existing = db.execute(text("SELECT id FROM ActivoFabricante WHERE id = :id AND activo = 1"), {"id": fab_id}).first()
@@ -159,13 +157,13 @@ def baja_fabricante(fab_id: int, db: Session = Depends(get_db)):
 
 
 # ─── Proveedores ─────────────────────────────────────────────────────────────
-@router.get("/proveedores", dependencies=[Depends(require_any_auth)])
+@router.get("/proveedores", dependencies=[Depends(require_permission("activos.configurar"))])
 def get_proveedores(db: Session = Depends(get_db)):
     ensure_tables(db)
     return {"proveedores": listar_proveedores(db)}
 
 
-@router.post("/proveedores", dependencies=[Depends(require_admin)])
+@router.post("/proveedores", dependencies=[Depends(require_permission("activos.configurar"))])
 def crear_proveedor(data: dict = Body(...), db: Session = Depends(get_db)):
     ensure_tables(db)
     nombre = _nombre_valido(data)
@@ -179,7 +177,7 @@ def crear_proveedor(data: dict = Body(...), db: Session = Depends(get_db)):
     return {"id": new_id}
 
 
-@router.put("/proveedores/{prov_id}", dependencies=[Depends(require_admin)])
+@router.put("/proveedores/{prov_id}", dependencies=[Depends(require_permission("activos.configurar"))])
 def actualizar_proveedor(prov_id: int, data: dict = Body(...), db: Session = Depends(get_db)):
     ensure_tables(db)
     nombre = _nombre_valido(data)
@@ -192,7 +190,7 @@ def actualizar_proveedor(prov_id: int, data: dict = Body(...), db: Session = Dep
     return {"message": "Proveedor actualizado"}
 
 
-@router.delete("/proveedores/{prov_id}", dependencies=[Depends(require_admin)])
+@router.delete("/proveedores/{prov_id}", dependencies=[Depends(require_permission("activos.configurar"))])
 def baja_proveedor(prov_id: int, db: Session = Depends(get_db)):
     ensure_tables(db)
     existing = db.execute(text("SELECT id FROM ActivoProveedor WHERE id = :id AND activo = 1"), {"id": prov_id}).first()
@@ -204,13 +202,13 @@ def baja_proveedor(prov_id: int, db: Session = Depends(get_db)):
 
 
 # ─── Estados ─────────────────────────────────────────────────────────────────
-@router.get("/estados", dependencies=[Depends(require_any_auth)])
+@router.get("/estados", dependencies=[Depends(require_permission("activos.configurar"))])
 def get_estados(db: Session = Depends(get_db)):
     ensure_tables(db)
     return {"estados": listar_estados(db)}
 
 
-@router.post("/estados", dependencies=[Depends(require_admin)])
+@router.post("/estados", dependencies=[Depends(require_permission("activos.configurar"))])
 def crear_estado(data: dict = Body(...), db: Session = Depends(get_db)):
     ensure_tables(db)
     nombre = _nombre_valido(data)
@@ -227,7 +225,7 @@ def crear_estado(data: dict = Body(...), db: Session = Depends(get_db)):
     return {"id": new_id}
 
 
-@router.put("/estados/{est_id}", dependencies=[Depends(require_admin)])
+@router.put("/estados/{est_id}", dependencies=[Depends(require_permission("activos.configurar"))])
 def actualizar_estado(est_id: int, data: dict = Body(...), db: Session = Depends(get_db)):
     ensure_tables(db)
     nombre = _nombre_valido(data)
@@ -243,7 +241,7 @@ def actualizar_estado(est_id: int, data: dict = Body(...), db: Session = Depends
     return {"message": "Estado actualizado"}
 
 
-@router.delete("/estados/{est_id}", dependencies=[Depends(require_admin)])
+@router.delete("/estados/{est_id}", dependencies=[Depends(require_permission("activos.configurar"))])
 def baja_estado(est_id: int, db: Session = Depends(get_db)):
     ensure_tables(db)
     existing = db.execute(text("SELECT id FROM ActivoEstado WHERE id = :id AND activo = 1"), {"id": est_id}).first()

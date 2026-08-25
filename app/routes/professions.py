@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from app.database.database import SessionLocal
-from app.auth_middleware import require_admin, require_any_auth
+from app.auth_middleware import require_auth, require_permission
 
 router = APIRouter(prefix="/professions", tags=["Professions"])
 
@@ -13,7 +13,7 @@ def get_db():
     finally:
         db.close()
 
-@router.get("", dependencies=[Depends(require_any_auth)])
+@router.get("", dependencies=[Depends(require_auth)])
 def get_professions(db: Session = Depends(get_db)):
     """Get all active professions."""
     try:
@@ -22,7 +22,7 @@ def get_professions(db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error al obtener profesiones: {str(e)}")
 
-@router.post("", dependencies=[Depends(require_admin)])
+@router.post("", dependencies=[Depends(require_permission("rrhh.gestionar"))])
 def save_profession(data: dict = Body(...), db: Session = Depends(get_db)):
     """Create or update a profession."""
     nombre = data.get("nombre")
@@ -58,7 +58,7 @@ def save_profession(data: dict = Body(...), db: Session = Depends(get_db)):
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Error al guardar profesión: {str(e)}")
 
-@router.delete("/{profession_id}", dependencies=[Depends(require_admin)])
+@router.delete("/{profession_id}", dependencies=[Depends(require_permission("rrhh.gestionar"))])
 def delete_profession(profession_id: int, db: Session = Depends(get_db)):
     """Soft delete a profession."""
     try:

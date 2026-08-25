@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from app.database.database import SessionLocal
-from app.auth_middleware import require_any_auth, require_roles, ROLE_ADMIN, get_current_user
+from app.auth_middleware import require_auth, get_current_user
 from datetime import datetime, timedelta, timezone
 import json
 import random
@@ -73,7 +73,7 @@ def _in_cooldown(db: Session, employee_id: int, skill_id: int) -> dict | None:
 # ─────────────────────────────────────────────────────────────────────────────
 # GET /tests/{skill_id}/cooldown/{employee_id}
 # ─────────────────────────────────────────────────────────────────────────────
-@router.get("/cooldown/{skill_id}/{employee_id}", dependencies=[Depends(require_any_auth)])
+@router.get("/cooldown/{skill_id}/{employee_id}", dependencies=[Depends(require_auth)])
 def check_cooldown(skill_id: int, employee_id: int, db: Session = Depends(get_db)):
     """
     Verifica si el empleado puede rendir el test de la habilidad.
@@ -104,7 +104,7 @@ def check_cooldown(skill_id: int, employee_id: int, db: Session = Depends(get_db
 # ─────────────────────────────────────────────────────────────────────────────
 # GET /tests/{skill_id}/questions?employee_id=X
 # ─────────────────────────────────────────────────────────────────────────────
-@router.get("/{skill_id}/questions", dependencies=[Depends(require_any_auth)])
+@router.get("/{skill_id}/questions", dependencies=[Depends(require_auth)])
 def get_test_questions(skill_id: int, employee_id: int, db: Session = Depends(get_db)):
     """
     Retorna preguntas aleatorias para que el empleado rinda el test.
@@ -210,7 +210,7 @@ def get_test_questions(skill_id: int, employee_id: int, db: Session = Depends(ge
 # ─────────────────────────────────────────────────────────────────────────────
 # POST /tests/{skill_id}/submit/{employee_id}
 # ─────────────────────────────────────────────────────────────────────────────
-@router.post("/{skill_id}/submit/{employee_id}", dependencies=[Depends(require_any_auth)])
+@router.post("/{skill_id}/submit/{employee_id}", dependencies=[Depends(require_auth)])
 def submit_test(
     skill_id: int,
     employee_id: int,
@@ -342,7 +342,7 @@ def submit_test(
 # ─────────────────────────────────────────────────────────────────────────────
 # GET /tests/history/{employee_id}
 # ─────────────────────────────────────────────────────────────────────────────
-@router.get("/history/{employee_id}", dependencies=[Depends(require_any_auth)])
+@router.get("/history/{employee_id}", dependencies=[Depends(require_auth)])
 def get_test_history(employee_id: int, db: Session = Depends(get_db)):
     """Retorna el historial de tests de un empleado, con nombre de habilidad."""
     rows = db.execute(text("""
@@ -377,7 +377,7 @@ def get_test_history(employee_id: int, db: Session = Depends(get_db)):
 # ─────────────────────────────────────────────────────────────────────────────
 # GET /tests/skills/{employee_id} — habilidades disponibles para rendir
 # ─────────────────────────────────────────────────────────────────────────────
-@router.get("/skills/{employee_id}", dependencies=[Depends(require_any_auth)])
+@router.get("/skills/{employee_id}", dependencies=[Depends(require_auth)])
 def get_available_skills(employee_id: int, db: Session = Depends(get_db)):
     """
     Retorna todas las habilidades técnicas activas con:

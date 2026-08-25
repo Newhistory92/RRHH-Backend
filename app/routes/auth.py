@@ -14,6 +14,8 @@ from app.database.token_blacklist import (
     ensure_table,
 )
 from app.services.auth_providers import get_provider, nombre_proveedor
+from app.auth_middleware import require_auth
+from app.database.permissions import permisos_de_rol
 
 load_dotenv()
 
@@ -79,6 +81,8 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
 
     print(f"✅ Usuario {resultado.usuario} autenticado correctamente con rol: {role_name}")
 
+    permisos = permisos_de_rol(db, resultado.roleId)
+
     return {
         "access_token": token,
         "token_type": "bearer",
@@ -86,6 +90,7 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
         "roleId": resultado.roleId,
         "roleName": role_name,
         "employeeId": resultado.employeeId,
+        "permisos": sorted(permisos),
     }
 
 
@@ -196,3 +201,24 @@ def get_auth_config():
     activo.
     """
     return {"authProvider": nombre_proveedor()}
+
+
+# ---------------------------------------------------------------------------
+# 🔑 Permisos del usuario actual
+# ---------------------------------------------------------------------------
+def listar_permisos(user: dict = Depends(require_auth)):
+    """
+    Codigos de permiso del usuario logueado, ordenados.
+
+    El frontend lo llama al montar para rearmar el sidebar sin depender de
+    lo que quedo guardado en localStorage al loguear.
+    """
+    return {"permisos": sorted(user.get("permisos") or set())}
+
+
+@router.get("/permisos")
+def get_permisos(user: dict = Depends(require_auth)):
+    """
+    GET /auth/permisos — Retorna los permisos del usuario actual.
+    """
+    return listar_permisos(user)

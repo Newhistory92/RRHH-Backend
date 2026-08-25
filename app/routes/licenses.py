@@ -3,7 +3,8 @@ from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from app.database.database import SessionLocal
-from app.auth_middleware import require_any_auth, require_roles, ROLE_ADMIN, ROLE_RRHH, get_current_user
+from app.auth_middleware import require_auth, require_permission, get_current_user
+from app.permisos import tiene_permiso
 from datetime import datetime, date, timedelta
 from typing import Optional
 from app.database.feriados import (
@@ -24,14 +25,14 @@ def get_db():
     finally:
         db.close()
 
-require_rrhh_auth = require_roles(ROLE_ADMIN, ROLE_RRHH)
+require_rrhh_auth = require_permission("licencias.configurar")
 
 router = APIRouter(prefix="/licenses", tags=["Licenses"])
 
 # ---------------------------------------------------------------------------
 # GET /licenses/supervisor — Obtiene el jefe directo (User ID) para aprobaciones
 # ---------------------------------------------------------------------------
-@router.get("/supervisor", dependencies=[Depends(require_any_auth)])
+@router.get("/supervisor", dependencies=[Depends(require_auth)])
 def get_employee_supervisor(employee_id: int, db: Session = Depends(get_db)):
     """
     Obtiene el supervisor directo del empleado usando la auto-relación managerId.
@@ -68,7 +69,7 @@ def get_employee_supervisor(employee_id: int, db: Session = Depends(get_db)):
 # GET /licenses/tipos-disponibles — Tipos de licencia permitidos para un empleado
 # Triple-join: CondicionLaboral → ConfiguracionLicencias (por categoria)
 # ---------------------------------------------------------------------------
-@router.get("/tipos-disponibles", dependencies=[Depends(require_any_auth)])
+@router.get("/tipos-disponibles", dependencies=[Depends(require_auth)])
 def get_tipos_disponibles(employee_id: int, db: Session = Depends(get_db)):
     """
     Retorna los tipos de licencia que el empleado puede solicitar,
@@ -187,7 +188,7 @@ def get_tipos_disponibles(employee_id: int, db: Session = Depends(get_db)):
 # GET /licenses/supervisores-disponibles — Lista de supervisores activos para derivar
 # Fuente: tabla LicenseSupervisor + User
 # ---------------------------------------------------------------------------
-@router.get("/supervisores-disponibles", dependencies=[Depends(require_any_auth)])
+@router.get("/supervisores-disponibles", dependencies=[Depends(require_auth)])
 def get_supervisores_disponibles(db: Session = Depends(get_db)):
     """
     Retorna la lista de usuarios que han actuado como supervisores en
@@ -279,7 +280,7 @@ def calcular_dias_vacaciones(tipo_contrato: str, fecha_ingreso,
 # ---------------------------------------------------------------------------
 # GET /licenses/configuracion — Obtiene las configuraciones anuales
 # ---------------------------------------------------------------------------
-@router.get("/configuracion", dependencies=[Depends(require_any_auth)])
+@router.get("/configuracion", dependencies=[Depends(require_auth)])
 def get_configuraciones(anio: Optional[int] = None, db: Session = Depends(get_db)):
     query = "SELECT id, anio, tipo, categoria , diasTotales, createdAt, updatedAt FROM ConfiguracionLicencias"
     params = {}
@@ -360,7 +361,7 @@ def delete_configuracion(config_id: int, db: Session = Depends(get_db)):
 # ---------------------------------------------------------------------------
 # POST /licenses/request — Crea una solicitud de licencia
 # ---------------------------------------------------------------------------
-@router.post("/request", dependencies=[Depends(require_any_auth)])
+@router.post("/request", dependencies=[Depends(require_auth)])
 def create_license_request(data: dict = Body(...), db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
     """
     Crea una solicitud de licencia.
@@ -420,7 +421,7 @@ def create_license_request(data: dict = Body(...), db: Session = Depends(get_db)
             
     # C. Roles RRHH para licencias médicas pesadas
     rrhh_only_types = ["lesiones de largo tratamiento", "lar", "accidente de trabajo", "enfermedad profesional", "enfermedad de miembros del grupo", "guarda o tenencia", "lic por enfermedad", "licencia sin goce de haberes", "fallecimiento en parto"]
-    is_caller_rrhh = current_user.get("roleId") == ROLE_ADMIN
+    is_caller_rrhh = tiene_permiso(current_user["permisos"], "licencias.configurar")
 
     if any(t in type_lower for t in rrhh_only_types) and not is_caller_rrhh:
         raise HTTPException(status_code=403, detail="Esta licencia solo puede ser tramitada por un administrador de RRHH.")
@@ -710,7 +711,7 @@ def get_license_saldos(
 # ---------------------------------------------------------------------------
 # GET /licenses/requests (Historial)
 # ---------------------------------------------------------------------------
-@router.get("/requests", dependencies=[Depends(require_any_auth)])
+@router.get("/requests", dependencies=[Depends(require_auth)])
 def get_license_requests(status: Optional[str] = None, employee_id: Optional[int] = None, supervisor_emp_id: Optional[int] = None, db: Session = Depends(get_db)):
     query = """
         SELECT l.id, l.type, l.startDate, l.endDate, l.status, l.duracion as duration, 
@@ -750,7 +751,7 @@ def get_license_requests(status: Optional[str] = None, employee_id: Optional[int
 # ---------------------------------------------------------------------------
 # GET /licenses/notificaciones — Mensajes activos de un empleado (campanita)
 # ---------------------------------------------------------------------------
-@router.get("/notificaciones", dependencies=[Depends(require_any_auth)])
+@router.get("/notificaciones", dependencies=[Depends(require_auth)])
 def get_notificaciones(employee_id: int, db: Session = Depends(get_db)):
     rows = db.execute(text("""
         SELECT id, text, createdAt
@@ -794,7 +795,7 @@ def _sync_employee_status(db: Session, employee_id: int):
 # ---------------------------------------------------------------------------
 # PATCH /licenses/requests/{id}/status — Aprobación/Rechazo transaccional
 # ---------------------------------------------------------------------------
-@router.patch("/requests/{license_id}/status", dependencies=[Depends(require_any_auth)])
+@router.patch("/requests/{license_id}/status", dependencies=[Depends(require_auth)])
 def update_license_status(license_id: int, data: dict = Body(...), db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
     status = data.get("status")
     observacion = data.get("observacion", "")
@@ -803,7 +804,7 @@ def update_license_status(license_id: int, data: dict = Body(...), db: Session =
     # Quien aprueba/rechaza debe ser el supervisor indicado (su propio employeeId)
     # o un usuario RRHH/Admin -- evita que cualquier empleado autenticado apruebe
     # o rechace licencias ajenas llamando al endpoint directamente.
-    if supervisor_emp_id and supervisor_emp_id != current_user.get("employeeId") and current_user.get("roleId") != ROLE_ADMIN:
+    if supervisor_emp_id and supervisor_emp_id != current_user.get("employeeId") and not tiene_permiso(current_user["permisos"], "licencias.configurar"):
         raise HTTPException(status_code=403, detail="No tenés permiso para gestionar esta solicitud de licencia.")
 
     print(f"console.log: Transaction Started for License: {license_id}, status={status}, supervisor={supervisor_emp_id}")
@@ -1018,7 +1019,7 @@ def rrhh_apply_license(data: dict = Body(...), db: Session = Depends(get_db)):
 # ---------------------------------------------------------------------------
 # Feriados de empresa (configurables por RRHH)
 # ---------------------------------------------------------------------------
-@router.get("/feriados", dependencies=[Depends(require_any_auth)])
+@router.get("/feriados", dependencies=[Depends(require_auth)])
 def list_feriados(db: Session = Depends(get_db)):
     """Lista los feriados de empresa activos."""
     ensure_feriado_table(db)

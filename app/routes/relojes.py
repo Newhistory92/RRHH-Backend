@@ -13,8 +13,9 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.auth_middleware import (
-    ROLE_ADMIN, get_current_user, require_admin, require_any_auth,
+    get_current_user, require_auth, require_permission,
 )
+from app.permisos import tiene_permiso
 from app.database.database import SessionLocal
 from app.database.marcaciones import (
     ensure_tables, estado_relojes, marcaciones_de,
@@ -35,19 +36,19 @@ def get_db():
         db.close()
 
 
-@router.get("/relojes/estado", dependencies=[Depends(require_admin)])
+@router.get("/relojes/estado", dependencies=[Depends(require_permission("asistencia.gestionar"))])
 def get_estado(db: Session = Depends(get_db)):
     ensure_tables(db)
     return {"configurados": relojes_configurados(), "relojes": estado_relojes(db)}
 
 
-@router.post("/relojes/sync", dependencies=[Depends(require_admin)])
+@router.post("/relojes/sync", dependencies=[Depends(require_permission("asistencia.gestionar"))])
 def post_sync(db: Session = Depends(get_db)):
     """Sincronizacion manual de la ventana normal."""
     return {"resultados": sincronizar_todos(db)}
 
 
-@router.post("/relojes/carga-inicial", dependencies=[Depends(require_admin)])
+@router.post("/relojes/carga-inicial", dependencies=[Depends(require_permission("asistencia.gestionar"))])
 def post_carga_inicial(db: Session = Depends(get_db)):
     """
     Trae el ultimo mes. Idempotente por la unicidad (relojIp, serialNo):
@@ -62,7 +63,7 @@ def post_carga_inicial(db: Session = Depends(get_db)):
     }
 
 
-@router.post("/relojes/resincronizar", dependencies=[Depends(require_admin)])
+@router.post("/relojes/resincronizar", dependencies=[Depends(require_permission("asistencia.gestionar"))])
 def post_resincronizar(data: dict = Body(...), db: Session = Depends(get_db)):
     """
     Re-lee un rango historico iterando de a un dia.
@@ -94,7 +95,7 @@ def post_resincronizar(data: dict = Body(...), db: Session = Depends(get_db)):
     }
 
 
-@router.get("/relojes/usuario/{biometrico_id}", dependencies=[Depends(require_admin)])
+@router.get("/relojes/usuario/{biometrico_id}", dependencies=[Depends(require_permission("asistencia.gestionar"))])
 def get_usuario_reloj(biometrico_id: str):
     """
     Nombre que tienen los relojes cargado para ese employeeNo. Lo usa el perfil
@@ -119,14 +120,14 @@ def get_usuario_reloj(biometrico_id: str):
     }
 
 
-@router.get("/marcaciones/{employee_id}", dependencies=[Depends(require_any_auth)])
+@router.get("/marcaciones/{employee_id}", dependencies=[Depends(require_auth)])
 def get_marcaciones(employee_id: int, desde: str | None = None, hasta: str | None = None,
                     db: Session = Depends(get_db),
                     current_user: dict = Depends(get_current_user)):
     """
     Marcaciones de un empleado. Un ROLE_USER accede solo a las propias.
     """
-    if current_user["roleId"] != ROLE_ADMIN and current_user.get("employeeId") != employee_id:
+    if not tiene_permiso(current_user["permisos"], "asistencia.gestionar") and current_user.get("employeeId") != employee_id:
         raise HTTPException(status_code=403, detail="No tenes permiso para ver estas marcaciones")
 
     ensure_tables(db)

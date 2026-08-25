@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from app.database.database import SessionLocal
-from app.auth_middleware import require_admin, require_any_auth
+from app.auth_middleware import require_auth, require_permission
 
 router = APIRouter(prefix="/schedules", tags=["Schedules"])
 
@@ -13,7 +13,7 @@ def get_db():
     finally:
         db.close()
 
-@router.get("/regimes", dependencies=[Depends(require_any_auth)])
+@router.get("/regimes", dependencies=[Depends(require_auth)])
 def get_schedules_regimes(db: Session = Depends(get_db)):
     """Get all work regimes (jornadas and horarios)."""
     try:
@@ -26,7 +26,7 @@ def get_schedules_regimes(db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error al obtener regímenes horarios: {str(e)}")
 
-@router.post("/jornadas", dependencies=[Depends(require_admin)])
+@router.post("/jornadas", dependencies=[Depends(require_permission("rrhh.gestionar"))])
 def save_jornada(data: dict = Body(...), db: Session = Depends(get_db)):
     """Create or update a JornadaLaboral."""
     nombre = data.get("nombre")
@@ -54,7 +54,7 @@ def save_jornada(data: dict = Body(...), db: Session = Depends(get_db)):
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Error al guardar jornada laboral: {str(e)}")
 
-@router.delete("/jornadas/{jornada_id}", dependencies=[Depends(require_admin)])
+@router.delete("/jornadas/{jornada_id}", dependencies=[Depends(require_permission("rrhh.gestionar"))])
 def delete_jornada(jornada_id: int, db: Session = Depends(get_db)):
     """Delete a JornadaLaboral."""
     try:
@@ -65,7 +65,7 @@ def delete_jornada(jornada_id: int, db: Session = Depends(get_db)):
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Error al eliminar jornada laboral: {str(e)}")
 
-@router.post("/horarios", dependencies=[Depends(require_admin)])
+@router.post("/horarios", dependencies=[Depends(require_permission("rrhh.gestionar"))])
 def save_horario(data: dict = Body(...), db: Session = Depends(get_db)):
     """Create or update a Horario template."""
     hora_inicio = data.get("horaInicio")
@@ -100,7 +100,7 @@ def save_horario(data: dict = Body(...), db: Session = Depends(get_db)):
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Error al guardar horario: {str(e)}")
 
-@router.delete("/horarios/{horario_id}", dependencies=[Depends(require_admin)])
+@router.delete("/horarios/{horario_id}", dependencies=[Depends(require_permission("rrhh.gestionar"))])
 def delete_horario(horario_id: int, db: Session = Depends(get_db)):
     """Delete a Horario template."""
     try:
