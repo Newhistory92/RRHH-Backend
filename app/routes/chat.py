@@ -21,14 +21,14 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.auth_middleware import require_any_auth
+from app.auth_middleware import require_permission
 from app.database.database import SessionLocal
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
 
-SOLO_AUTH = Depends(require_any_auth)
+SOLO_AUTH = Depends(require_permission("ia.usar"))
 
 
 def get_db():
