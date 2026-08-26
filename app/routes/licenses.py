@@ -378,17 +378,20 @@ def create_license_request(data: dict = Body(...), db: Session = Depends(get_db)
     if not employee_id or not start_date or not end_date:
         raise HTTPException(status_code=400, detail="Datos incompletos")
 
-    # Bloqueo: no se puede crear una nueva solicitud si ya hay una pendiente
-    # (de cualquier tipo) sin resolver.
+    # Bloqueo: no se puede crear una nueva solicitud del MISMO tipo si ya hay una
+    # pendiente sin resolver. Tipos distintos no se bloquean entre si -- una
+    # Vacaciones pendiente no debe impedir pedir, por ejemplo, un permiso por
+    # Matrimonio.
     pendiente = db.execute(text("""
         SELECT id FROM License
         WHERE employeeId = :empId
+          AND type = :type
           AND status IN ('Pendiente', 'Pendiente Siguiente Aprobación')
-    """), {"empId": employee_id}).fetchone()
+    """), {"empId": employee_id, "type": lic_type}).fetchone()
     if pendiente:
         raise HTTPException(
             status_code=400,
-            detail="Ya tenés una solicitud de licencia pendiente de aprobación. Esperá la resolución antes de crear una nueva."
+            detail=f"Ya tenés una solicitud de '{lic_type}' pendiente de aprobación. Esperá la resolución antes de crear otra del mismo tipo."
         )
 
     # 1. Obtener datos del solicitante (Género, Antigüedad, Rol, Contrato)
