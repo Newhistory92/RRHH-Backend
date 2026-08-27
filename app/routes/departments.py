@@ -80,6 +80,7 @@ def get_departments_with_employees_and_offices(db: Session = Depends(get_db)):
             d.nivelJerarquico,
             d.parentId,
             d.capacidadRequerida,
+            d.scoreExento,
             d.createdAt,
             d.updatedAt
         FROM Department d
@@ -98,6 +99,7 @@ def get_departments_with_employees_and_offices(db: Session = Depends(get_db)):
                 o.jefeId,
                 o.parentDepartmentId,
                 o.capacidadRequerida,
+                o.scoreExento,
                 o.createdAt,
                 o.updatedAt
             FROM Office o
@@ -143,6 +145,7 @@ def get_departments_with_employees_and_offices(db: Session = Depends(get_db)):
                 "jefeId": office.jefeId,
                 "parentDepartmentId": office.parentDepartmentId,
                 "capacidadRequerida": office.capacidadRequerida,
+                "scoreExento": bool(office.scoreExento),
                 "asignados": len(office_employees),
                 "createdAt": office.createdAt,
                 "updatedAt": office.updatedAt,
@@ -210,6 +213,7 @@ def get_departments_with_employees_and_offices(db: Session = Depends(get_db)):
             "jefeId": dep.jefeId,
             "parentId": dep.parentId,
             "capacidadRequerida": dep.capacidadRequerida,
+            "scoreExento": bool(dep.scoreExento),
             "asignados": dept_total_asignados,
             "createdAt": dep.createdAt,
             "updatedAt": dep.updatedAt,
