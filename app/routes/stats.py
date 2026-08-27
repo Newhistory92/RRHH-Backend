@@ -161,7 +161,11 @@ def fetch_all_employees_data(db: Session):
             d.nombre AS department_name,
             o.nombre AS office_name,
             c.categoria,
-            c.tipoContrato
+            c.tipoContrato,
+            CASE
+                WHEN ISNULL(d.scoreExento, 0) = 1 OR ISNULL(o.scoreExento, 0) = 1
+                THEN 1 ELSE 0
+            END AS isExento
         FROM Employee e
         LEFT JOIN Department d ON e.departmentId = d.id
         LEFT JOIN Office o ON e.officeId = o.id
@@ -189,6 +193,7 @@ def get_dashboard(db: Session = Depends(get_db), stats_db: Session = Depends(get
                 "office": emp["office_name"],
                 "categoria": emp["categoria"],
                 "tipoContrato": emp["tipoContrato"],
+                "isExento": bool(emp["isExento"]),
             }
             for emp in employees_raw
         ]
