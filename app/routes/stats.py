@@ -4,6 +4,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 from app.auth_middleware import require_permission
 from app.database.database import SessionLocal, SessionLocalObraSocial
+from app.database.score_exencion import empleados_exentos
 router = APIRouter(prefix="/stats", tags=["Statistics"], dependencies=[Depends(require_permission("estadisticas.ver"))])
 def get_db():
     db = SessionLocal()
@@ -66,20 +67,89 @@ def calculate_productivity_scores(stats_db: Session) -> dict[str, float]:
     """)
     rows = stats_db.execute(query).mappings().all()
     return {str(row["idUsuario"]).lower(): float(row["productivityScore"]) for row in rows}
+# Cuanto puede moverse un exento respecto del promedio, por su asistencia.
+# Acotado a proposito: el desempate ordena dentro del area, no compite contra
+# las areas que si generan actividad medible.
+MARGEN_DESEMPATE = 0.15
+
+
+def aplicar_score_exentos(
+    scores: dict[int, float],
+    exentos: set[int],
+    horas: dict[int, float],
+) -> dict[int, float]:
+    """
+    Reemplaza el score de las areas exentas por el promedio de las demas.
+
+    Las areas cuyo trabajo no pasa por el sistema no generan logs de acceso, asi
+    que su score medido siempre da ~0 y quedan ultimas sin que eso diga nada de
+    cuanto trabajan. Se les asigna el promedio de los no exentos, mas un ajuste
+    derivado de su saldo de horas para que no queden todos con el mismo numero:
+    una autoridad tiene que poder ver quien es el mejor DENTRO del area.
+
+    El ajuste esta centrado en la media del propio grupo, asi que el promedio
+    del grupo sigue siendo el promedio general. Quien no tiene dato de
+    asistencia recibe el promedio limpio: no se lo castiga por falta de datos.
+
+    Funcion pura, sin I/O, para poder testear la matematica sin base.
+    """
+    no_exentos = [s for emp_id, s in scores.items() if emp_id not in exentos and s > 0]
+    if not no_exentos:
+        # Sin base para promediar no se inventa nada: se deja lo que habia.
+        return dict(scores)
+
+    promedio = sum(no_exentos) / len(no_exentos)
+    resultado = dict(scores)
+
+    con_horas = {emp_id: horas[emp_id] for emp_id in exentos if emp_id in horas}
+
+    if con_horas:
+        valores = list(con_horas.values())
+        media_horas = sum(valores) / len(valores)
+        rango = max(valores) - min(valores)
+    else:
+        rango = 0.0
+        media_horas = 0.0
+
+    for emp_id in exentos:
+        if emp_id not in scores:
+            continue
+        if emp_id in con_horas and rango > 0:
+            desvio = (con_horas[emp_id] - media_horas) / rango
+            resultado[emp_id] = round(promedio + desvio * MARGEN_DESEMPATE * promedio, 2)
+        else:
+            resultado[emp_id] = round(promedio, 2)
+
+    return resultado
+
+
 def sync_productivity_scores(db: Session, stats_db: Session) -> None:
     scores_by_user = calculate_productivity_scores(stats_db)
     users_query = text("""
-        SELECT id, employeeId
-        FROM [User]
-        WHERE employeeId IS NOT NULL
+        SELECT u.id, u.employeeId, e.horas
+        FROM [User] u
+        JOIN Employee e ON e.id = u.employeeId
+        WHERE u.employeeId IS NOT NULL
     """)
     users = db.execute(users_query).mappings().all()
+
+    scores_por_empleado: dict[int, float] = {}
+    horas_por_empleado: dict[int, float] = {}
+
     for user in users:
         user_id = str(user["id"]).lower()
-        score = scores_by_user.get(user_id, 0.0)
+        emp_id = user["employeeId"]
+        scores_por_empleado[emp_id] = scores_by_user.get(user_id, 0.0)
+        if user["horas"] is not None:
+            horas_por_empleado[emp_id] = float(user["horas"])
+
+    exentos = empleados_exentos(db)
+    scores_finales = aplicar_score_exentos(scores_por_empleado, exentos, horas_por_empleado)
+
+    for emp_id, score in scores_finales.items():
         db.execute(
             text("UPDATE Employee SET productivityScore = :score WHERE id = :id"),
-            {"score": score, "id": user["employeeId"]}
+            {"score": score, "id": emp_id}
         )
     db.commit()
 def fetch_all_employees_data(db: Session):
@@ -91,7 +161,11 @@ def fetch_all_employees_data(db: Session):
             d.nombre AS department_name,
             o.nombre AS office_name,
             c.categoria,
-            c.tipoContrato
+            c.tipoContrato,
+            CASE
+                WHEN ISNULL(d.scoreExento, 0) = 1 OR ISNULL(o.scoreExento, 0) = 1
+                THEN 1 ELSE 0
+            END AS isExento
         FROM Employee e
         LEFT JOIN Department d ON e.departmentId = d.id
         LEFT JOIN Office o ON e.officeId = o.id
@@ -119,6 +193,7 @@ def get_dashboard(db: Session = Depends(get_db), stats_db: Session = Depends(get
                 "office": emp["office_name"],
                 "categoria": emp["categoria"],
                 "tipoContrato": emp["tipoContrato"],
+                "isExento": bool(emp["isExento"]),
             }
             for emp in employees_raw
         ]

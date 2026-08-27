@@ -21,6 +21,7 @@ from app.database.marcaciones import ensure_columna_biometrico
 from app.database.asistencia import ensure_tables as ensure_tablas_asistencia
 from app.database.provisioning import ensure_columna_origen
 from app.database.permissions import ensure_tables as ensure_permission_tables, sembrar
+from app.database.score_exencion import ensure_columnas_exencion
 
 app = FastAPI(title="Backend RRHH", version="1.0")
 
@@ -66,6 +67,8 @@ def startup():
         print("[OK] columna Message.category verificada")
         ensure_columna_origen(db)
         print("[OK] columna origen de [User] verificada")
+        ensure_columnas_exencion(db)
+        print("[OK] columnas scoreExento verificadas")
     finally:
         db.close()
     iniciar_scheduler()
