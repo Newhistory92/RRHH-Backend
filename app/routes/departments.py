@@ -361,6 +361,10 @@ class UpdateDepartmentRequest(BaseModel):
     empleadosIds: Optional[List[int]] = None
     habilidades_requeridas: Optional[List[Any]] = None
 
+
+class ScoreExentoRequest(BaseModel):
+    exento: Optional[Any] = None
+
 # --- PUT: Actualizar un departamento ---
 @router.put("/{dep_id}", dependencies=[Depends(require_permission("organigrama.gestionar"))])
 def update_department(dep_id: int, payload: UpdateDepartmentRequest, db: Session = Depends(get_db)):
@@ -448,6 +452,44 @@ def update_department(dep_id: int, payload: UpdateDepartmentRequest, db: Session
         raise HTTPException(status_code=500, detail=f"Error inesperado al actualizar el departamento: {str(e)}")
 
 
+
+
+# --- PUT: Marcar departamento como exento de score de productividad ---
+@router.put("/{dep_id}/score-exento", dependencies=[Depends(require_permission("organigrama.gestionar"))])
+def update_department_score_exento(dep_id: int, payload: ScoreExentoRequest, db: Session = Depends(get_db)):
+    """Marca o desmarca un departamento como exento del score de productividad."""
+    if payload.exento is None or not isinstance(payload.exento, bool):
+        raise HTTPException(status_code=400, detail="El campo 'exento' es requerido y debe ser booleano")
+
+    row = db.execute(text("SELECT id FROM Department WHERE id = :id"), {"id": dep_id}).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Departamento no encontrado")
+
+    db.execute(
+        text("UPDATE Department SET scoreExento = :exento WHERE id = :id"),
+        {"exento": payload.exento, "id": dep_id},
+    )
+    db.commit()
+    return {"success": True, "exento": payload.exento}
+
+
+# --- PUT: Marcar oficina como exenta de score de productividad ---
+@router.put("/office/{office_id}/score-exento", dependencies=[Depends(require_permission("organigrama.gestionar"))])
+def update_office_score_exento(office_id: int, payload: ScoreExentoRequest, db: Session = Depends(get_db)):
+    """Marca o desmarca una oficina como exenta del score de productividad."""
+    if payload.exento is None or not isinstance(payload.exento, bool):
+        raise HTTPException(status_code=400, detail="El campo 'exento' es requerido y debe ser booleano")
+
+    row = db.execute(text("SELECT id FROM Office WHERE id = :id"), {"id": office_id}).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Oficina no encontrada")
+
+    db.execute(
+        text("UPDATE Office SET scoreExento = :exento WHERE id = :id"),
+        {"exento": payload.exento, "id": office_id},
+    )
+    db.commit()
+    return {"success": True, "exento": payload.exento}
 
 
 # --- DELETE: Eliminar un departamento ---
