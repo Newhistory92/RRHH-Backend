@@ -30,6 +30,12 @@ class FakeResult:
     def fetchone(self):
         return self._filas[0] if self._filas else None
 
+    @property
+    def rowcount(self):
+        """len(filas) del fragmento que matcheo. Sirve para UPDATE/DELETE
+        que en produccion devuelven cuantas filas afecto la sentencia."""
+        return len(self._filas)
+
     def scalar(self):
         if not self._filas:
             return None

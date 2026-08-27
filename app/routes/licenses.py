@@ -757,7 +757,7 @@ def get_license_requests(status: Optional[str] = None, employee_id: Optional[int
 @router.get("/notificaciones", dependencies=[Depends(require_auth)])
 def get_notificaciones(employee_id: int, db: Session = Depends(get_db)):
     rows = db.execute(text("""
-        SELECT id, text, createdAt
+        SELECT id, text, createdAt, leida
         FROM Message
         WHERE employeeId = :empId AND status = 'active'
         ORDER BY createdAt DESC
@@ -765,10 +765,29 @@ def get_notificaciones(employee_id: int, db: Session = Depends(get_db)):
 
     return {
         "notifications": [
-            {"id": r["id"], "text": r["text"], "time": r["createdAt"], "status": "nueva"}
+            {
+                "id": r["id"],
+                "text": r["text"],
+                "time": r["createdAt"],
+                "status": "leida" if r["leida"] else "nueva",
+            }
             for r in rows
         ]
     }
+
+# ---------------------------------------------------------------------------
+# PATCH /licenses/notificaciones/{notif_id}/leer — Marcar una notificación
+# de la campanita como leída (no la archiva: solo baja el contador)
+# ---------------------------------------------------------------------------
+@router.patch("/notificaciones/{notif_id}/leer", dependencies=[Depends(require_auth)])
+def marcar_notificacion_leida(notif_id: int, db: Session = Depends(get_db)):
+    result = db.execute(text("""
+        UPDATE Message SET leida = 1 WHERE id = :id
+    """), {"id": notif_id})
+    db.commit()
+    if result.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Notificación no encontrada")
+    return {"success": True}
 
 # ---------------------------------------------------------------------------
 # Helper: Sincronizar Employee.status según licencias activas

@@ -65,6 +65,12 @@ def startup():
         ))
         db.commit()
         print("[OK] columna Message.category verificada")
+        db.execute(_text(
+            "IF COL_LENGTH('Message','leida') IS NULL "
+            "ALTER TABLE Message ADD leida BIT NOT NULL DEFAULT 0"
+        ))
+        db.commit()
+        print("[OK] columna Message.leida verificada")
         ensure_columna_origen(db)
         print("[OK] columna origen de [User] verificada")
         ensure_columnas_exencion(db)
