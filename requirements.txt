@@ -1,3 +1,11 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+pyodbc
+python-jose
+bcrypt
+python-multipart
+google-genai
 nh3
 requests
 apscheduler==3.10.4
