@@ -9,6 +9,7 @@ from app.database.database import SessionLocal
 from app.database.marcaciones import ensure_columna_biometrico
 from app.database.asistencia import ensure_tables as ensure_tablas_asistencia
 from app.database.permissions import ensure_tables as ensure_permission_tables, sembrar
+from app.database.score_exencion import ensure_columnas_exencion
 
 app = FastAPI(title="Backend RRHH", version="1.0")
 
@@ -45,6 +46,8 @@ def startup():
         print("[OK] columna biometricoId verificada")
         ensure_tablas_asistencia(db)
         print("[OK] tablas de asistencia verificadas")
+        ensure_columnas_exencion(db)
+        print("[OK] columnas scoreExento verificadas")
     finally:
         db.close()
     iniciar_scheduler()
