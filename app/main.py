@@ -117,5 +117,14 @@ def root():
     return {"message": "Bienvenido a la API RRHH"}
 
 
-# python -m uvicorn app.main:app --reload
 # .\venv\Scripts\Activate
+#
+# Desarrollo (solo esta maquina):
+#   python -m uvicorn app.main:app --reload
+#
+# Servidor / red institucional -- OBLIGATORIO --host 0.0.0.0:
+#   python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+#
+# Sin --host 0.0.0.0 uvicorn escucha solo en 127.0.0.1 y ninguna otra PC de
+# la red puede conectarse (ERR_CONNECTION_REFUSED en el navegador del cliente).
+# Ademas hay que habilitar el puerto 8000 en el Firewall de Windows del server.
