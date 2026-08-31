@@ -113,12 +113,55 @@ PREGUNTAS_AMBIENTE_GENERAL = [
     ("¿Recomendarías esta oficina como lugar para trabajar?", "Ambiente laboral general", "escala", None, False, True),
 ]
 
+# Preguntas donde un valor alto es MALO. Con la escala estandar
+# ["Siempre", "Casi siempre", "Algunas veces", "Rara vez", "Nunca"] mapeada a
+# 5..1, responder "Siempre" a "¿genera conflictos?" da un 5 que, sin invertir,
+# sube el promedio de la persona.
+#
+# Es la unica fuente de verdad: la usan el seed de preguntas nuevas y la
+# migracion de las ya sembradas.
+PREGUNTAS_INVERSAS: tuple[str, ...] = (
+    "¿Has presenciado conductas inapropiadas por parte de esta persona?",
+    "¿Genera conflictos innecesarios?",
+    "¿Su trabajo genera retrabajos para otros?",
+    "¿Alguna persona del equipo genera un ambiente tenso?",
+    "¿Evitás interactuar con esta persona cuando es posible?",
+    "¿Considerás que esta persona afecta negativamente al equipo?",
+    "¿Has observado faltas de respeto hacia compañeros?",
+    "¿Has observado conductas intimidantes o agresivas?",
+    "¿Creés que esta persona discrimina o hace comentarios ofensivos?",
+    "¿Existe favoritismo?",
+    "¿Te sentís sobrecargado de trabajo?",
+    "¿Has pensado en renunciar por el ambiente laboral?",
+)
+
+
+def normalizar_valor(valor: int, es_inversa: bool) -> int:
+    """
+    Deja la escala con 5 = mejor y 1 = peor, sea cual sea la polaridad.
+
+    Todo lo que consume respuestas opera sobre el valor normalizado y no
+    vuelve a preocuparse por como estaba redactada la pregunta.
+    """
+    return 6 - valor if es_inversa else valor
+
+
+# La columna se agrega aparte del CREATE porque Pregunta ya existe en las
+# instalaciones actuales, con 38 filas sembradas antes de que hubiera
+# polaridad.
+ALTER_ESINVERSA_SQL = """
+IF COL_LENGTH('Pregunta','esInversa') IS NULL
+ALTER TABLE Pregunta ADD esInversa BIT NOT NULL DEFAULT 0;
+"""
+
 
 def ensure_table(db: Session) -> None:
-    """Crea Pregunta y RespuestaFeedback si no existen, y siembra el
-    banco de preguntas solo si Pregunta esta vacia (no duplica en cada
-    llamada ni pisa preguntas que RRHH haya desactivado a mano)."""
+    """Crea Pregunta y RespuestaFeedback si no existen, siembra el banco solo
+    si Pregunta esta vacia (no duplica ni pisa preguntas desactivadas a mano),
+    y marca la polaridad tanto en las nuevas como en las ya sembradas."""
     db.execute(text(CREATE_TABLES_SQL))
+    db.commit()
+    db.execute(text(ALTER_ESINVERSA_SQL))
     db.commit()
 
     count = db.execute(text("SELECT COUNT(*) AS c FROM Pregunta")).mappings().first()
@@ -129,19 +172,28 @@ def ensure_table(db: Session) -> None:
             opciones_json = json.dumps(opciones_final, ensure_ascii=False) if opciones_final is not None else None
             db.execute(text("""
                 INSERT INTO Pregunta
-                    (texto, categoria, tipo, opcionesEscala, soloLiderazgo, esAmbienteGeneral, activo, createdAt)
+                    (texto, categoria, tipo, opcionesEscala, soloLiderazgo, esAmbienteGeneral, esInversa, activo, createdAt)
                 VALUES
-                    (:texto, :categoria, :tipo, :opciones, :solo_lid, :ambiente, 1, :now)
+                    (:texto, :categoria, :tipo, :opciones, :solo_lid, :ambiente, :inversa, 1, :now)
             """), {
                 "texto": texto, "categoria": categoria, "tipo": tipo,
-                "opciones": opciones_json, "solo_lid": solo_lid, "ambiente": ambiente, "now": now,
+                "opciones": opciones_json, "solo_lid": solo_lid, "ambiente": ambiente,
+                "inversa": 1 if texto in PREGUNTAS_INVERSAS else 0, "now": now,
             })
         db.commit()
+
+    # Migracion de las instalaciones que ya tenian el banco sembrado sin
+    # polaridad. Idempotente: reafirma el valor correcto en cada arranque.
+    for texto in PREGUNTAS_INVERSAS:
+        db.execute(text(
+            "UPDATE Pregunta SET esInversa = 1 WHERE texto = :texto AND esInversa = 0"
+        ), {"texto": texto})
+    db.commit()
 
 
 def get_preguntas(db: Session, solo_liderazgo: bool | None = None, es_ambiente_general: bool | None = None) -> list[dict]:
     """Lista preguntas activas, con filtros opcionales por soloLiderazgo / esAmbienteGeneral."""
-    query = "SELECT id, texto, categoria, tipo, opcionesEscala, soloLiderazgo, esAmbienteGeneral FROM Pregunta WHERE activo = 1"
+    query = "SELECT id, texto, categoria, tipo, opcionesEscala, soloLiderazgo, esAmbienteGeneral, esInversa FROM Pregunta WHERE activo = 1"
     params = {}
     if solo_liderazgo is not None:
         query += " AND soloLiderazgo = :solo_lid"
@@ -158,5 +210,6 @@ def get_preguntas(db: Session, solo_liderazgo: bool | None = None, es_ambiente_g
         row["opcionesEscala"] = json.loads(row["opcionesEscala"]) if row["opcionesEscala"] else None
         row["soloLiderazgo"] = bool(row["soloLiderazgo"])
         row["esAmbienteGeneral"] = bool(row["esAmbienteGeneral"])
+        row["esInversa"] = bool(row["esInversa"])
         result.append(row)
     return result
