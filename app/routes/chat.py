@@ -71,8 +71,10 @@ TOOLS_GEMINI = [
         name="buscar_empleado",
         description=(
             "Busca uno o varios empleados por nombre o apellido (búsqueda parcial). "
-            "Devuelve datos personales (incluyendo fecha de nacimiento, teléfono y "
-            "el ID del reloj biométrico), departamento, oficina, cargo y contrato."
+            "Devuelve la ficha completa: datos personales (fecha de nacimiento, "
+            "teléfono, dirección, ID del reloj biométrico), departamento, oficina, "
+            "jefe directo, cargo, contrato, fechas de ingreso, horario asignado y "
+            "el historial completo de licencias de ese empleado."
         ),
         parameters=gtypes.Schema(
             type=gtypes.Type.OBJECT,
@@ -204,19 +206,59 @@ def _estadisticas_generales(db: Session) -> dict:
 
 
 def _buscar_empleado(db: Session, nombre: str) -> list[dict]:
+    """
+    Devuelve practicamente toda la ficha del empleado: los datos propios de
+    Employee, condicion laboral, horario asignado, jefe directo y las
+    licencias (todas, no solo las activas -para eso ya esta
+    empleados_con_licencia, que es historico completo por diseno).
+
+    Se deja afuera "photo": es un blob (URL o base64 segun el registro) que
+    no aporta nada a una respuesta de texto y podria inflar el contexto.
+
+    Las licencias no entran en el JOIN principal porque un empleado puede
+    tener varias: se piden aparte y se mezclan en Python, mismo patron que
+    jornadas_de() usa para las incidencias de asistencia.
+    """
     filas = db.execute(text("""
-        SELECT e.id, e.name, e.dni, e.email, e.phone, e.birthDate, e.gender,
-               e.status, e.biometricoId,
-               d.nombre AS departamento, o.nombre AS oficina,
-               c.tipoContrato, c.categoria, c.position AS cargo
+        SELECT e.id, e.name, e.dni, e.email, e.phone, e.address, e.birthDate,
+               e.gender, e.status, e.productivityScore, e.horas, e.biometricoId,
+               d.nombre AS departamento, o.nombre AS oficina, jefe.name AS jefe,
+               c.tipoContrato, c.categoria, c.position AS cargo,
+               c.fechaIngreso, c.fechaPlanta, c.fechaCategoria,
+               h.horaInicio, h.horaFin, h.horasTrabajo
         FROM Employee e
         LEFT JOIN Department d ON e.departmentId = d.id
         LEFT JOIN Office o ON e.officeId = o.id
+        LEFT JOIN Employee jefe ON e.managerId = jefe.id
         LEFT JOIN CondicionLaboral c ON c.employeeId = e.id
+        LEFT JOIN Horario h ON e.cronogramaId = h.id
         WHERE e.name LIKE :patron
         ORDER BY e.name
     """), {"patron": f"%{nombre}%"}).mappings().all()
-    return [dict(f) for f in filas]
+    if not filas:
+        return []
+
+    # Los ids salen de la query de arriba (enteros de la propia base), no de
+    # entrada del usuario: interpolarlos en el IN(...) es seguro, mismo
+    # patron que ya usa app/services/rrhh.py para consultas bulk.
+    ids_param = ",".join(str(int(f["id"])) for f in filas)
+    licencias = db.execute(text(f"""
+        SELECT employeeId, type, startDate, endDate, status
+        FROM License
+        WHERE employeeId IN ({ids_param})
+        ORDER BY startDate DESC
+    """)).mappings().all()
+    por_empleado: dict[int, list[dict]] = {}
+    for l in licencias:
+        por_empleado.setdefault(int(l["employeeId"]), []).append({
+            "tipo": l["type"], "desde": l["startDate"],
+            "hasta": l["endDate"], "estado": l["status"],
+        })
+
+    return [
+        {**dict(f), "licencias": por_empleado.get(int(f["id"]), [])}
+        for f in filas
+    ]
 
 
 def _empleados_por_departamento(db: Session, departamento: str) -> list[dict]:
