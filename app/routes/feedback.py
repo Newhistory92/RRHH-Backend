@@ -38,6 +38,7 @@ from app.database.feedback_config import (
     get_periodicidad,
     set_periodicidad,
     get_periodo_actual,
+    get_periodo_anterior,
 )
 
 router = APIRouter(prefix="/feedback", tags=["Feedback"])
@@ -86,6 +87,18 @@ def pares_aplicables(evaluables: list[dict],
                 continue
             pares.add((pregunta["id"], ev["id"]))
     return pares
+
+
+def _diferencia(actual: float | None, anterior: float | None) -> float | None:
+    """
+    Variacion entre dos periodos, o None si a alguno le falta el promedio.
+
+    Un periodo sin promedio es uno que no llego al piso de evaluadores.
+    Comparar contra eso daria una variacion inventada, asi que no se informa.
+    """
+    if actual is None or anterior is None:
+        return None
+    return round(actual - anterior, 2)
 
 
 def cargar_respuestas_normalizadas(db: Session, periodo) -> dict[int, list[RespuestaNorm]]:
@@ -444,6 +457,10 @@ def get_received_feedback(employee_id: int, db: Session = Depends(get_db),
     Los promedios se calculan sobre valores normalizados y solo con
     categorias de desempeno. Sin normalizar, una respuesta "siempre genera
     conflictos" subia el promedio y la categoria aparecia como fortaleza.
+
+    La evolucion compara contra el periodo anterior con la misma vara: ambos
+    promedios pasan por el piso de evaluadores, asi que un periodo que no
+    llego al minimo no aporta una cifra con la cual comparar.
     """
     _check_self_or_admin(employee_id, current_user)
 
@@ -453,6 +470,11 @@ def get_received_feedback(employee_id: int, db: Session = Depends(get_db),
     periodo_actual = get_periodo_actual(db)
     respuestas = cargar_respuestas_normalizadas(db, periodo_actual).get(employee_id, [])
     p = puntaje_feedback(respuestas)
+
+    periodo_anterior = get_periodo_anterior(db)
+    p_anterior = puntaje_feedback(
+        cargar_respuestas_normalizadas(db, periodo_anterior).get(employee_id, [])
+    )
 
     ranking = sorted(
         ({"categoria": c, "promedio": v} for c, v in p.porCategoria.items()),
@@ -466,6 +488,13 @@ def get_received_feedback(employee_id: int, db: Session = Depends(get_db),
         "suficiente": p.suficiente,
         "fortalezas": ranking[:5],
         "debilidades": list(reversed(ranking))[:5],
+        "evolucion": {
+            "periodoActual": periodo_actual.isoformat(),
+            "promedioActual": p.promedio,
+            "periodoAnterior": periodo_anterior.isoformat(),
+            "promedioAnterior": p_anterior.promedio,
+            "diferencia": _diferencia(p.promedio, p_anterior.promedio),
+        },
         "alertas": [
             {
                 "pregunta": a.preguntaTexto,
