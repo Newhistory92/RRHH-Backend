@@ -38,7 +38,6 @@ from app.database.feedback_config import (
     get_periodicidad,
     set_periodicidad,
     get_periodo_actual,
-    get_periodo_anterior,
 )
 
 router = APIRouter(prefix="/feedback", tags=["Feedback"])
