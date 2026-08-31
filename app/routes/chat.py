@@ -71,7 +71,8 @@ TOOLS_GEMINI = [
         name="buscar_empleado",
         description=(
             "Busca uno o varios empleados por nombre o apellido (búsqueda parcial). "
-            "Devuelve datos personales, departamento, oficina, cargo y contrato."
+            "Devuelve datos personales (incluyendo fecha de nacimiento, teléfono y "
+            "el ID del reloj biométrico), departamento, oficina, cargo y contrato."
         ),
         parameters=gtypes.Schema(
             type=gtypes.Type.OBJECT,
@@ -204,7 +205,8 @@ def _estadisticas_generales(db: Session) -> dict:
 
 def _buscar_empleado(db: Session, nombre: str) -> list[dict]:
     filas = db.execute(text("""
-        SELECT e.id, e.name, e.dni, e.email, e.gender, e.status,
+        SELECT e.id, e.name, e.dni, e.email, e.phone, e.birthDate, e.gender,
+               e.status, e.biometricoId,
                d.nombre AS departamento, o.nombre AS oficina,
                c.tipoContrato, c.categoria, c.position AS cargo
         FROM Employee e
