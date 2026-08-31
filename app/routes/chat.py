@@ -100,16 +100,22 @@ TOOLS_GEMINI = [
     ),
     gtypes.FunctionDeclaration(
         name="documentos_empleado",
-        description="Lista los documentos del legajo de un empleado dado su ID numérico.",
+        description=(
+            "Lista los documentos del legajo de un empleado. Se lo puede buscar "
+            "por nombre (lo más común) o por ID numérico si ya se conoce."
+        ),
         parameters=gtypes.Schema(
             type=gtypes.Type.OBJECT,
             properties={
+                "nombre": gtypes.Schema(
+                    type=gtypes.Type.STRING,
+                    description="Nombre o apellido del empleado (búsqueda parcial).",
+                ),
                 "empleado_id": gtypes.Schema(
                     type=gtypes.Type.INTEGER,
-                    description="ID numérico del empleado.",
-                )
+                    description="ID numérico del empleado, si ya se conoce.",
+                ),
             },
-            required=["empleado_id"],
         ),
     ),
     gtypes.FunctionDeclaration(
@@ -218,18 +224,33 @@ def _empleados_por_departamento(db: Session, departamento: str) -> list[dict]:
     return [dict(f) for f in filas]
 
 
-def _documentos_empleado(db: Session, empleado_id: int) -> dict:
-    empleado = db.execute(text(
-        "SELECT id, name FROM Employee WHERE id = :id"
-    ), {"id": empleado_id}).mappings().first()
-    if not empleado:
-        return {"error": f"No existe el empleado con id {empleado_id}"}
+def _documentos_empleado(db: Session, nombre: str | None = None,
+                         empleado_id: int | None = None) -> dict:
+    """
+    Resuelve por nombre (lo que pide un uso normal del chat) o por ID directo
+    si ya se conoce, por ejemplo porque una tool anterior en la misma cadena
+    ya lo devolvio. Sin ninguno de los dos no hay forma de saber a quien
+    buscar, asi que se le devuelve el error a Gemini para que le pregunte.
+    """
+    if empleado_id is not None:
+        empleado = db.execute(text(
+            "SELECT id, name FROM Employee WHERE id = :id"
+        ), {"id": empleado_id}).mappings().first()
+        if not empleado:
+            return {"error": f"No existe el empleado con id {empleado_id}"}
+    elif nombre:
+        empleado = _resolver_empleado_unico(db, nombre)
+        if "error" in empleado or empleado.get("ambiguo"):
+            return empleado
+    else:
+        return {"error": "Se necesita el nombre o el ID del empleado."}
+
     docs = db.execute(text("""
         SELECT tipo, descripcion, fileName, createdAt
         FROM EmployeeDocument
         WHERE employeeId = :id AND activo = 1
         ORDER BY createdAt DESC
-    """), {"id": empleado_id}).mappings().all()
+    """), {"id": empleado["id"]}).mappings().all()
     return {
         "empleado": dict(empleado),
         "documentos": [dict(d) for d in docs],
@@ -350,8 +371,11 @@ def _tardanzas_empleado(db: Session, nombre: str, dias: int = 90,
 
 
 def _ausencias_recientes(db: Session, dias: int = 30) -> list[dict]:
+    # La columna se llama "reason" (ver prisma/schema.prisma model Ausencia
+    # en el frontend, que es quien crea esta tabla). Se alias a "motivo" para
+    # que la clave que ve Gemini se mantenga en castellano.
     filas = db.execute(text("""
-        SELECT e.name, a.fecha, a.motivo
+        SELECT e.name, a.fecha, a.reason AS motivo
         FROM Ausencia a
         JOIN Employee e ON a.employeeId = e.id
         WHERE a.fecha >= DATEADD(DAY, :neg_dias, GETDATE())
@@ -368,7 +392,11 @@ def ejecutar_tool(nombre: str, args: dict, db: Session) -> Any:
     if nombre == "empleados_por_departamento":
         return _empleados_por_departamento(db, args["departamento"])
     if nombre == "documentos_empleado":
-        return _documentos_empleado(db, int(args["empleado_id"]))
+        eid = args.get("empleado_id")
+        return _documentos_empleado(
+            db, nombre=args.get("nombre"),
+            empleado_id=int(eid) if eid is not None else None,
+        )
     if nombre == "empleados_con_licencia":
         return _empleados_con_licencia(db)
     if nombre == "listar_departamentos":
