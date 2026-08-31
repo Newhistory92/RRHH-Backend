@@ -12,6 +12,7 @@ Requiere GOOGLE_GENERATIVE_AI_API_KEY en el .env.
 import json
 import logging
 import os
+from datetime import date, timedelta
 from typing import Any
 
 from google import genai
@@ -134,6 +135,30 @@ TOOLS_GEMINI = [
             },
         ),
     ),
+    gtypes.FunctionDeclaration(
+        name="estadisticas_tardanzas",
+        description=(
+            "Estadísticas de llegadas tarde de un empleado: cuántas veces llegó tarde, "
+            "cuántas quedaron perdonadas por el margen de tolerancia y cuántas lo "
+            "superaron, el promedio de minutos de atraso y el detalle de las peores "
+            "jornadas. Usa esto para cualquier pregunta sobre tardanzas, puntualidad "
+            "o llegadas tarde de una persona."
+        ),
+        parameters=gtypes.Schema(
+            type=gtypes.Type.OBJECT,
+            properties={
+                "nombre": gtypes.Schema(
+                    type=gtypes.Type.STRING,
+                    description="Nombre o apellido del empleado (búsqueda parcial).",
+                ),
+                "dias": gtypes.Schema(
+                    type=gtypes.Type.INTEGER,
+                    description="Cantidad de días hacia atrás a analizar. Por defecto 90.",
+                ),
+            },
+            required=["nombre"],
+        ),
+    ),
 ]
 
 
@@ -233,6 +258,97 @@ def _listar_departamentos(db: Session) -> list[dict]:
     return [dict(f) for f in filas]
 
 
+def _resolver_empleado_unico(db: Session, nombre: str) -> dict:
+    """
+    Busca por nombre parcial y exige una sola coincidencia: las estadisticas
+    de tardanzas son por persona, asi que un nombre ambiguo (dos "Rojo") no
+    puede resolverse solo -se le devuelve la lista a Gemini para que
+    repregunte en vez de adivinar cual de los dos quiso decir el usuario.
+    """
+    filas = db.execute(text("""
+        SELECT id, name FROM Employee WHERE name LIKE :patron ORDER BY name
+    """), {"patron": f"%{nombre}%"}).mappings().all()
+    if not filas:
+        return {"error": f"No se encontró ningún empleado que coincida con '{nombre}'."}
+    if len(filas) > 1:
+        return {
+            "ambiguo": True,
+            "coincidencias": [dict(f) for f in filas],
+            "mensaje": "Hay varios empleados que coinciden con ese nombre. "
+                       "Pedile al usuario que aclare cuál, o usa el ID.",
+        }
+    return dict(filas[0])
+
+
+def _tardanzas_empleado(db: Session, nombre: str, dias: int = 90,
+                        hoy: date | None = None) -> dict:
+    """
+    Tardanzas de un empleado en una ventana de dias hacia atras.
+
+    "Tarde" se mide contra Horario.horaInicio, no contra el saldo del dia:
+    saldoDia negativo puede venir de un permiso sin banco, nada que ver con
+    la hora de entrada. toleranciaEntradaUsada/abusoEntrada, en cambio, ya
+    los computa el motor de asistencia (asistencia_calc._ajustar_por_tolerancia)
+    exactamente sobre el desvio de entrada, asi que se reusan tal cual en vez
+    de re-derivar el mismo calculo en SQL.
+    """
+    empleado = _resolver_empleado_unico(db, nombre)
+    if "error" in empleado or empleado.get("ambiguo"):
+        return empleado
+
+    horario = db.execute(text("""
+        SELECT h.horaInicio FROM Employee e
+        JOIN Horario h ON e.cronogramaId = h.id
+        WHERE e.id = :id
+    """), {"id": empleado["id"]}).mappings().first()
+    if horario is None:
+        return {
+            "empleado": empleado,
+            "error": "Este empleado no tiene un horario asignado, no se puede "
+                     "calcular si llegó tarde.",
+        }
+
+    hasta = hoy or date.today()
+    desde = hasta - timedelta(days=abs(dias))
+    hora_inicio = float(horario["horaInicio"])
+
+    filas = db.execute(text("""
+        SELECT fecha, entrada, toleranciaEntradaUsada, abusoEntrada
+        FROM JornadaDiaria
+        WHERE employeeId = :emp AND fecha >= :desde AND fecha <= :hasta
+              AND entrada IS NOT NULL
+        ORDER BY fecha
+    """), {"emp": empleado["id"], "desde": desde, "hasta": hasta}).mappings().all()
+
+    tardanzas = []
+    for f in filas:
+        entrada = f["entrada"]
+        hora_decimal = entrada.hour + entrada.minute / 60 + entrada.second / 3600
+        minutos = round((hora_decimal - hora_inicio) * 60)
+        if minutos > 0:
+            fecha = f["fecha"]
+            tardanzas.append({
+                "fecha": fecha.isoformat() if hasattr(fecha, "isoformat") else str(fecha),
+                "minutosTarde": minutos,
+                "dentroDelMargen": bool(f["toleranciaEntradaUsada"]),
+            })
+
+    dentro_margen = sum(1 for t in tardanzas if t["dentroDelMargen"])
+    promedio = round(sum(t["minutosTarde"] for t in tardanzas) / len(tardanzas), 1) if tardanzas else 0.0
+    peores = sorted(tardanzas, key=lambda t: -t["minutosTarde"])[:10]
+
+    return {
+        "empleado": empleado,
+        "periodo": {"desde": desde.isoformat(), "hasta": hasta.isoformat()},
+        "jornadasConMarcacion": len(filas),
+        "totalTardanzas": len(tardanzas),
+        "tardanzasDentroDelMargen": dentro_margen,
+        "tardanzasFueraDelMargen": len(tardanzas) - dentro_margen,
+        "promedioMinutosTarde": promedio,
+        "peoresJornadas": peores,
+    }
+
+
 def _ausencias_recientes(db: Session, dias: int = 30) -> list[dict]:
     filas = db.execute(text("""
         SELECT e.name, a.fecha, a.motivo
@@ -259,6 +375,8 @@ def ejecutar_tool(nombre: str, args: dict, db: Session) -> Any:
         return _listar_departamentos(db)
     if nombre == "ausencias_recientes":
         return _ausencias_recientes(db, int(args.get("dias", 30)))
+    if nombre == "estadisticas_tardanzas":
+        return _tardanzas_empleado(db, args["nombre"], int(args.get("dias", 90)))
     return {"error": f"Herramienta desconocida: {nombre}"}
 
 
@@ -269,9 +387,11 @@ def ejecutar_tool(nombre: str, args: dict, db: Session) -> Any:
 SYSTEM_PROMPT = (
     "Eres el asistente de Recursos Humanos de la organización. "
     "Tienes acceso directo a la base de datos de RRHH mediante herramientas. "
-    "Cuando el usuario pregunta sobre empleados, estadísticas, documentos, licencias "
-    "o departamentos, SIEMPRE usa las herramientas para obtener datos reales antes "
-    "de responder. No inventes datos. "
+    "Cuando el usuario pregunta sobre empleados, estadísticas, documentos, licencias, "
+    "tardanzas, puntualidad o departamentos, SIEMPRE usa las herramientas para obtener "
+    "datos reales antes de responder. No inventes datos. "
+    "Si estadisticas_tardanzas devuelve 'ambiguo', no elijas por tu cuenta: pedile al "
+    "usuario que aclare cuál de las coincidencias quiso decir. "
     "Responde en español, de forma clara y concisa. Si los resultados son una lista "
     "larga, muestra un resumen y ofrece más detalle si se necesita. "
     "Nunca expongas IDs internos al usuario salvo que los pida explícitamente."
