@@ -52,6 +52,33 @@ def _is_jerarquico(db: Session, employee_id: int) -> bool:
     return bool(row and (row["deptos_a_cargo"] > 0 or row["reportes_directos"] > 0))
 
 
+def pares_aplicables(evaluables: list[dict],
+                     preguntas: list[dict]) -> set[tuple[int, int | None]]:
+    """
+    Pares (preguntaId, evaluadoId) que este evaluador tiene que responder.
+
+    Es la definicion unica del universo del ciclo: la usan tanto el contador de
+    progreso como el selector de la siguiente pregunta. Antes cada uno lo
+    derivaba por su cuenta y podian discrepar -el progreso llego a marcar 850%
+    cuando un evaluador respondio sobre companeros que despues cambiaron de
+    area: el total se recalculaba con los evaluables de hoy y las completadas
+    seguian contando todas las respuestas del periodo.
+
+    evaluadoId es None en las preguntas de ambiente general, que no apuntan a
+    ninguna persona.
+    """
+    pares: set[tuple[int, int | None]] = set()
+    for pregunta in preguntas:
+        if pregunta["esAmbienteGeneral"]:
+            pares.add((pregunta["id"], None))
+            continue
+        for ev in evaluables:
+            if pregunta["soloLiderazgo"] and not ev["esJerarquico"]:
+                continue
+            pares.add((pregunta["id"], ev["id"]))
+    return pares
+
+
 def _check_self_or_admin(employee_id: int, current_user: dict) -> None:
     """Evita que un empleado actue (o lea el estado) en nombre de otro."""
     if employee_id != current_user.get("employeeId") and not tiene_permiso(current_user.get("permisos", set()), "feedback.configurar"):
@@ -161,18 +188,17 @@ def get_siguiente_pregunta(employee_id: int, db: Session = Depends(get_db), curr
     """), {"emp": employee_id, "periodo": periodo}).mappings().all()
     respondidas_set = {(r["preguntaId"], r["evaluadoEmployeeId"]) for r in ya_respondidas}
 
+    por_id = {ev["id"]: ev for ev in evaluables}
+    preguntas_por_id = {p["id"]: p for p in preguntas}
+
     candidatos = []
-    for pregunta in preguntas:
-        if pregunta["esAmbienteGeneral"]:
-            if (pregunta["id"], None) not in respondidas_set:
-                candidatos.append({"evaluado": None, "pregunta": pregunta})
+    for pregunta_id, evaluado_id in pares_aplicables(evaluables, preguntas):
+        if (pregunta_id, evaluado_id) in respondidas_set:
             continue
-        for ev in evaluables:
-            if pregunta["soloLiderazgo"] and not ev["esJerarquico"]:
-                continue
-            if (pregunta["id"], ev["id"]) in respondidas_set:
-                continue
-            candidatos.append({"evaluado": ev, "pregunta": pregunta})
+        candidatos.append({
+            "evaluado": por_id.get(evaluado_id) if evaluado_id is not None else None,
+            "pregunta": preguntas_por_id[pregunta_id],
+        })
 
     if not candidatos:
         return {"evaluado": None, "pregunta": None}
@@ -301,26 +327,27 @@ def get_feedback_status(employee_id: int, db: Session = Depends(get_db), current
     preguntas = get_preguntas(db)
     periodo = get_periodo_actual(db)
 
-    total = 0
-    for pregunta in preguntas:
-        if pregunta["esAmbienteGeneral"]:
-            total += 1
-            continue
-        for ev in evaluables:
-            if pregunta["soloLiderazgo"] and not ev["esJerarquico"]:
-                continue
-            total += 1
+    pares = pares_aplicables(evaluables, preguntas)
 
-    completadas_row = db.execute(text("""
-        SELECT COUNT(*) AS c FROM RespuestaFeedback
+    # Las completadas se cuentan DENTRO del mismo universo que el total, no
+    # sobre todas las respuestas del periodo: si el evaluador respondio sobre
+    # alguien que despues cambio de area, esa respuesta ya no forma parte de
+    # su ciclo y contarla daba porcentajes imposibles (850%).
+    respondidas = db.execute(text("""
+        SELECT preguntaId, evaluadoEmployeeId FROM RespuestaFeedback
         WHERE evaluadorEmployeeId = :emp AND periodo = :periodo
-    """), {"emp": employee_id, "periodo": periodo}).mappings().first()
+    """), {"emp": employee_id, "periodo": periodo}).mappings().all()
+
+    completadas = sum(
+        1 for r in respondidas
+        if (r["preguntaId"], r["evaluadoEmployeeId"]) in pares
+    )
 
     return {
         "evaluatorId": employee_id,
         "periodo": periodo.isoformat(),
-        "total": total,
-        "completadas": completadas_row["c"],
+        "total": len(pares),
+        "completadas": completadas,
     }
 
 
