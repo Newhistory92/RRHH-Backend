@@ -6,6 +6,12 @@ La unidad de recalculo es (empleado, anio) y siempre se recomputa desde el 1 de
 enero, porque el banco de permisos se consume en orden cronologico. Hay un solo
 camino de codigo: no existe una variante incremental que pueda desviarse del
 calculo completo.
+
+Lo que si varia es a quien se recalcula. recalcular_todos barre la nomina
+entera para el job nocturno; recalcular_marcados elige solo a los que acaban de
+fichar, que es lo que hace viable correrlo cada pocos minutos. Los dos terminan
+llamando a recalcular_anio, asi que el invariante de arriba se mantiene: la
+seleccion cambia, el calculo no.
 """
 
 import logging
@@ -289,6 +295,70 @@ def recalcular_todos(db: Session, anio: int, origen: str = "nocturno",
             errores.append({"employeeId": eid, "error": str(e)})
 
     cerrar_recalculo(db, log_id, ok, filas, errores)
+    return {"procesados": ok, "filas": filas, "errores": errores}
+
+
+VENTANA_TIEMPO_REAL_MIN = 10
+
+
+def empleados_con_marcaciones_nuevas(db: Session,
+                                     desde: datetime) -> list[tuple[int, int]]:
+    """
+    Pares (employeeId, anio) tocados por marcaciones insertadas desde `desde`.
+
+    Filtra por createdAt -cuando el sync guardo la fila- y no por fechaHora
+    -cuando la persona ficho-: lo que decide si hay que recalcular es que la
+    marcacion sea nueva para nosotros. Un backlog viejo que entra recien hoy
+    tiene que disparar igual el recalculo del anio al que pertenece, y por eso
+    el anio sale de fechaHora y no del calendario.
+
+    Las marcaciones huerfanas -biometricoId todavia sin empleado- no aparecen:
+    el JOIN las descarta y entran solas cuando RRHH carga el vinculo, que ya
+    dispara recalcular_historia.
+    """
+    filas = db.execute(text("""
+        SELECT DISTINCT e.id AS employeeId, YEAR(m.fechaHora) AS anio
+        FROM Marcacion m
+        JOIN Employee e ON e.biometricoId = m.biometricoId
+        WHERE m.createdAt >= :desde
+    """), {"desde": desde}).mappings().all()
+    return [(int(f["employeeId"]), int(f["anio"])) for f in filas]
+
+
+def recalcular_marcados(db: Session,
+                        minutos: int = VENTANA_TIEMPO_REAL_MIN) -> dict:
+    """
+    Recalcula los (empleado, anio) que recibieron marcaciones nuevas.
+
+    Es el camino de tiempo real. Reusa recalcular_anio tal cual, o sea el
+    mismo calculo completo desde el 1 de enero que corre el job nocturno: lo
+    unico que cambia es a quien se recalcula, nunca como. Asi el banco anual
+    de permisos se sigue consumiendo en orden cronologico y no aparece la
+    variante incremental que este modulo evita a proposito.
+
+    La ventana se solapa con el intervalo del scheduler a proposito.
+    Recalcular a alguien dos veces es idempotente y sale barato; perderse una
+    marcacion porque el tick se atraso unos segundos la deja esperando hasta
+    el recalculo nocturno.
+
+    No abre RecalculoLog: son ~288 corridas por dia y taparian los recalculos
+    manuales y nocturnos, que son los que sirven para auditar. Los fallos si
+    quedan en el log de la aplicacion.
+    """
+    desde = datetime.now() - timedelta(minutes=minutos)
+    filas = 0
+    ok = 0
+    errores = []
+    for employee_id, anio in empleados_con_marcaciones_nuevas(db, desde):
+        try:
+            filas += recalcular_anio(db, employee_id, anio)
+            ok += 1
+        except Exception as e:
+            db.rollback()
+            log.warning("Recalculo en vivo fallido para empleado %s (%s): %s",
+                        employee_id, anio, e)
+            errores.append({"employeeId": employee_id, "anio": anio,
+                            "error": str(e)})
     return {"procesados": ok, "filas": filas, "errores": errores}
 
 

@@ -58,6 +58,14 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Marcacion_bio_fecha')
 CREATE INDEX IX_Marcacion_bio_fecha ON Marcacion (biometricoId, fechaHora);
 """
 
+# El recalculo de tiempo real busca marcaciones por momento de insercion, no
+# por fecha del evento. Sin este indice ese barrido -que corre cada 5 min-
+# escanea la tabla entera, que solo crece.
+CREATE_INDEX_CREATEDAT_SQL = """
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Marcacion_createdAt')
+CREATE INDEX IX_Marcacion_createdAt ON Marcacion (createdAt);
+"""
+
 CREATE_RELOJSYNC_SQL = """
 IF OBJECT_ID('RelojSync', 'U') IS NULL
 CREATE TABLE RelojSync (
@@ -93,6 +101,8 @@ def ensure_tables(db: Session) -> None:
     db.execute(text(_ADD_UQ_4COL_SQL))
     db.commit()
     db.execute(text(CREATE_INDEX_SQL))
+    db.commit()
+    db.execute(text(CREATE_INDEX_CREATEDAT_SQL))
     db.commit()
     db.execute(text(CREATE_RELOJSYNC_SQL))
     db.commit()

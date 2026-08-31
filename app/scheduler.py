@@ -19,7 +19,10 @@ from app.services.jubilacion import jubilacion_cumplida
 from app.services.isapi_client import relojes_configurados
 from app.services.reloj_sync import sincronizar_todos
 from app.database.asistencia import get_config
-from app.services.asistencia_recalc import anios_con_huecos, recalcular_todos
+from app.services.asistencia_recalc import (
+    VENTANA_TIEMPO_REAL_MIN, anios_con_huecos, recalcular_marcados,
+    recalcular_todos,
+)
 
 log = logging.getLogger(__name__)
 
@@ -76,6 +79,33 @@ def _tick_asistencia():
         )
     except Exception as e:
         log.exception("Fallo inesperado en el recalculo de asistencia: %s", e)
+    finally:
+        db.close()
+
+
+def _tick_recalculo_vivo():
+    """
+    Recalculo de tiempo real: solo los empleados que acaban de fichar.
+
+    El sync deja las marcaciones crudas en la base cada 5 min, pero hasta que
+    no se recalcula la jornada el tablero sigue mostrando el saldo viejo. Ese
+    hueco es el que obligaba a apretar "Recalcular todo" a mano.
+
+    Corre en el mismo intervalo que el sync y no coordina con el: si toca
+    antes, la marcacion entra en la corrida siguiente. Por eso la ventana de
+    deteccion es mas ancha que el intervalo.
+
+    Solo loguea cuando hubo trabajo: en una corrida sin fichajes no escribe
+    nada, ni en la base ni en el log.
+    """
+    db = SessionLocal()
+    try:
+        r = recalcular_marcados(db, VENTANA_TIEMPO_REAL_MIN)
+        if r["procesados"] or r["errores"]:
+            log.info("Recalculo en vivo: %s empleados, %s jornadas, %s errores",
+                     r["procesados"], r["filas"], len(r["errores"]))
+    except Exception as e:
+        log.exception("Fallo inesperado en el recalculo en vivo: %s", e)
     finally:
         db.close()
 
@@ -198,7 +228,17 @@ def iniciar_scheduler():
             coalesce=True,
             replace_existing=True,
         )
-        log.info("Sync de relojes activo: cada %s min", INTERVALO_MINUTOS)
+        _scheduler.add_job(
+            _tick_recalculo_vivo,
+            "interval",
+            minutes=INTERVALO_MINUTOS,
+            id="recalculo_vivo",
+            max_instances=1,
+            coalesce=True,
+            replace_existing=True,
+        )
+        log.info("Sync de relojes activo: cada %s min, con recalculo en vivo",
+                 INTERVALO_MINUTOS)
     else:
         log.warning("RELOJ_IPS vacio: el sync de relojes no se inicia")
 
