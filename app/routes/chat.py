@@ -130,14 +130,22 @@ TOOLS_GEMINI = [
     ),
     gtypes.FunctionDeclaration(
         name="ausencias_recientes",
-        description="Ausencias registradas en los últimos N días (default 30). Incluye empleado, fecha y motivo.",
+        description=(
+            "Ausencias registradas en los últimos N días (default 30). Incluye "
+            "empleado, fecha y motivo. Si se da 'nombre', filtra a las ausencias "
+            "de ese empleado en particular."
+        ),
         parameters=gtypes.Schema(
             type=gtypes.Type.OBJECT,
             properties={
                 "dias": gtypes.Schema(
                     type=gtypes.Type.INTEGER,
                     description="Cantidad de días hacia atrás. Por defecto 30.",
-                )
+                ),
+                "nombre": gtypes.Schema(
+                    type=gtypes.Type.STRING,
+                    description="Nombre o apellido del empleado, para filtrar a uno solo.",
+                ),
             },
         ),
     ),
@@ -370,17 +378,27 @@ def _tardanzas_empleado(db: Session, nombre: str, dias: int = 90,
     }
 
 
-def _ausencias_recientes(db: Session, dias: int = 30) -> list[dict]:
+def _ausencias_recientes(db: Session, dias: int = 30,
+                         nombre: str | None = None) -> list[dict] | dict:
     # La columna se llama "reason" (ver prisma/schema.prisma model Ausencia
     # en el frontend, que es quien crea esta tabla). Se alias a "motivo" para
     # que la clave que ve Gemini se mantenga en castellano.
-    filas = db.execute(text("""
+    empleado_id = None
+    if nombre:
+        empleado = _resolver_empleado_unico(db, nombre)
+        if "error" in empleado or empleado.get("ambiguo"):
+            return empleado
+        empleado_id = empleado["id"]
+
+    filas = db.execute(text(f"""
         SELECT e.name, a.fecha, a.reason AS motivo
         FROM Ausencia a
         JOIN Employee e ON a.employeeId = e.id
         WHERE a.fecha >= DATEADD(DAY, :neg_dias, GETDATE())
+              {"AND a.employeeId = :emp" if empleado_id is not None else ""}
         ORDER BY a.fecha DESC
-    """), {"neg_dias": -abs(dias)}).mappings().all()
+    """), {"neg_dias": -abs(dias), **({"emp": empleado_id} if empleado_id is not None else {})}
+    ).mappings().all()
     return [dict(f) for f in filas]
 
 
@@ -402,7 +420,7 @@ def ejecutar_tool(nombre: str, args: dict, db: Session) -> Any:
     if nombre == "listar_departamentos":
         return _listar_departamentos(db)
     if nombre == "ausencias_recientes":
-        return _ausencias_recientes(db, int(args.get("dias", 30)))
+        return _ausencias_recientes(db, int(args.get("dias", 30)), args.get("nombre"))
     if nombre == "estadisticas_tardanzas":
         return _tardanzas_empleado(db, args["nombre"], int(args.get("dias", 90)))
     return {"error": f"Herramienta desconocida: {nombre}"}
