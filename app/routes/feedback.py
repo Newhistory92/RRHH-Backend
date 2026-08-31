@@ -22,7 +22,17 @@ from app.auth_middleware import require_auth, require_permission, get_current_us
 from app.permisos import tiene_permiso
 from datetime import datetime, timezone
 import random
-from app.database.feedback_preguntas import ensure_table as ensure_preguntas_table, get_preguntas
+from app.database.feedback_preguntas import (
+    ensure_table as ensure_preguntas_table,
+    get_preguntas,
+    normalizar_valor,
+)
+from app.services.feedback_score import (
+    CATEGORIAS_RIESGO,
+    RespuestaNorm,
+    detectar_alertas,
+    puntaje_feedback,
+)
 from app.database.feedback_config import (
     ensure_table as ensure_config_table,
     get_periodicidad,
@@ -77,6 +87,41 @@ def pares_aplicables(evaluables: list[dict],
                 continue
             pares.add((pregunta["id"], ev["id"]))
     return pares
+
+
+def cargar_respuestas_normalizadas(db: Session, periodo) -> dict[int, list[RespuestaNorm]]:
+    """
+    Respuestas de escala del periodo, agrupadas por evaluado y ya
+    normalizadas por polaridad.
+
+    Excluye las de ambiente general: no hablan de una persona, se responden
+    sin evaluado. El texto libre queda fuera por no tener valor numerico.
+    """
+    filas = db.execute(text("""
+        SELECT rf.evaluadoEmployeeId, rf.evaluadorEmployeeId, rf.valorEscala,
+               p.categoria, p.esInversa, p.texto
+        FROM RespuestaFeedback rf
+        INNER JOIN Pregunta p ON p.id = rf.preguntaId
+        WHERE rf.periodo = :periodo
+          AND rf.evaluadoEmployeeId IS NOT NULL
+          AND rf.valorEscala IS NOT NULL
+          AND p.tipo = 'escala'
+          AND p.esAmbienteGeneral = 0
+    """), {"periodo": periodo}).mappings().all()
+
+    por_evaluado: dict[int, list[RespuestaNorm]] = {}
+    for f in filas:
+        categoria = f["categoria"]
+        por_evaluado.setdefault(int(f["evaluadoEmployeeId"]), []).append(
+            RespuestaNorm(
+                evaluadorId=int(f["evaluadorEmployeeId"]),
+                categoria=categoria,
+                valor=normalizar_valor(int(f["valorEscala"]), bool(f["esInversa"])),
+                esRiesgo=categoria in CATEGORIAS_RIESGO,
+                preguntaTexto=f["texto"],
+            )
+        )
+    return por_evaluado
 
 
 def _check_self_or_admin(employee_id: int, current_user: dict) -> None:
@@ -352,66 +397,85 @@ def get_feedback_status(employee_id: int, db: Session = Depends(get_db), current
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# GET /feedback/puntajes — ranking de puntajes para RRHH
+# ─────────────────────────────────────────────────────────────────────────────
+@router.get("/puntajes", dependencies=[Depends(require_permission("rrhh.gestionar"))])
+def get_puntajes_feedback(db: Session = Depends(get_db)):
+    """
+    Puntaje de feedback de todos los empleados del periodo, para el ranking.
+
+    Requiere rrhh.gestionar y no feedback.participar: este ultimo lo tiene
+    todo el personal (esta en _BASE), y el puntaje de terceros es dato de
+    RRHH. No devuelve el texto de las alertas, solo cuantas hay; el detalle
+    se pide por empleado.
+    """
+    ensure_preguntas_table(db)
+    ensure_config_table(db)
+    periodo = get_periodo_actual(db)
+
+    por_evaluado = cargar_respuestas_normalizadas(db, periodo)
+
+    puntajes = []
+    for employee_id, respuestas in por_evaluado.items():
+        p = puntaje_feedback(respuestas)
+        puntajes.append({
+            "employeeId": employee_id,
+            "promedio": p.promedio,
+            "evaluadores": p.evaluadores,
+            "suficiente": p.suficiente,
+            "alertas": len(detectar_alertas(respuestas)),
+        })
+
+    return {"periodo": periodo.isoformat(), "puntajes": puntajes}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # GET /feedback/received/{employee_id} — indicadores para RRHH
 # ─────────────────────────────────────────────────────────────────────────────
 @router.get("/received/{employee_id}", dependencies=[Depends(require_permission("feedback.participar"))])
-def get_received_feedback(employee_id: int, db: Session = Depends(get_db)):
+def get_received_feedback(employee_id: int, db: Session = Depends(get_db),
+                          current_user: dict = Depends(get_current_user)):
     """
-    Indicadores de Feedback 360 recibidos por el empleado: fortalezas y
-    debilidades Top 5 por categoria (promedio historico de valorEscala),
-    y evolucion del promedio general entre el periodo actual y el anterior.
+    Indicadores de Feedback 360 recibidos por el empleado.
+
+    Antes cualquiera con feedback.participar -o sea todo el personal- podia
+    leer el feedback de cualquier otro pasando su id: faltaba el chequeo de
+    identidad que si tienen los demas endpoints del router.
+
+    Los promedios se calculan sobre valores normalizados y solo con
+    categorias de desempeno. Sin normalizar, una respuesta "siempre genera
+    conflictos" subia el promedio y la categoria aparecia como fortaleza.
     """
+    _check_self_or_admin(employee_id, current_user)
+
+    ensure_preguntas_table(db)
     ensure_config_table(db)
 
-    categorias = db.execute(text("""
-        SELECT p.categoria, AVG(CAST(rf.valorEscala AS FLOAT)) AS promedio
-        FROM RespuestaFeedback rf
-        INNER JOIN Pregunta p ON p.id = rf.preguntaId
-        WHERE rf.evaluadoEmployeeId = :emp
-          AND p.tipo = 'escala'
-          AND p.esAmbienteGeneral = 0
-        GROUP BY p.categoria
-        ORDER BY promedio DESC
-    """), {"emp": employee_id}).mappings().all()
-
-    ranking = [{"categoria": c["categoria"], "promedio": round(c["promedio"], 2)} for c in categorias]
-    fortalezas = ranking[:5]
-    debilidades = list(reversed(ranking))[:5]
-
     periodo_actual = get_periodo_actual(db)
-    periodo_anterior = get_periodo_anterior(db)
+    respuestas = cargar_respuestas_normalizadas(db, periodo_actual).get(employee_id, [])
+    p = puntaje_feedback(respuestas)
 
-    def promedio_periodo(periodo):
-        row = db.execute(text("""
-            SELECT AVG(CAST(rf.valorEscala AS FLOAT)) AS promedio
-            FROM RespuestaFeedback rf
-            INNER JOIN Pregunta p ON p.id = rf.preguntaId
-            WHERE rf.evaluadoEmployeeId = :emp
-              AND p.tipo = 'escala'
-              AND p.esAmbienteGeneral = 0
-              AND rf.periodo = :periodo
-        """), {"emp": employee_id, "periodo": periodo}).mappings().first()
-        return round(row["promedio"], 2) if row and row["promedio"] is not None else None
-
-    promedio_actual = promedio_periodo(periodo_actual)
-    promedio_anterior = promedio_periodo(periodo_anterior)
-    diferencia = (
-        round(promedio_actual - promedio_anterior, 2)
-        if promedio_actual is not None and promedio_anterior is not None
-        else None
+    ranking = sorted(
+        ({"categoria": c, "promedio": v} for c, v in p.porCategoria.items()),
+        key=lambda x: x["promedio"], reverse=True,
     )
 
     return {
         "employeeId": employee_id,
-        "fortalezas": fortalezas,
-        "debilidades": debilidades,
-        "evolucion": {
-            "periodoActual": periodo_actual.isoformat(),
-            "promedioActual": promedio_actual,
-            "periodoAnterior": periodo_anterior.isoformat(),
-            "promedioAnterior": promedio_anterior,
-            "diferencia": diferencia,
-        },
+        "promedio": p.promedio,
+        "evaluadores": p.evaluadores,
+        "suficiente": p.suficiente,
+        "fortalezas": ranking[:5],
+        "debilidades": list(reversed(ranking))[:5],
+        "alertas": [
+            {
+                "pregunta": a.preguntaTexto,
+                "categoria": a.categoria,
+                "reportan": a.reportan,
+                "evaluadores": a.evaluadores,
+            }
+            for a in detectar_alertas(respuestas)
+        ],
     }
 
 
