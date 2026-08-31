@@ -115,6 +115,13 @@ def _ajustar_por_tolerancia(entrada: datetime, salida: datetime,
     exacto quedaria a merced del error del float cuando el horario no arranca
     en hora redonda: 7.5 + 7/60 y 7 + 37/60 son la misma cantidad matematica
     pero no necesariamente el mismo float.
+
+    La tolerancia perdona el desvio pero no lo paga: solo puede completar la
+    jornada hasta el span teorico del horario, nunca por encima. Sin ese techo
+    el extremo perdonado se cobraba dos veces -entrar 8:10 y salir 16:08 daba
+    8 minutos a favor-, asi que llegar tarde rendia mas que llegar puntual. El
+    excedente real sigue quedando a favor: recien cuenta despues de haber
+    absorbido el atraso que la tolerancia ya habia perdonado.
     """
     ent = _hora_decimal(entrada)
     sal = _hora_decimal(salida)
@@ -130,13 +137,21 @@ def _ajustar_por_tolerancia(entrada: datetime, salida: datetime,
     abuso_entrada = uso_entrada and desvio_ent_seg > tol.estrictaEntradaMin * 60
     abuso_salida = uso_salida and desvio_sal_seg > tol.estrictaSalidaMin * 60
 
+    # Presencia efectiva, antes de que la tolerancia mueva ningun extremo.
+    brutas_reales = sal - ent
+
     if uso_entrada:
         ent = horario.horaInicio
     if uso_salida:
         sal = horario.horaFin
 
+    # El span es el techo de lo que la tolerancia puede regalar. Se usa
+    # horaFin - horaInicio y no horasTrabajo porque son columnas distintas en
+    # la base: el techo tiene que medir el horario, no la jornada exigida.
+    span = horario.horaFin - horario.horaInicio
+
     return AjusteTolerancia(
-        brutas=sal - ent,
+        brutas=min(sal - ent, max(brutas_reales, span)),
         entradaUsada=uso_entrada, salidaUsada=uso_salida,
         abusoEntrada=abuso_entrada, abusoSalida=abuso_salida,
     )

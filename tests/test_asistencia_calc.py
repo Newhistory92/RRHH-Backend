@@ -71,6 +71,39 @@ def test_entrada_anticipada_y_salida_tardia_suman_a_favor():
     assert round(r.saldoDia, 4) == round(20 / 60, 4)
 
 
+# -- La tolerancia perdona la deuda, pero no la convierte en credito ----------
+
+def test_la_salida_tardia_no_cobra_como_extra_la_entrada_tarde_perdonada():
+    """
+    Entra 8:10 (10 min tarde, perdonados) y se va 16:08 (8 min de mas).
+
+    Los 8 minutos extra se los come el atraso de la entrada: no alcanzan a
+    cubrirlo entero, pero la tolerancia evita el saldo negativo. Antes la
+    entrada se movia a las 8:00 y los 8 minutos quedaban como saldo a favor,
+    o sea que llegar tarde pagaba mejor que llegar puntual.
+    """
+    r = c.calcular_dia(_dia(marcaciones=_marcas((8, 10), (16, 8))), TOL, 12.0)
+    assert r.horasTrabajadas == 8.0
+    assert r.saldoDia == 0.0
+
+
+def test_el_excedente_que_supera_el_atraso_perdonado_si_queda_a_favor():
+    """Entra 8:10 y se va 16:30: 30 min extra menos 10 de atraso = 20 a favor."""
+    r = c.calcular_dia(_dia(marcaciones=_marcas((8, 10), (16, 30))), TOL, 12.0)
+    assert round(r.horasTrabajadas, 4) == round(8.0 + 20 / 60, 4)
+    assert round(r.saldoDia, 4) == round(20 / 60, 4)
+
+
+def test_caso_real_jornada_de_6_horas_entrada_711_salida_1308():
+    """Caso reportado en produccion: horario 7 a 13, entra 7:11 y sale 13:08."""
+    horario = n.HorarioDia(horaInicio=7.0, horaFin=13.0, horasTrabajo=6.0)
+    r = c.calcular_dia(
+        _dia(horario=horario, marcaciones=_marcas((7, 11), (13, 8))), TOL, 12.0,
+    )
+    assert r.horasTrabajadas == 6.0
+    assert r.saldoDia == 0.0
+
+
 def test_el_limite_exacto_de_la_tolerancia_todavia_perdona():
     r = c.calcular_dia(_dia(marcaciones=_marcas((8, 15), (16, 0))), TOL, 12.0)
     assert r.saldoDia == 0.0
