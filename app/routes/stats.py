@@ -6,6 +6,7 @@ from app.auth_middleware import require_permission
 from app.database.database import SessionLocal, SessionLocalObraSocial
 from app.database.score_exencion import empleados_exentos
 from app.database.score_historico import (
+    FORMULA_ACTUAL,
     ensure_table as ensure_historico,
     historial_empleado,
     registrar_corrida,
@@ -176,6 +177,29 @@ def asignar_scores(
     return resultado
 
 
+def score_por_hora(eventos: int | None, horas: float | None) -> float | None:
+    """
+    Eventos registrados por hora efectivamente trabajada.
+
+    Reemplaza al promedio de eventos por sesion, que premiaba entrar poco y
+    quedarse: concentrar la misma actividad en menos sesiones subia el numero
+    sin trabajar mas. Las horas salen del reloj fisico, asi que el denominador
+    no se puede inflar desde el sistema donde se generan los eventos.
+
+    Sin horas no hay score: dividir por cero o asumir una jornada seria
+    inventar el numero. Con horas y sin eventos si hay un cero real -la
+    persona trabajo y no genero actividad en este sistema-, que es distinto de
+    no haber sido medida.
+
+    Funcion pura, sin I/O.
+    """
+    if horas is None or horas <= 0:
+        return None
+    if eventos is None:
+        return None
+    return round(eventos / horas, 2)
+
+
 def vincular_por_dni(db: Session) -> dict[int, str]:
     """
     employeeId -> idUsuario de ObraSocial, enlazados por numero de documento.
@@ -221,6 +245,24 @@ def vincular_por_user_id(db: Session) -> dict[int, str]:
         WHERE u.employeeId IS NOT NULL
     """)).mappings().all()
     return {int(f["employeeId"]): str(f["idUsuario"]).lower() for f in filas}
+
+
+def horas_trabajadas_por_empleado(db: Session, meses: int = VENTANA_MESES) -> dict[int, float]:
+    """
+    Horas efectivamente trabajadas por empleado en la ventana, desde el reloj.
+
+    Es el denominador del score. Solo suma jornadas con horas cargadas: un dia
+    sin marcaciones no aporta ni al numerador ni al denominador, asi que no
+    diluye el resultado de quien falto con licencia.
+    """
+    filas = db.execute(text("""
+        SELECT employeeId, SUM(horasTrabajadas) AS horas
+        FROM JornadaDiaria
+        WHERE fecha >= DATEADD(MONTH, -:meses, GETDATE())
+          AND horasTrabajadas IS NOT NULL
+        GROUP BY employeeId
+    """), {"meses": meses}).mappings().all()
+    return {int(f["employeeId"]): float(f["horas"]) for f in filas if f["horas"]}
 
 
 def combinar_identidades(
@@ -280,7 +322,19 @@ def sync_productivity_scores(db: Session, stats_db: Session) -> None:
     identidades = combinar_identidades(por_dni, por_user_id)
     metodos = metodos_vinculo(por_dni, por_user_id)
 
-    scores_por_empleado = asignar_scores(empleados, identidades, scores_by_user)
+    # El score medido ya no es el promedio de eventos por sesion que venia de
+    # ObraSocial, sino los eventos totales sobre las horas del reloj. Por eso
+    # se toma el conteo de eventos y se divide aca, en vez de usar el promedio
+    # que calcula la consulta.
+    horas = horas_trabajadas_por_empleado(db)
+    eventos_por_empleado = {
+        emp_id: (detalle_por_usuario.get(identidades.get(emp_id) or "") or {}).get("eventos")
+        for emp_id in empleados
+    }
+    scores_por_empleado: dict[int, float | None] = {
+        emp_id: score_por_hora(eventos_por_empleado.get(emp_id), horas.get(emp_id))
+        for emp_id in empleados
+    }
 
     exentos = empleados_exentos(db)
     scores_finales = aplicar_score_exentos(scores_por_empleado, exentos, horas_por_empleado)
@@ -305,6 +359,7 @@ def sync_productivity_scores(db: Session, stats_db: Session) -> None:
             "eventos": (detalle_por_usuario.get(identidades.get(emp_id) or "") or {}).get("eventos"),
             "esExento": emp_id in exentos,
             "ventanaMeses": VENTANA_MESES,
+            "formula": FORMULA_ACTUAL,
         }
         for emp_id in empleados
     ])
