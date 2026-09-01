@@ -44,7 +44,7 @@ def get_db():
 
 
 # ---------------------------------------------------------------------------
-# Validación de cargo contra catálogo
+# Validacion de cargo contra catalogo
 # ---------------------------------------------------------------------------
 
 def cargos_activos(db: Session) -> set[str]:
