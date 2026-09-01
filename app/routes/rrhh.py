@@ -44,6 +44,36 @@ def get_db():
 
 
 # ---------------------------------------------------------------------------
+# Validación de cargo contra catálogo
+# ---------------------------------------------------------------------------
+
+def cargos_activos(db: Session) -> set[str]:
+    """Nombres del catalogo de Profesiones y Cargos que estan activos."""
+    filas = db.execute(text("SELECT nombre FROM Profession WHERE activo = 1")).mappings().all()
+    return {str(f["nombre"]).strip() for f in filas}
+
+
+def position_valida(position: str | None, catalogo: set[str]) -> bool:
+    """
+    El cargo tiene que estar en el catalogo, o estar vacio.
+
+    No cargar el cargo es legitimo; inventar uno que no existe no, porque
+    despues "Analista" y "analista Sr." quedan como funciones distintas y
+    cualquier agrupacion por funcion se rompe sin que nadie lo note.
+
+    Con el catalogo vacio se acepta todo: exigirlo antes de que alguien lo
+    cargue dejaria el alta de empleados inutilizable.
+
+    Funcion pura, sin I/O.
+    """
+    if not position or not position.strip():
+        return True
+    if not catalogo:
+        return True
+    return position.strip() in catalogo
+
+
+# ---------------------------------------------------------------------------
 # Helpers de agrupación
 # ---------------------------------------------------------------------------
 
@@ -428,6 +458,15 @@ def update_condicion_laboral(employee_id: int, data: dict = Body(...), db: Sessi
     tipo_contrato = data.get("tipoContrato") or None
 
     position = data.get("position") or None
+
+    # El cargo tiene que venir del catalogo de Configuracion -> Profesiones y
+    # Cargos. Con texto libre, "Analista" y "analista Sr." quedan como
+    # funciones distintas y la comparacion por funcion se rompe en silencio.
+    if not position_valida(position, cargos_activos(db)):
+        raise HTTPException(
+            status_code=400,
+            detail="El cargo debe existir en Configuración → Profesiones y Cargos.",
+        )
 
     if existing:
         update_query = text("""
