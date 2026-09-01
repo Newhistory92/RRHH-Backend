@@ -27,9 +27,11 @@ def get_db():
     finally:
         db.close()
 
-# Tablas permitidas para este endpoint
+# Tablas permitidas para este endpoint.
+# "Feedback" salio de la lista al dropearse la tabla legacy: el toggle corre
+# un UPDATE sobre el nombre recibido y habria fallado contra una tabla que ya
+# no existe. El modulo vigente no se administra desde aca.
 ALLOWED_TABLES = [
-    "Feedback",
     "SoftSkill",
     "TechnicalSkill",
     "AcademicRecord",

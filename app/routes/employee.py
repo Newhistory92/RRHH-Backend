@@ -201,36 +201,10 @@ def get_employee_details(employee_id: int, db: Session = Depends(get_db)):
     """)
     languages = db.execute(languages_query, {"id": employee_id}).mappings().all()
 
-    # Feedbacks Given
-    feedbacks_given_query = text("""
-        SELECT 
-            f.id,
-            f.evaluatedId,
-            e.name AS evaluated_name,
-            f.softSkillId,
-            f.activo AS feedback_activo,
-            f.createdAt
-        FROM Feedback f
-        LEFT JOIN Employee e ON f.evaluatedId = e.id
-        WHERE f.evaluatorId = :id AND f.activo = 1
-        ORDER BY f.createdAt DESC
-    """)
-    feedbacks_given = db.execute(feedbacks_given_query, {"id": employee_id}).mappings().all()
-
-    # Feedbacks Received
-    feedbacks_received_query = text("""
-        SELECT 
-            f.id,
-            f.evaluatorId,
-            e.name AS evaluator_name,
-            f.softSkillId,
-            f.createdAt
-        FROM Feedback f
-        INNER JOIN Employee e ON f.evaluatorId = e.id
-        WHERE f.evaluatedId = :id AND f.activo = 1
-        ORDER BY f.createdAt DESC
-    """)
-    feedbacks_received = db.execute(feedbacks_received_query, {"id": employee_id}).mappings().all()
+    # El feedback del empleado ya no se lee de la tabla Feedback: ese modelo
+    # (1 soft skill a la vez, escala de 3) quedo sin uso al reescribirse el
+    # modulo sobre Pregunta / RespuestaFeedback. Los indicadores vigentes se
+    # piden a GET /feedback/received/{id}.
 
     # Aprobaciones (como supervisor)
     aprobaciones_query = text("""
@@ -506,25 +480,6 @@ def get_employee_details(employee_id: int, db: Session = Depends(get_db)):
                 "activo": lang["lang_activo"],
                 "attachment": lang["attachment"],
             } for lang in languages
-        ],
-        "feedbacksGiven": [
-            {
-                "id": fb["id"],
-                "evaluatedId": fb["evaluatedId"],
-                "evaluatedName": fb["evaluated_name"],
-                "softSkillId": fb["softSkillId"],
-                "activo": fb["feedback_activo"],
-                "createdAt": fb["createdAt"],
-            } for fb in feedbacks_given
-        ],
-        "feedbacksReceived": [
-            {
-                "id": fb["id"],
-                "evaluatorId": fb["evaluatorId"],
-                "evaluatorName": fb["evaluator_name"],
-                "softSkillId": fb["softSkillId"],
-                "createdAt": fb["createdAt"],
-            } for fb in feedbacks_received
         ],
         "aprobaciones": [
             {
