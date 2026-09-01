@@ -75,3 +75,25 @@ def test_el_user_id_cubre_a_quien_el_dni_no_resuelve():
 
 def test_sin_ninguna_via_no_hay_identidad():
     assert combinar_identidades(por_dni={}, por_user_id={}) == {}
+
+
+# ── Trazabilidad: con que via se resolvio cada identidad ──────────────────────
+
+from app.routes.stats import metodos_vinculo
+
+
+def test_el_metodo_registrado_coincide_con_la_identidad_elegida():
+    """
+    Si combinar_identidades toma el guid del DNI, el metodo tiene que decir
+    "dni". Que discrepen haria que el historial mienta sobre su propio origen.
+    """
+    por_dni = {1: "guid-dni"}
+    por_user_id = {1: "guid-user", 8: "guid-b"}
+    ident = combinar_identidades(por_dni, por_user_id)
+    metodos = metodos_vinculo(por_dni, por_user_id)
+    assert metodos[1] == "dni" and ident[1] == "guid-dni"
+    assert metodos[8] == "user_id" and ident[8] == "guid-b"
+
+
+def test_sin_identidad_no_hay_metodo():
+    assert metodos_vinculo({}, {}) == {}

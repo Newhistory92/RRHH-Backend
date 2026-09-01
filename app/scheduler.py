@@ -10,13 +10,14 @@ from datetime import date, datetime, timedelta
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from app.database.database import SessionLocal
+from app.database.database import SessionLocal, SessionLocalObraSocial
 from app.database.jubilacion import (
     aplicar_jubilacion, ensure_columna_jubilacion, fecha_jubilacion_de,
     pendientes_de_jubilar,
 )
 from app.services.jubilacion import jubilacion_cumplida
 from app.services.isapi_client import relojes_configurados
+from app.routes.stats import sync_productivity_scores
 from app.services.reloj_sync import sincronizar_todos
 from app.database.asistencia import get_config
 from app.services.asistencia_recalc import (
@@ -29,6 +30,7 @@ log = logging.getLogger(__name__)
 INTERVALO_MINUTOS = 5
 HORA_JUBILACIONES = 2  # 2 AM, antes del recalculo de asistencia de las 3
 HORA_RECALCULO_ASISTENCIA = 3  # 3 AM, fuera del horario de uso
+HORA_SCORE = 4  # 4 AM, despues del recalculo de asistencia del que depende
 SEGUNDOS_AUTOREPARACION = 30  # margen para que el arranque termine primero
 
 _scheduler: BackgroundScheduler | None = None
@@ -48,6 +50,29 @@ def _tick():
         log.exception("Fallo inesperado en el tick de sincronizacion: %s", e)
     finally:
         db.close()
+
+
+def _tick_score():
+    """
+    Corrida diaria del score de productividad.
+
+    Antes esto pasaba dentro de get_dashboard: cada apertura del panel
+    recalculaba y pisaba los valores de todos, sin dejar registro. Ahora corre
+    una vez por dia y cada corrida queda asentada en ScoreHistorico.
+
+    Nunca debe propagar excepcion al scheduler: ObraSocial es una fuente
+    secundaria y que no responda no puede tumbar el resto de los jobs.
+    """
+    db = SessionLocal()
+    stats_db = SessionLocalObraSocial()
+    try:
+        sync_productivity_scores(db, stats_db)
+        log.info("Score de productividad recalculado y registrado.")
+    except Exception as e:
+        log.exception("Fallo el recalculo del score de productividad: %s", e)
+    finally:
+        db.close()
+        stats_db.close()
 
 
 def _tick_asistencia():
@@ -204,6 +229,16 @@ def iniciar_scheduler():
         hour=HORA_RECALCULO_ASISTENCIA,
         minute=0,
         id="recalculo_asistencia",
+        max_instances=1,
+        coalesce=True,
+        replace_existing=True,
+    )
+    _scheduler.add_job(
+        _tick_score,
+        "cron",
+        hour=HORA_SCORE,
+        minute=0,
+        id="score_productividad",
         max_instances=1,
         coalesce=True,
         replace_existing=True,

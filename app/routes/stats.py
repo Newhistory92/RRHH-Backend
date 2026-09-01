@@ -5,6 +5,16 @@ from sqlalchemy.orm import Session
 from app.auth_middleware import require_permission
 from app.database.database import SessionLocal, SessionLocalObraSocial
 from app.database.score_exencion import empleados_exentos
+from app.database.score_historico import (
+    ensure_table as ensure_historico,
+    historial_empleado,
+    registrar_corrida,
+)
+
+# Ventana del calculo, en meses. Vive aca porque queda registrada en cada
+# corrida del historial: un score viejo se lee contra la ventana con la que
+# se lo calculo, no contra la de hoy.
+VENTANA_MESES = 12
 router = APIRouter(prefix="/stats", tags=["Statistics"], dependencies=[Depends(require_permission("estadisticas.ver"))])
 def get_db():
     db = SessionLocal()
@@ -18,7 +28,7 @@ def get_stats_db():
         yield db
     finally:
         db.close()
-def calculate_productivity_scores(stats_db: Session) -> dict[str, float]:
+def calculate_productivity_scores(stats_db: Session) -> dict[str, dict]:
     query = text("""
         DECLARE @timeout_min INT = 10;
         DECLARE @cooldown_sec INT = 3;
@@ -61,12 +71,24 @@ def calculate_productivity_scores(stats_db: Session) -> dict[str, float]:
         )
         SELECT
             idUsuario,
-            CAST(AVG(CAST(eventos AS FLOAT)) AS DECIMAL(10,2)) AS productivityScore
+            CAST(AVG(CAST(eventos AS FLOAT)) AS DECIMAL(10,2)) AS productivityScore,
+            COUNT(*) AS sesiones,
+            SUM(eventos) AS eventos
         FROM Sesiones
         GROUP BY idUsuario
     """)
     rows = stats_db.execute(query).mappings().all()
-    return {str(row["idUsuario"]).lower(): float(row["productivityScore"]) for row in rows}
+    # Se devuelven tambien sesiones y eventos, no solo el promedio: son los
+    # insumos que quedan guardados en ScoreHistorico para poder explicar de
+    # donde salio el numero de una persona en una fecha.
+    return {
+        str(row["idUsuario"]).lower(): {
+            "score": float(row["productivityScore"]),
+            "sesiones": int(row["sesiones"]),
+            "eventos": int(row["eventos"]),
+        }
+        for row in rows
+    }
 # Cuanto puede moverse un exento respecto del promedio, por su asistencia.
 # Acotado a proposito: el desempate ordena dentro del area, no compite contra
 # las areas que si generan actividad medible.
@@ -217,8 +239,35 @@ def combinar_identidades(
     return {**por_user_id, **por_dni}
 
 
+def metodos_vinculo(
+    por_dni: dict[int, str],
+    por_user_id: dict[int, str],
+) -> dict[int, str]:
+    """
+    Con que via se resolvio la identidad de cada empleado.
+
+    Espeja la precedencia de combinar_identidades -el DNI manda- para que el
+    historial no mienta sobre el origen del numero que guarda.
+
+    Funcion pura, sin I/O.
+    """
+    metodos = {emp_id: "user_id" for emp_id in por_user_id}
+    metodos.update({emp_id: "dni" for emp_id in por_dni})
+    return metodos
+
+
 def sync_productivity_scores(db: Session, stats_db: Session) -> None:
-    scores_by_user = calculate_productivity_scores(stats_db)
+    """
+    Recalcula el score de todos los empleados y deja constancia de la corrida.
+
+    Ya no corre al abrir el panel sino desde el scheduler: recalcular en cada
+    apertura pisaba los valores sin dejar rastro de que numero tuvo cada
+    persona ni de que lo produjo.
+    """
+    ensure_historico(db)
+
+    detalle_por_usuario = calculate_productivity_scores(stats_db)
+    scores_by_user = {uid: d["score"] for uid, d in detalle_por_usuario.items()}
 
     empleados_raw = db.execute(text("SELECT id, horas FROM Employee")).mappings().all()
     empleados = [int(e["id"]) for e in empleados_raw]
@@ -226,7 +275,11 @@ def sync_productivity_scores(db: Session, stats_db: Session) -> None:
         int(e["id"]): float(e["horas"]) for e in empleados_raw if e["horas"] is not None
     }
 
-    identidades = combinar_identidades(vincular_por_dni(db), vincular_por_user_id(db))
+    por_dni = vincular_por_dni(db)
+    por_user_id = vincular_por_user_id(db)
+    identidades = combinar_identidades(por_dni, por_user_id)
+    metodos = metodos_vinculo(por_dni, por_user_id)
+
     scores_por_empleado = asignar_scores(empleados, identidades, scores_by_user)
 
     exentos = empleados_exentos(db)
@@ -238,6 +291,23 @@ def sync_productivity_scores(db: Session, stats_db: Session) -> None:
             {"score": score, "id": emp_id}
         )
     db.commit()
+
+    # Se registran todos, incluidos los que quedaron sin medir: saber que
+    # alguien no era medible en una fecha es parte del historial, y es lo que
+    # evita que su ausencia se lea despues como bajo desempeno.
+    registrar_corrida(db, [
+        {
+            "employeeId": emp_id,
+            "score": scores_finales.get(emp_id),
+            "metodoVinculo": metodos.get(emp_id),
+            "idUsuario": identidades.get(emp_id),
+            "sesiones": (detalle_por_usuario.get(identidades.get(emp_id) or "") or {}).get("sesiones"),
+            "eventos": (detalle_por_usuario.get(identidades.get(emp_id) or "") or {}).get("eventos"),
+            "esExento": emp_id in exentos,
+            "ventanaMeses": VENTANA_MESES,
+        }
+        for emp_id in empleados
+    ])
 def fetch_all_employees_data(db: Session):
     emp_query = text("""
         SELECT
@@ -259,16 +329,14 @@ def fetch_all_employees_data(db: Session):
     """)
     return db.execute(emp_query).mappings().all()
 @router.get("/dashboard")
-def get_dashboard(db: Session = Depends(get_db), stats_db: Session = Depends(get_stats_db)):
+def get_dashboard(db: Session = Depends(get_db)):
     try:
-        try:
-            sync_productivity_scores(db, stats_db)
-        except Exception as sync_error:
-            # La base ObraSocial es una fuente secundaria (calcula el score de
-            # productividad a partir de logs de acceso). Si no está disponible,
-            # el dashboard debe seguir funcionando con el último score guardado
-            # en Employee.productivityScore en vez de caer entero.
-            print(f"Aviso: no se pudo sincronizar productividad desde ObraSocial: {sync_error}")
+        # El score ya no se recalcula al abrir el panel: se lee el ultimo
+        # valor persistido. Recalcular aca pisaba los numeros de todos en cada
+        # apertura, sin dejar registro de que tuvo cada persona ni de cuando,
+        # asi que una decision tomada sobre el ranking no se podia reconstruir.
+        # La corrida vive ahora en el scheduler (job "score_productividad") y
+        # se puede disparar a mano con POST /stats/recalcular.
         employees_raw = fetch_all_employees_data(db)
         data = [
             {
@@ -401,3 +469,35 @@ def get_global_stats(db: Session = Depends(get_db)):
     except Exception as e:
         print(f"Error en global-stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/recalcular", dependencies=[Depends(require_permission("rrhh.gestionar"))])
+def recalcular_scores(db: Session = Depends(get_db), stats_db: Session = Depends(get_stats_db)):
+    """
+    Dispara una corrida del score a pedido.
+
+    El calculo dejo de correr al abrir el panel, asi que sin esto RRHH tendria
+    que esperar al job diario para ver el efecto de un cambio -marcar un area
+    como exenta, corregir un DNI-. Queda registrada en el historial como
+    cualquier otra corrida.
+    """
+    try:
+        sync_productivity_scores(db, stats_db)
+    except Exception as e:
+        # ObraSocial es una fuente secundaria: que no responda no debe dejar al
+        # panel sin datos, sigue estando el ultimo valor persistido.
+        raise HTTPException(status_code=502, detail=f"No se pudo recalcular: {e}")
+    return {"success": True, "mensaje": "Scores recalculados y registrados en el historial."}
+
+
+@router.get("/historial/{employee_id}", dependencies=[Depends(require_permission("rrhh.gestionar"))])
+def get_historial_score(employee_id: int, db: Session = Depends(get_db)):
+    """
+    Corridas registradas para un empleado, de la mas reciente a la mas vieja.
+
+    Responde "por que esta persona tuvo este numero en esta fecha": con que
+    identidad se la vinculo, por que via, cuantas sesiones y eventos lo
+    produjeron y con que ventana.
+    """
+    ensure_historico(db)
+    return {"success": True, "data": historial_empleado(db, employee_id)}
