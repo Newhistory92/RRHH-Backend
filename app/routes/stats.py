@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -11,6 +11,11 @@ from app.database.score_historico import (
     historial_empleado,
     registrar_corrida,
 )
+from app.database.asistencia_merito import cumplimiento_por_empleado
+from app.database.feedback_config import get_periodo_actual
+from app.services.feedback_score import puntaje_feedback
+from app.services.merito import armar_ficha
+from app.services.turnero_client import obtener_metricas
 
 # Ventana del calculo, en meses. Vive aca porque queda registrada en cada
 # corrida del historial: un score viejo se lee contra la ventana con la que
@@ -298,6 +303,26 @@ def metodos_vinculo(
     return metodos
 
 
+def serie_historica(db: Session, employee_id: int, limite: int = 6) -> list[float | None]:
+    """
+    Ultimos scores de una persona, del mas viejo al mas nuevo.
+
+    La consulta ordena descendente para poder usar TOP, y el resultado se
+    invierte: describir_trayectoria compara el primer valor contra el ultimo y
+    necesita orden cronologico.
+
+    Los None se conservan: son corridas en las que hubo calculo y no se pudo
+    medir, que es distinto de no haber corrido.
+    """
+    filas = db.execute(text("""
+        SELECT TOP (:limite) score
+        FROM ScoreHistorico
+        WHERE employeeId = :emp
+        ORDER BY calculadoEn DESC
+    """), {"emp": employee_id, "limite": limite}).mappings().all()
+    return [float(f["score"]) if f["score"] is not None else None for f in reversed(filas)]
+
+
 def sync_productivity_scores(db: Session, stats_db: Session) -> None:
     """
     Recalcula el score de todos los empleados y deja constancia de la corrida.
@@ -556,3 +581,76 @@ def get_historial_score(employee_id: int, db: Session = Depends(get_db)):
     """
     ensure_historico(db)
     return {"success": True, "data": historial_empleado(db, employee_id)}
+
+
+@router.get("/merito/{department_id}", dependencies=[Depends(require_permission("rrhh.gestionar"))])
+def get_merito_gerencia(department_id: int, db: Session = Depends(get_db)):
+    """
+    Ficha comparativa de las personas de una gerencia, para decidir un ascenso.
+
+    El universo es la gerencia y no toda la nomina a proposito: comparar un
+    administrativo con alguien de ventanilla no dice nada, y era el defecto que
+    tenia el ranking global.
+
+    No devuelve un puntaje compuesto. Cada dimension viaja por separado con su
+    detalle y con si esta medida, mas la cobertura, para que quien decide vea
+    tambien cuanta evidencia tiene detras de cada persona.
+    """
+    from app.routes.feedback import cargar_respuestas_normalizadas
+
+    ensure_historico(db)
+
+    empleados = db.execute(text("""
+        SELECT e.id, e.name, e.dni, c.position
+        FROM Employee e
+        LEFT JOIN CondicionLaboral c ON c.employeeId = e.id
+        WHERE e.departmentId = :dep
+        ORDER BY e.name
+    """), {"dep": department_id}).mappings().all()
+
+    if not empleados:
+        return {"success": True, "data": {"departmentId": department_id, "fichas": []}}
+
+    cumplimientos = cumplimiento_por_empleado(db, VENTANA_MESES)
+    hasta = date.today()
+    desde = hasta - timedelta(days=30 * VENTANA_MESES)
+    metricas = obtener_metricas(desde, hasta)
+
+    periodo = get_periodo_actual(db)
+    respuestas = cargar_respuestas_normalizadas(db, periodo)
+
+    scores = {
+        int(r["id"]): (float(r["productivityScore"]) if r["productivityScore"] is not None else None)
+        for r in db.execute(text(
+            "SELECT id, productivityScore FROM Employee WHERE departmentId = :dep"
+        ), {"dep": department_id}).mappings().all()
+    }
+
+    fichas = []
+    for emp in empleados:
+        emp_id = int(emp["id"])
+        dni = (emp["dni"] or "").strip()
+        ficha = armar_ficha(
+            employee_id=emp_id,
+            nombre=emp["name"],
+            position=emp["position"],
+            cumplimiento=cumplimientos.get(emp_id),
+            actividad=scores.get(emp_id),
+            turnero=metricas.get(dni),
+            feedback=puntaje_feedback(respuestas.get(emp_id, [])),
+            historial=serie_historica(db, emp_id),
+        )
+        fichas.append({
+            "employeeId": ficha.employeeId,
+            "nombre": ficha.nombre,
+            "position": ficha.position,
+            "cumplimiento": vars(ficha.cumplimiento),
+            "actividad": vars(ficha.actividad),
+            "operativo": vars(ficha.operativo),
+            "feedback": vars(ficha.feedback),
+            "trayectoria": ficha.trayectoria,
+            "cobertura": ficha.cobertura,
+            "dimensionesTotales": ficha.dimensionesTotales,
+        })
+
+    return {"success": True, "data": {"departmentId": department_id, "fichas": fichas}}
