@@ -642,16 +642,16 @@ def get_merito_gerencia(department_id: int, db: Session = Depends(get_db)):
     ids = [int(emp["id"]) for emp in empleados]
     filas_historial = db.execute(
         text("""
-            SELECT employeeId, score, fecha, formula
+            SELECT employeeId, score, calculadoEn, formula
             FROM (
-                SELECT employeeId, score, fecha, formula,
-                       ROW_NUMBER() OVER (PARTITION BY employeeId ORDER BY fecha DESC) AS rn
+                SELECT employeeId, score, calculadoEn, formula,
+                       ROW_NUMBER() OVER (PARTITION BY employeeId ORDER BY calculadoEn DESC) AS rn
                 FROM ScoreHistorico
                 WHERE employeeId IN :ids
                   AND formula = :formula
             ) ranked
             WHERE rn <= 6
-            ORDER BY employeeId, fecha ASC
+            ORDER BY employeeId, calculadoEn ASC
         """).bindparams(bindparam("ids", expanding=True)),
         {"ids": ids, "formula": FORMULA_ACTUAL},
     ).mappings().all()
