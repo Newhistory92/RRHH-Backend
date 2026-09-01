@@ -1,6 +1,6 @@
 from datetime import date, datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlalchemy.orm import Session
 from app.auth_middleware import require_permission
 from app.database.database import SessionLocal, SessionLocalObraSocial
@@ -303,7 +303,12 @@ def metodos_vinculo(
     return metodos
 
 
-def serie_historica(db: Session, employee_id: int, limite: int = 6) -> list[float | None]:
+def serie_historica(
+    db: Session,
+    employee_id: int,
+    limite: int = 6,
+    formula: str = FORMULA_ACTUAL,
+) -> list[float | None]:
     """
     Ultimos scores de una persona, del mas viejo al mas nuevo.
 
@@ -313,13 +318,17 @@ def serie_historica(db: Session, employee_id: int, limite: int = 6) -> list[floa
 
     Los None se conservan: son corridas en las que hubo calculo y no se pudo
     medir, que es distinto de no haber corrido.
+
+    El parametro formula filtra las filas de ScoreHistorico: tras la migracion
+    conviven rows con formula v0 y v1, y mezclarlos produce tendencias espurias.
     """
     filas = db.execute(text("""
         SELECT TOP (:limite) score
         FROM ScoreHistorico
         WHERE employeeId = :emp
+          AND formula = :formula
         ORDER BY calculadoEn DESC
-    """), {"emp": employee_id, "limite": limite}).mappings().all()
+    """), {"emp": employee_id, "limite": limite, "formula": formula}).mappings().all()
     return [float(f["score"]) if f["score"] is not None else None for f in reversed(filas)]
 
 
@@ -600,8 +609,10 @@ def get_merito_gerencia(department_id: int, db: Session = Depends(get_db)):
 
     ensure_historico(db)
 
+    # Fix 4: productivityScore incluido en el JOIN inicial para evitar una segunda
+    # consulta sobre Employee.
     empleados = db.execute(text("""
-        SELECT e.id, e.name, e.dni, c.position
+        SELECT e.id, e.name, e.dni, e.productivityScore, c.position
         FROM Employee e
         LEFT JOIN CondicionLaboral c ON c.employeeId = e.id
         WHERE e.departmentId = :dep
@@ -619,12 +630,37 @@ def get_merito_gerencia(department_id: int, db: Session = Depends(get_db)):
     periodo = get_periodo_actual(db)
     respuestas = cargar_respuestas_normalizadas(db, periodo)
 
+    # productivityScore viene del JOIN; no se necesita una segunda consulta.
     scores = {
-        int(r["id"]): (float(r["productivityScore"]) if r["productivityScore"] is not None else None)
-        for r in db.execute(text(
-            "SELECT id, productivityScore FROM Employee WHERE departmentId = :dep"
-        ), {"dep": department_id}).mappings().all()
+        int(emp["id"]): (float(emp["productivityScore"]) if emp["productivityScore"] is not None else None)
+        for emp in empleados
     }
+
+    # Fix 3: historial de todos los empleados en una sola consulta con ROW_NUMBER.
+    # Llamar a serie_historica dentro del loop genera una consulta por empleado
+    # (N+1). Con ROW_NUMBER se trae todo en un round-trip y se arma el dict aca.
+    ids = [int(emp["id"]) for emp in empleados]
+    filas_historial = db.execute(
+        text("""
+            SELECT employeeId, score, fecha, formula
+            FROM (
+                SELECT employeeId, score, fecha, formula,
+                       ROW_NUMBER() OVER (PARTITION BY employeeId ORDER BY fecha DESC) AS rn
+                FROM ScoreHistorico
+                WHERE employeeId IN :ids
+                  AND formula = :formula
+            ) ranked
+            WHERE rn <= 6
+            ORDER BY employeeId, fecha ASC
+        """).bindparams(bindparam("ids", expanding=True)),
+        {"ids": ids, "formula": FORMULA_ACTUAL},
+    ).mappings().all()
+
+    historial_por_empleado: dict[int, list[float | None]] = {}
+    for fila in filas_historial:
+        emp_id_h = int(fila["employeeId"])
+        val = float(fila["score"]) if fila["score"] is not None else None
+        historial_por_empleado.setdefault(emp_id_h, []).append(val)
 
     fichas = []
     for emp in empleados:
@@ -638,7 +674,7 @@ def get_merito_gerencia(department_id: int, db: Session = Depends(get_db)):
             actividad=scores.get(emp_id),
             turnero=metricas.get(dni),
             feedback=puntaje_feedback(respuestas.get(emp_id, [])),
-            historial=serie_historica(db, emp_id),
+            historial=historial_por_empleado.get(emp_id, []),
         )
         fichas.append({
             "employeeId": ficha.employeeId,

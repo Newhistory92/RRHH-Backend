@@ -18,14 +18,19 @@ def test_la_serie_va_de_la_mas_vieja_a_la_mas_nueva():
     reciente primero- para poder usar TOP.
     """
     db = FakeSession({FRAG_HIST: [
-        {"score": 4.2}, {"score": 4.0}, {"score": 3.5},
+        {"score": 4.2, "formula": "eventos_por_hora_v1"},
+        {"score": 4.0, "formula": "eventos_por_hora_v1"},
+        {"score": 3.5, "formula": "eventos_por_hora_v1"},
     ]})
     assert serie_historica(db, 1, 3) == [3.5, 4.0, 4.2]
 
 
 def test_conserva_los_periodos_sin_medicion():
     """Un None es informacion: hubo corrida y no se la pudo medir."""
-    db = FakeSession({FRAG_HIST: [{"score": 4.2}, {"score": None}]})
+    db = FakeSession({FRAG_HIST: [
+        {"score": 4.2, "formula": "eventos_por_hora_v1"},
+        {"score": None, "formula": "eventos_por_hora_v1"},
+    ]})
     assert serie_historica(db, 1, 2) == [None, 4.2]
 
 

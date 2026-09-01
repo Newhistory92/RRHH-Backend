@@ -10,11 +10,14 @@ Turnero es una fuente secundaria. Que no responda deja la dimension operativa
 en "sin datos", nunca tumba la ficha ni la pantalla.
 """
 
+import logging
 import os
 from dataclasses import dataclass
 from datetime import date
 
 import requests
+
+log = logging.getLogger(__name__)
 
 TURNERO_URL = os.getenv("TURNERO_URL", "").rstrip("/")
 TURNERO_TOKEN = os.getenv("TURNERO_SERVICE_TOKEN", "")
@@ -83,5 +86,5 @@ def obtener_metricas(desde: date, hasta: date) -> dict[str, MetricaTurnero]:
         resp.raise_for_status()
         return parsear_metricas(resp.json())
     except Exception as e:
-        print(f"Aviso: no se pudieron traer las metricas de Turnero: {e}")
+        log.warning("Aviso: no se pudieron traer las metricas de Turnero: %s", e)
         return {}
