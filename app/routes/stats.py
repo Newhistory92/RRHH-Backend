@@ -129,30 +129,105 @@ def aplicar_score_exentos(
     return resultado
 
 
+def asignar_scores(
+    empleados: list[int],
+    idusuario_por_empleado: dict[int, str],
+    scores_by_user: dict[str, float],
+) -> dict[int, float | None]:
+    """
+    Le asigna a cada empleado su score medido, o None si no se lo pudo medir.
+
+    Hay dos formas de quedarse sin dato y ninguna significa cero: que no se
+    haya resuelto su identidad en ObraSocial, o que la haya resuelto pero no
+    tenga actividad en la ventana. En los dos casos el trabajo de la persona
+    no paso por ese sistema, que no es lo mismo que no haber trabajado.
+
+    Todo empleado aparece en el resultado. Si se omitiera a los no medidos, el
+    UPDATE no los tocaria y les quedaria el score de una corrida anterior.
+
+    Funcion pura, sin I/O.
+    """
+    resultado: dict[int, float | None] = {}
+    for emp_id in empleados:
+        id_usuario = idusuario_por_empleado.get(emp_id)
+        resultado[emp_id] = scores_by_user.get(id_usuario) if id_usuario else None
+    return resultado
+
+
+def vincular_por_dni(db: Session) -> dict[int, str]:
+    """
+    employeeId -> idUsuario de ObraSocial, enlazados por numero de documento.
+
+    Antes se comparaba User.id contra idUsuario directamente. User.id tiene
+    formato mixto -enteros como '10' conviviendo con GUIDs- mientras idUsuario
+    es siempre GUID, asi que el join fallaba para casi todos y el empleado
+    quedaba sin score sin que nada lo avisara.
+
+    El DNI es un identificador del mundo real, estable y verificable, y es la
+    misma via por la que ya se vincula el Turnero. Se excluyen los usuarios
+    anulados para no puntuar sobre una cuenta dada de baja.
+    """
+    filas = db.execute(text("""
+        SELECT e.id AS employeeId, u.idUsuario
+        FROM Employee e
+        INNER JOIN [ObraSocial].[dbo].[Persona] p
+            ON LTRIM(RTRIM(p.numeroDocPersona)) = LTRIM(RTRIM(e.dni))
+        INNER JOIN [ObraSocial].[dbo].[Usuario] u
+            ON u.idPersona = p.idPersona
+        WHERE e.dni IS NOT NULL
+          AND LTRIM(RTRIM(e.dni)) <> ''
+          AND ISNULL(u.anulado, 0) = 0
+    """)).mappings().all()
+    return {int(f["employeeId"]): str(f["idUsuario"]).lower() for f in filas}
+
+
+def vincular_por_user_id(db: Session) -> dict[int, str]:
+    """
+    employeeId -> idUsuario, para los empleados cuyo User.id ES el GUID.
+
+    Parte de las cuentas de RRHH se crearon con el mismo identificador que la
+    cuenta de ObraSocial, asi que ahi el User.id sirve de vinculo legitimo: un
+    GUID no coincide por casualidad. Los User.id con formato entero no matchean
+    contra ningun GUID, asi que no generan falsos positivos.
+
+    Existe porque el DNI solo no alcanza: hay empleados sin Persona cargada en
+    ObraSocial que igual tienen actividad bajo su GUID.
+    """
+    filas = db.execute(text("""
+        SELECT u.employeeId, u.id AS idUsuario
+        FROM [User] u
+        WHERE u.employeeId IS NOT NULL
+    """)).mappings().all()
+    return {int(f["employeeId"]): str(f["idUsuario"]).lower() for f in filas}
+
+
+def combinar_identidades(
+    por_dni: dict[int, str],
+    por_user_id: dict[int, str],
+) -> dict[int, str]:
+    """
+    Une las dos vias de vinculacion, con el DNI mandando.
+
+    El DNI es un identificador del mundo real y verificable; el User.id
+    coincide por como se creo la cuenta. Ante discrepancia gana el DNI, y el
+    User.id queda para cubrir a quien el DNI no resuelve.
+
+    Funcion pura, sin I/O.
+    """
+    return {**por_user_id, **por_dni}
+
+
 def sync_productivity_scores(db: Session, stats_db: Session) -> None:
     scores_by_user = calculate_productivity_scores(stats_db)
-    users_query = text("""
-        SELECT u.id, u.employeeId, e.horas
-        FROM [User] u
-        JOIN Employee e ON e.id = u.employeeId
-        WHERE u.employeeId IS NOT NULL
-    """)
-    users = db.execute(users_query).mappings().all()
 
-    scores_por_empleado: dict[int, float | None] = {}
-    horas_por_empleado: dict[int, float] = {}
+    empleados_raw = db.execute(text("SELECT id, horas FROM Employee")).mappings().all()
+    empleados = [int(e["id"]) for e in empleados_raw]
+    horas_por_empleado: dict[int, float] = {
+        int(e["id"]): float(e["horas"]) for e in empleados_raw if e["horas"] is not None
+    }
 
-    for user in users:
-        user_id = str(user["id"]).lower()
-        emp_id = user["employeeId"]
-        # Sin match contra los logs el empleado no fue medido, y eso se escribe
-        # como NULL para que la pantalla muestre "N/A". Con el 0.0 que habia
-        # antes quedaba indistinguible de un cero real y en el ranking se leia
-        # como bajo desempeno: hoy 7 de 10 empleados caen en este caso por el
-        # choque de formato entre User.id (mixto) e idUsuario (GUID).
-        scores_por_empleado[emp_id] = scores_by_user.get(user_id)
-        if user["horas"] is not None:
-            horas_por_empleado[emp_id] = float(user["horas"])
+    identidades = combinar_identidades(vincular_por_dni(db), vincular_por_user_id(db))
+    scores_por_empleado = asignar_scores(empleados, identidades, scores_by_user)
 
     exentos = empleados_exentos(db)
     scores_finales = aplicar_score_exentos(scores_por_empleado, exentos, horas_por_empleado)
