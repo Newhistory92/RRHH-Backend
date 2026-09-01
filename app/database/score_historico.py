@@ -41,11 +41,35 @@ CREATE INDEX IX_ScoreHistorico_empleado_fecha
     ON ScoreHistorico (employeeId, calculadoEn DESC);
 """
 
+# Nombre de la formula con la que se calculo una corrida. Queda guardado en
+# cada fila porque el denominador cambio: un score viejo -promedio de eventos
+# por sesion- y uno nuevo -eventos por hora efectiva- no son comparables entre
+# si. Sin esto la trayectoria de una persona mostraria un salto que parece
+# cambio de desempeno y es cambio de unidad.
+FORMULA_ACTUAL = "eventos_por_hora_v1"
+
+# Las corridas anteriores a este cambio quedan marcadas con el nombre viejo.
+FORMULA_LEGADA = "eventos_por_sesion_v0"
+
+ALTER_FORMULA_SQL = """
+IF COL_LENGTH('ScoreHistorico','formula') IS NULL
+ALTER TABLE ScoreHistorico ADD formula NVARCHAR(40) NULL;
+"""
+
+# Las filas que ya existen salieron todas de la formula vieja. Se las marca una
+# sola vez; el WHERE formula IS NULL hace que repetirlo no toque nada.
+MIGRAR_FORMULA_SQL = """
+UPDATE ScoreHistorico SET formula = :legada WHERE formula IS NULL;
+"""
+
 
 def ensure_table(db: Session) -> None:
-    """Crea la tabla y su indice si no existen. Seguro de repetir."""
+    """Crea la tabla, su indice y la columna de formula. Seguro de repetir."""
     db.execute(text(CREATE_TABLE_SQL))
     db.execute(text(CREATE_INDEX_SQL))
+    db.execute(text(ALTER_FORMULA_SQL))
+    db.commit()
+    db.execute(text(MIGRAR_FORMULA_SQL), {"legada": FORMULA_LEGADA})
     db.commit()
 
 
@@ -64,10 +88,10 @@ def registrar_corrida(db: Session, filas: list[dict]) -> None:
         text("""
             INSERT INTO ScoreHistorico
                 (employeeId, score, metodoVinculo, idUsuario, sesiones, eventos,
-                 esExento, ventanaMeses)
+                 esExento, ventanaMeses, formula)
             VALUES
                 (:employeeId, :score, :metodoVinculo, :idUsuario, :sesiones,
-                 :eventos, :esExento, :ventanaMeses)
+                 :eventos, :esExento, :ventanaMeses, :formula)
         """),
         [
             {
@@ -79,6 +103,7 @@ def registrar_corrida(db: Session, filas: list[dict]) -> None:
                 "eventos": f.get("eventos"),
                 "esExento": 1 if f.get("esExento") else 0,
                 "ventanaMeses": f.get("ventanaMeses", 12),
+                "formula": f.get("formula", FORMULA_ACTUAL),
             }
             for f in filas
         ],
@@ -92,7 +117,7 @@ def historial_empleado(db: Session, employee_id: int, limite: int = 24) -> list[
         text("""
             SELECT TOP (:limite)
                    calculadoEn, score, metodoVinculo, idUsuario,
-                   sesiones, eventos, esExento, ventanaMeses
+                   sesiones, eventos, esExento, ventanaMeses, formula
             FROM ScoreHistorico
             WHERE employeeId = :emp
             ORDER BY calculadoEn DESC
