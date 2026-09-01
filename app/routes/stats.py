@@ -592,30 +592,49 @@ def get_historial_score(employee_id: int, db: Session = Depends(get_db)):
     return {"success": True, "data": historial_empleado(db, employee_id)}
 
 
+@router.get("/departamentos", dependencies=[Depends(require_permission("rrhh.gestionar"))])
+def listar_departamentos(db: Session = Depends(get_db)):
+    """Lista plana de departamentos con jerarquia, para armar selectores en el frontend."""
+    filas = db.execute(text("""
+        SELECT id, nombre, nivelJerarquico, parentId
+        FROM Department
+        ORDER BY nivelJerarquico, nombre
+    """)).mappings().all()
+    return {"departamentos": [dict(f) for f in filas]}
+
+
 @router.get("/merito/{department_id}", dependencies=[Depends(require_permission("rrhh.gestionar"))])
 def get_merito_gerencia(department_id: int, db: Session = Depends(get_db)):
     """
-    Ficha comparativa de las personas de una gerencia, para decidir un ascenso.
+    Ficha comparativa de las personas de una gerencia o sub-gerencia.
 
-    El universo es la gerencia y no toda la nomina a proposito: comparar un
-    administrativo con alguien de ventanilla no dice nada, y era el defecto que
-    tenia el ranking global.
-
-    No devuelve un puntaje compuesto. Cada dimension viaja por separado con su
-    detalle y con si esta medida, mas la cobertura, para que quien decide vea
-    tambien cuanta evidencia tiene detras de cada persona.
+    Incluye empleados del departamento seleccionado y de todos sus hijos directos
+    (departamentos con parentId == department_id). Cada ficha lleva el nombre del
+    departamento u oficina al que pertenece la persona.
     """
     from app.routes.feedback import cargar_respuestas_normalizadas
 
     ensure_historico(db)
 
-    # Fix 4: productivityScore incluido en el JOIN inicial para evitar una segunda
-    # consulta sobre Employee.
+    # Trae empleados del departamento seleccionado y de sus sub-departamentos directos.
+    # Join con Department y Office para mostrar la dependencia de cada persona.
     empleados = db.execute(text("""
-        SELECT e.id, e.name, e.dni, e.productivityScore, c.position
+        SELECT
+            e.id,
+            e.name,
+            e.dni,
+            e.productivityScore,
+            c.position,
+            d.nombre  AS departamento,
+            o.nombre  AS oficina
         FROM Employee e
         LEFT JOIN CondicionLaboral c ON c.employeeId = e.id
+        LEFT JOIN Department d ON d.id = e.departmentId
+        LEFT JOIN Office o ON o.id = e.officeId
         WHERE e.departmentId = :dep
+           OR e.departmentId IN (
+               SELECT id FROM Department WHERE parentId = :dep
+           )
         ORDER BY e.name
     """), {"dep": department_id}).mappings().all()
 
@@ -676,10 +695,13 @@ def get_merito_gerencia(department_id: int, db: Session = Depends(get_db)):
             feedback=puntaje_feedback(respuestas.get(emp_id, [])),
             historial=historial_por_empleado.get(emp_id, []),
         )
+        # Oficina si la persona esta asignada a una; si no, el departamento.
+        dependencia = emp.get("oficina") or emp.get("departamento") or ""
         fichas.append({
             "employeeId": ficha.employeeId,
             "nombre": ficha.nombre,
             "position": ficha.position,
+            "dependencia": dependencia,
             "cumplimiento": vars(ficha.cumplimiento),
             "actividad": vars(ficha.actividad),
             "operativo": vars(ficha.operativo),
