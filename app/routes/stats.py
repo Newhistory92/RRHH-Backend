@@ -74,10 +74,10 @@ MARGEN_DESEMPATE = 0.15
 
 
 def aplicar_score_exentos(
-    scores: dict[int, float],
+    scores: dict[int, float | None],
     exentos: set[int],
     horas: dict[int, float],
-) -> dict[int, float]:
+) -> dict[int, float | None]:
     """
     Reemplaza el score de las areas exentas por el promedio de las demas.
 
@@ -93,7 +93,13 @@ def aplicar_score_exentos(
 
     Funcion pura, sin I/O, para poder testear la matematica sin base.
     """
-    no_exentos = [s for emp_id, s in scores.items() if emp_id not in exentos and s > 0]
+    # None es "nunca se lo midio", no un cero: no entra al promedio. Si contara
+    # como 0 bajaria el numero que se les reparte a los exentos por un dato que
+    # nadie tiene.
+    no_exentos = [
+        s for emp_id, s in scores.items()
+        if emp_id not in exentos and s is not None and s > 0
+    ]
     if not no_exentos:
         # Sin base para promediar no se inventa nada: se deja lo que habia.
         return dict(scores)
@@ -133,13 +139,18 @@ def sync_productivity_scores(db: Session, stats_db: Session) -> None:
     """)
     users = db.execute(users_query).mappings().all()
 
-    scores_por_empleado: dict[int, float] = {}
+    scores_por_empleado: dict[int, float | None] = {}
     horas_por_empleado: dict[int, float] = {}
 
     for user in users:
         user_id = str(user["id"]).lower()
         emp_id = user["employeeId"]
-        scores_por_empleado[emp_id] = scores_by_user.get(user_id, 0.0)
+        # Sin match contra los logs el empleado no fue medido, y eso se escribe
+        # como NULL para que la pantalla muestre "N/A". Con el 0.0 que habia
+        # antes quedaba indistinguible de un cero real y en el ranking se leia
+        # como bajo desempeno: hoy 7 de 10 empleados caen en este caso por el
+        # choque de formato entre User.id (mixto) e idUsuario (GUID).
+        scores_por_empleado[emp_id] = scores_by_user.get(user_id)
         if user["horas"] is not None:
             horas_por_empleado[emp_id] = float(user["horas"])
 
