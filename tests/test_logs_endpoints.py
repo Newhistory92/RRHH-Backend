@@ -149,3 +149,52 @@ def test_guardar_nunca_escribe_en_obrasocial():
         db=db, employee_id=1,
     )
     assert "ObraSocial" not in db.sql_ejecutado()
+
+
+from app.routes.logs_productividad import construir_filtros
+
+
+def test_sin_filtros_solo_excluye_nada():
+    where, binds = construir_filtros({})
+    assert where == ""
+    assert binds == {}
+
+
+def test_filtro_por_metodo():
+    where, binds = construir_filtros({"metodo": "POST"})
+    assert "metodo = :metodo" in where
+    assert binds["metodo"] == "POST"
+
+
+def test_filtro_por_texto_en_url_usa_like():
+    where, binds = construir_filtros({"texto": "afiliado"})
+    assert "url LIKE :texto" in where
+    assert binds["texto"] == "%afiliado%"
+
+
+def test_filtro_por_clase_de_status_exito():
+    where, binds = construir_filtros({"clase": "exito"})
+    assert "statusCode >= 200" in where and "statusCode < 300" in where
+
+
+def test_filtro_por_clase_de_status_error_cliente():
+    where, _binds = construir_filtros({"clase": "error_cliente"})
+    assert "statusCode >= 400" in where and "statusCode < 500" in where
+
+
+def test_clase_desconocida_se_ignora():
+    """Un valor invalido no debe traducirse en un filtro arbitrario."""
+    where, _binds = construir_filtros({"clase": "cualquier-cosa"})
+    assert "statusCode" not in where
+
+
+def test_filtros_se_combinan_con_and():
+    where, binds = construir_filtros({"metodo": "POST", "texto": "orden"})
+    assert where.count("AND") >= 1
+    assert binds["metodo"] == "POST" and binds["texto"] == "%orden%"
+
+
+def test_texto_vacio_no_genera_filtro():
+    where, binds = construir_filtros({"texto": ""})
+    assert "url LIKE" not in where
+    assert "texto" not in binds

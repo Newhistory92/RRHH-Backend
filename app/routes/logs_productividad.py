@@ -191,3 +191,116 @@ def guardar_rutas(
         clasificado_por=employee_id,
     )
     return {"success": True, "guardadas": guardadas}
+
+
+# Clases de status expuestas en el filtro. El mapa es cerrado a proposito: el
+# valor llega del cliente y no puede convertirse en SQL arbitrario.
+CLASES_STATUS = {
+    "exito": "statusCode >= 200 AND statusCode < 300",
+    "redireccion": "statusCode >= 300 AND statusCode < 400",
+    "error_cliente": "statusCode >= 400 AND statusCode < 500",
+    "error_servidor": "statusCode >= 500",
+}
+
+
+def construir_filtros(filtros: dict) -> tuple[str, dict]:
+    """
+    Arma el fragmento WHERE del explorador y sus binds.
+
+    Todo valor del cliente viaja como bind, nunca interpolado. La clase de
+    status es la unica que se traduce a SQL, y sale de un mapa cerrado.
+
+    Funcion pura, sin I/O.
+    """
+    condiciones: list[str] = []
+    binds: dict = {}
+
+    if filtros.get("metodo"):
+        condiciones.append("metodo = :metodo")
+        binds["metodo"] = filtros["metodo"]
+
+    if filtros.get("usuario"):
+        condiciones.append("nombreUsuario = :usuario")
+        binds["usuario"] = filtros["usuario"]
+
+    if filtros.get("texto"):
+        condiciones.append("url LIKE :texto")
+        binds["texto"] = f"%{filtros['texto']}%"
+
+    if filtros.get("desde"):
+        condiciones.append("fechaHoraLog >= :desde")
+        binds["desde"] = filtros["desde"]
+
+    if filtros.get("hasta"):
+        condiciones.append("fechaHoraLog < DATEADD(DAY, 1, :hasta)")
+        binds["hasta"] = filtros["hasta"]
+
+    clase = CLASES_STATUS.get(filtros.get("clase") or "")
+    if clase:
+        condiciones.append(f"({clase})")
+
+    return (" AND ".join(condiciones), binds)
+
+
+@router.get("")
+def listar_logs(
+    metodo: str | None = None,
+    usuario: str | None = None,
+    texto: str | None = None,
+    desde: str | None = None,
+    hasta: str | None = None,
+    clase: str | None = None,
+    pagina: int = 1,
+    por_pagina: int = 50,
+    logs_db: Session = Depends(get_logs_db),
+):
+    """
+    Explorador de logs crudos, paginado.
+
+    Devuelve las columnas tal como estan, sin normalizar: el objetivo es
+    entender que paso realmente antes de decidir si una ruta cuenta.
+    """
+    if por_pagina > 200:
+        raise HTTPException(
+            status_code=400,
+            detail="por_pagina no puede superar 200",
+        )
+
+    where, binds = construir_filtros({
+        "metodo": metodo, "usuario": usuario, "texto": texto,
+        "desde": desde, "hasta": hasta, "clase": clase,
+    })
+    clausula = f"WHERE {where}" if where else ""
+
+    total = logs_db.execute(
+        text(f"SELECT COUNT(*) AS n FROM [ObraSocial].[dbo].[LogSistema] {clausula}"),
+        binds,
+    ).mappings().first()
+
+    filas = logs_db.execute(
+        text(f"""
+            SELECT fechaHoraLog, nombreUsuario, metodo, url,
+                   statusCode, tiempoRespuestaMs, requestId
+            FROM [ObraSocial].[dbo].[LogSistema]
+            {clausula}
+            ORDER BY fechaHoraLog DESC
+            OFFSET :salto ROWS FETCH NEXT :toma ROWS ONLY
+        """),
+        {**binds,
+         "salto": max(0, (pagina - 1) * por_pagina),
+         "toma": por_pagina},
+    ).mappings().all()
+
+    # Se adjunta la ruta normalizada de cada fila para que la pantalla pueda
+    # saltar de un log a clasificar su ruta. Se calcula aca y no en el cliente
+    # para que exista una sola implementacion de la normalizacion: dos, en dos
+    # lenguajes, se desincronizan y el salto llevaria a la ruta equivocada.
+    return {
+        "logs": [
+            {**dict(f), "rutaNormalizada": normalizar_ruta(f["url"])}
+            for f in filas
+        ],
+        "total": total["n"] if total else 0,
+        "pagina": pagina,
+        "porPagina": por_pagina,
+    }
