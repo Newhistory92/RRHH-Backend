@@ -64,14 +64,40 @@ Esto mejora sustancialmente lo que hay: pasa de ~2.500 filas que no son trabajo
 a ~29.000 filas que sí lo son, con granularidad suficiente para distinguir
 crear una internación de loguearse.
 
-El techo que **no** rompe, y que debe seguir comunicándose en la interfaz:
+### Cómo queda cubierto quien no trabaja contra este sistema
 
-- Sigue midiendo actividad en un sistema, no productividad. Quien trabaja por
-  ventanilla, teléfono o papel da cero, igual que hoy.
+No queda afuera: el sistema ya tiene tres vías, y esta migración no las toca.
+
+1. **Ventanilla → Turnero.** Las métricas de atención al público alimentan la
+   dimensión *Volumen operativo* de la ficha de mérito, que es una columna
+   propia y no depende de `LogSistema`.
+2. **Áreas exentas → promedio ajustado.** Un departamento u oficina marcado con
+   `scoreExento` en el organigrama hace que sus integrantes reciban el promedio
+   de los no exentos, movido hasta ±15% (`MARGEN_DESEMPATE`) según su saldo de
+   horas del reloj. La asistencia funciona de desempate, de modo que una
+   autoridad pueda distinguir quién rinde más *dentro* del área. Quien no tiene
+   dato de asistencia recibe el promedio limpio, sin castigo.
+3. **Sin dato ≠ cero.** Un empleado sin identidad resuelta o sin actividad en la
+   ventana queda en `None`, no en 0, y la interfaz lo muestra como N/A.
+
+Efecto lateral favorable de esta migración: el promedio que se reparte a los
+exentos se calcula sobre los scores de los no exentos. Al pasar esos scores a
+medir trabajo real en vez de altas de permisos, el número que heredan los
+exentos también mejora su fundamento.
+
+**Precondición operativa.** Al 2026-09-02 no hay ningún departamento ni oficina
+marcado como exento, y la tabla `Office` está vacía. El mecanismo está
+construido y probado pero sin uso: hasta que alguien marque las áreas de
+ventanilla en el organigrama, esas personas medirían cerca de cero. Marcarlas
+es un paso de configuración, no de desarrollo, y es condición para que la
+migración no perjudique a nadie.
+
+### El techo que no se rompe
+
 - Un request no equivale a otro. El tilde resuelve *qué* cuenta, no *cuánto
   vale*. La columna de peso queda preparada para atacar esto más adelante.
 - `LogSistema` arranca el 2026-03-04. La ventana del score es de 12 meses, así
-  que durante los próximos meses la ventana está parcialmente vacía.
+  que durante los próximos meses está parcialmente vacía.
 
 ## Decisiones tomadas
 
