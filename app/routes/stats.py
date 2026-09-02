@@ -7,10 +7,13 @@ from app.database.database import SessionLocal, SessionLocalObraSocial
 from app.database.score_exencion import empleados_exentos
 from app.database.score_historico import (
     FORMULA_ACTUAL,
+    FORMULA_LOGSISTEMA,
     ensure_table as ensure_historico,
     historial_empleado,
     registrar_corrida,
 )
+from app.database.rutas_productividad import rutas_habilitadas
+from app.services.normalizar_ruta import normalizar_ruta
 from app.database.asistencia_merito import cumplimiento_por_empleado
 from app.database.feedback_config import get_periodo_actual
 from app.services.feedback_score import puntaje_feedback
@@ -34,66 +37,94 @@ def get_stats_db():
         yield db
     finally:
         db.close()
-def calculate_productivity_scores(stats_db: Session) -> dict[str, dict]:
-    query = text("""
-        DECLARE @timeout_min INT = 10;
-        DECLARE @cooldown_sec INT = 3;
-        ;WITH LogsFiltrados AS (
-            SELECT l.idUsuario, l.creado
-            FROM [ObraSocial].[dbo].[UsuarioAccesoLogs] l
-            WHERE l.creado >= DATEADD(MONTH, -12, GETDATE())
-        ),
-        Ordenados AS (
-            SELECT *, LAG(creado) OVER (PARTITION BY idUsuario ORDER BY creado) AS prev_time
-            FROM LogsFiltrados
-        ),
-        SinSpam AS (
-            SELECT *
-            FROM Ordenados
-            WHERE prev_time IS NULL OR DATEDIFF(SECOND, prev_time, creado) >= @cooldown_sec
-        ),
-        DetectarSesiones AS (
-            SELECT *,
-                CASE
-                    WHEN prev_time IS NULL THEN 1
-                    WHEN DATEDIFF(MINUTE, prev_time, creado) > @timeout_min THEN 1
-                    ELSE 0
-                END AS nueva_sesion
-            FROM SinSpam
-        ),
-        SesionesAgrupadas AS (
-            SELECT *,
-                SUM(nueva_sesion) OVER (
-                    PARTITION BY idUsuario
-                    ORDER BY creado
-                    ROWS UNBOUNDED PRECEDING
-                ) AS session_id
-            FROM DetectarSesiones
-        ),
-        Sesiones AS (
-            SELECT idUsuario, session_id, COUNT(*) AS eventos
-            FROM SesionesAgrupadas
-            GROUP BY idUsuario, session_id
-        )
-        SELECT
-            idUsuario,
-            CAST(AVG(CAST(eventos AS FLOAT)) AS DECIMAL(10,2)) AS productivityScore,
-            COUNT(*) AS sesiones,
-            SUM(eventos) AS eventos
-        FROM Sesiones
-        GROUP BY idUsuario
-    """)
-    rows = stats_db.execute(query).mappings().all()
-    # Se devuelven tambien sesiones y eventos, no solo el promedio: son los
-    # insumos que quedan guardados en ScoreHistorico para poder explicar de
-    # donde salio el numero de una persona en una fecha.
+# Cuanto tiene que pasar entre dos requests para contarlos como dos acciones.
+# Sin esto, un formulario que dispara cinco llamadas al guardar valdria cinco
+# veces mas que uno que dispara una.
+COOLDOWN_SEG = 3
+
+ACTIVIDAD_SQL = text("""
+    DECLARE @cooldown_sec INT = :cooldown;
+    ;WITH LogsFiltrados AS (
+        SELECT l.idUsuario, l.metodo, l.url, l.fechaHoraLog AS creado
+        FROM [ObraSocial].[dbo].[LogSistema] l
+        WHERE l.fechaHoraLog >= DATEADD(MONTH, -:meses, GETDATE())
+          AND l.idUsuario IS NOT NULL
+          AND l.statusCode >= 200 AND l.statusCode < 300
+    ),
+    Ordenados AS (
+        SELECT *,
+               LAG(creado) OVER (PARTITION BY idUsuario ORDER BY creado)
+                   AS prev_time
+        FROM LogsFiltrados
+    ),
+    SinSpam AS (
+        SELECT *
+        FROM Ordenados
+        WHERE prev_time IS NULL
+           OR DATEDIFF(SECOND, prev_time, creado) >= @cooldown_sec
+    )
+    SELECT idUsuario, metodo, url, COUNT(*) AS eventos
+    FROM SinSpam
+    GROUP BY idUsuario, metodo, url
+""")
+
+
+def agrupar_por_usuario(
+    filas: list[dict],
+    habilitadas: set[tuple[str, str]],
+) -> dict[str, dict]:
+    """
+    Suma los eventos de cada usuario, contando solo las rutas habilitadas.
+
+    El filtro se aplica aca y no en SQL porque la configuracion vive en la
+    base de RRHH y la actividad en la de ObraSocial: no se pueden unir en una
+    sola consulta. El volumen lo permite holgadamente.
+
+    Un usuario sin ninguna ruta habilitada no aparece en el resultado, y eso
+    se traduce mas adelante en score None: no se lo pudo medir, que no es lo
+    mismo que haber trabajado cero.
+
+    Funcion pura, sin I/O.
+    """
+    por_usuario: dict[str, dict] = {}
+
+    for fila in filas:
+        clave = (fila["metodo"], normalizar_ruta(fila["url"]))
+        if clave not in habilitadas:
+            continue
+        # El resto de la cadena compara contra GUIDs en minuscula. Si no se
+        # normaliza, el empleado queda sin score y nada lo avisa.
+        usuario = str(fila["idUsuario"]).lower()
+        actual = por_usuario.setdefault(usuario, {"eventos": 0})
+        actual["eventos"] += fila["eventos"]
+
+    return por_usuario
+
+
+def calculate_productivity_scores(
+    stats_db: Session,
+    habilitadas: set[tuple[str, str]],
+) -> dict[str, dict]:
+    """
+    Eventos de trabajo por usuario de ObraSocial, en la ventana del calculo.
+
+    Antes leia una tabla de permisos, no de actividad: el numero que salia
+    de ahi no media el trabajo de nadie. Ahora lee LogSistema,
+    descartando lo que no es atribuible -el 39% de las filas no tiene usuario-
+    y lo que no salio bien: contar un 401 en loop como trabajo repetiria el
+    problema que este cambio corrige.
+
+    'sesiones' queda en None a proposito. La formula es eventos sobre horas
+    efectivas del reloj y no usa sesiones; guardarlas seria un dato inventado.
+    """
+    filas = stats_db.execute(
+        ACTIVIDAD_SQL, {"cooldown": COOLDOWN_SEG, "meses": VENTANA_MESES}
+    ).mappings().all()
+
+    agrupado = agrupar_por_usuario([dict(f) for f in filas], habilitadas)
     return {
-        str(row["idUsuario"]).lower(): {
-            "score": float(row["productivityScore"]),
-            "sesiones": int(row["sesiones"]),
-            "eventos": int(row["eventos"]),
-        }
-        for row in rows
+        usuario: {"score": None, "sesiones": None, "eventos": d["eventos"]}
+        for usuario, d in agrupado.items()
     }
 # Cuanto puede moverse un exento respecto del promedio, por su asistencia.
 # Acotado a proposito: el desempate ordena dentro del area, no compite contra
@@ -342,8 +373,10 @@ def sync_productivity_scores(db: Session, stats_db: Session) -> None:
     """
     ensure_historico(db)
 
-    detalle_por_usuario = calculate_productivity_scores(stats_db)
-    scores_by_user = {uid: d["score"] for uid, d in detalle_por_usuario.items()}
+    # Las rutas habilitadas viven en la base de RRHH; la actividad, en la de
+    # ObraSocial. Por eso se leen de db y se pasan explicitamente.
+    habilitadas = rutas_habilitadas(db)
+    detalle_por_usuario = calculate_productivity_scores(stats_db, habilitadas)
 
     empleados_raw = db.execute(text("SELECT id, horas FROM Employee")).mappings().all()
     empleados = [int(e["id"]) for e in empleados_raw]
@@ -393,7 +426,7 @@ def sync_productivity_scores(db: Session, stats_db: Session) -> None:
             "eventos": (detalle_por_usuario.get(identidades.get(emp_id) or "") or {}).get("eventos"),
             "esExento": emp_id in exentos,
             "ventanaMeses": VENTANA_MESES,
-            "formula": FORMULA_ACTUAL,
+            "formula": FORMULA_LOGSISTEMA,
         }
         for emp_id in empleados
     ])

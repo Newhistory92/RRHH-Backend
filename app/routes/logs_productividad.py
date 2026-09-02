@@ -304,3 +304,28 @@ def listar_logs(
         "pagina": pagina,
         "porPagina": por_pagina,
     }
+
+
+@router.post("/recalcular")
+def recalcular_scores(
+    db: Session = Depends(get_db),
+    logs_db: Session = Depends(get_logs_db),
+):
+    """
+    Dispara a mano la misma corrida que hace el scheduler cada dia.
+
+    Existe porque tildar rutas no tiene efecto visible hasta la corrida
+    siguiente, y esa demora se lee como que la pantalla no funciona. El
+    recalculo alcanza los 12 meses de la ventana, no solo lo que viene: la
+    clasificacion describe que es trabajo, y eso no depende de cuando se tildo.
+    """
+    from app.routes.stats import sync_productivity_scores
+
+    try:
+        sync_productivity_scores(db, logs_db)
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"No se pudo recalcular: {e}",
+        )
+    return {"success": True}

@@ -51,6 +51,12 @@ FORMULA_ACTUAL = "eventos_por_hora_v1"
 # Las corridas anteriores a este cambio quedan marcadas con el nombre viejo.
 FORMULA_LEGADA = "eventos_por_sesion_v0"
 
+# Tercera version: la fuente dejo de ser UsuarioAccesoLogs -que registra altas
+# y bajas de permisos, no trabajo- y paso a ser LogSistema, filtrado por las
+# rutas que un administrador marco como trabajo real. El numerador cambio de
+# significado, asi que las corridas anteriores no son comparables con estas.
+FORMULA_LOGSISTEMA = "eventos_logsistema_v2"
+
 ALTER_FORMULA_SQL = """
 IF COL_LENGTH('ScoreHistorico','formula') IS NULL
 ALTER TABLE ScoreHistorico ADD formula NVARCHAR(40) NULL;
