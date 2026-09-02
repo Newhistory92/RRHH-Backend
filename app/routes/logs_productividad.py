@@ -309,7 +309,7 @@ def listar_logs(
 @router.post("/recalcular")
 def recalcular_scores(
     db: Session = Depends(get_db),
-    logs_db: Session = Depends(get_logs_db),
+    stats_db: Session = Depends(get_logs_db),
 ):
     """
     Dispara a mano la misma corrida que hace el scheduler cada dia.
@@ -322,7 +322,7 @@ def recalcular_scores(
     from app.routes.stats import sync_productivity_scores
 
     try:
-        sync_productivity_scores(db, logs_db)
+        sync_productivity_scores(db, stats_db)
     except Exception as e:
         raise HTTPException(
             status_code=502,
