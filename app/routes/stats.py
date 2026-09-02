@@ -5,14 +5,15 @@ from sqlalchemy.orm import Session
 from app.auth_middleware import require_permission
 from app.database.database import SessionLocal, SessionLocalObraSocial
 from app.database.score_exencion import empleados_exentos
+import logging
 from app.database.score_historico import (
-    FORMULA_ACTUAL,
-    FORMULA_LOGSISTEMA,
     FORMULA_VIGENTE,
     ensure_table as ensure_historico,
     historial_empleado,
     registrar_corrida,
 )
+
+logger = logging.getLogger(__name__)
 from app.database.rutas_productividad import rutas_habilitadas
 from app.services.normalizar_ruta import normalizar_ruta
 from app.database.asistencia_merito import cumplimiento_por_empleado
@@ -378,8 +379,10 @@ def sync_productivity_scores(db: Session, stats_db: Session) -> None:
     # ObraSocial. Por eso se leen de db y se pasan explicitamente.
     habilitadas = rutas_habilitadas(db)
     if not habilitadas:
-        print("[ProductividadScore] Sin rutas habilitadas — corrida omitida para evitar "
-              "anular scores existentes. Clasificar rutas en /admin/logs/rutas primero.")
+        logger.warning(
+            "[ProductividadScore] Sin rutas habilitadas — corrida omitida para evitar "
+            "anular scores existentes. Clasificar rutas en /admin/logs/rutas primero."
+        )
         return
     detalle_por_usuario = calculate_productivity_scores(stats_db, habilitadas)
 
