@@ -8,6 +8,7 @@ from app.database.score_exencion import empleados_exentos
 from app.database.score_historico import (
     FORMULA_ACTUAL,
     FORMULA_LOGSISTEMA,
+    FORMULA_VIGENTE,
     ensure_table as ensure_historico,
     historial_empleado,
     registrar_corrida,
@@ -338,7 +339,7 @@ def serie_historica(
     db: Session,
     employee_id: int,
     limite: int = 6,
-    formula: str = FORMULA_ACTUAL,
+    formula: str = FORMULA_VIGENTE,
 ) -> list[float | None]:
     """
     Ultimos scores de una persona, del mas viejo al mas nuevo.
@@ -376,6 +377,10 @@ def sync_productivity_scores(db: Session, stats_db: Session) -> None:
     # Las rutas habilitadas viven en la base de RRHH; la actividad, en la de
     # ObraSocial. Por eso se leen de db y se pasan explicitamente.
     habilitadas = rutas_habilitadas(db)
+    if not habilitadas:
+        print("[ProductividadScore] Sin rutas habilitadas — corrida omitida para evitar "
+              "anular scores existentes. Clasificar rutas en /admin/logs/rutas primero.")
+        return
     detalle_por_usuario = calculate_productivity_scores(stats_db, habilitadas)
 
     empleados_raw = db.execute(text("SELECT id, horas FROM Employee")).mappings().all()
@@ -426,7 +431,7 @@ def sync_productivity_scores(db: Session, stats_db: Session) -> None:
             "eventos": (detalle_por_usuario.get(identidades.get(emp_id) or "") or {}).get("eventos"),
             "esExento": emp_id in exentos,
             "ventanaMeses": VENTANA_MESES,
-            "formula": FORMULA_LOGSISTEMA,
+            "formula": FORMULA_VIGENTE,
         }
         for emp_id in empleados
     ])
@@ -705,7 +710,7 @@ def get_merito_gerencia(department_id: int, db: Session = Depends(get_db)):
             WHERE rn <= 6
             ORDER BY employeeId, calculadoEn ASC
         """).bindparams(bindparam("ids", expanding=True)),
-        {"ids": ids, "formula": FORMULA_ACTUAL},
+        {"ids": ids, "formula": FORMULA_VIGENTE},
     ).mappings().all()
 
     historial_por_empleado: dict[int, list[float | None]] = {}

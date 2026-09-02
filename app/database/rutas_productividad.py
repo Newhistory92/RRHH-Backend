@@ -76,7 +76,7 @@ def upsert_rutas(
 
     db.execute(
         text("""
-            MERGE RutaProductividad AS destino
+            MERGE RutaProductividad WITH (HOLDLOCK) AS destino
             USING (SELECT :metodo AS metodo, :ruta AS ruta) AS origen
                 ON destino.metodo = origen.metodo AND destino.ruta = origen.ruta
             WHEN MATCHED THEN

@@ -57,6 +57,10 @@ FORMULA_LEGADA = "eventos_por_sesion_v0"
 # significado, asi que las corridas anteriores no son comparables con estas.
 FORMULA_LOGSISTEMA = "eventos_logsistema_v2"
 
+# Formula que se usa tanto para escribir como para leer los scores actuales.
+# Cambiar aqui afecta ambos lados en forma atomica.
+FORMULA_VIGENTE = FORMULA_LOGSISTEMA
+
 ALTER_FORMULA_SQL = """
 IF COL_LENGTH('ScoreHistorico','formula') IS NULL
 ALTER TABLE ScoreHistorico ADD formula NVARCHAR(40) NULL;

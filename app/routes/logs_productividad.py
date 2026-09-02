@@ -9,7 +9,7 @@ endpoints permiten decidir cual es cual.
 Todo acceso a ObraSocial es SELECT. La configuracion se guarda en RRHH.
 """
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -114,7 +114,7 @@ AGREGADO_SQL = text("""
 
 @router.get("/rutas")
 def listar_rutas(
-    meses: int = 12,
+    meses: int = Query(12, ge=1, le=36),
     db: Session = Depends(get_db),
     logs_db: Session = Depends(get_logs_db),
 ):
@@ -175,7 +175,7 @@ class ClasificacionRequest(BaseModel):
 def guardar_rutas(
     payload: ClasificacionRequest,
     db: Session = Depends(get_db),
-    employee_id: int | None = None,
+    user: dict = Depends(require_permission("admin.gestionar")),
 ):
     """
     Guarda una tanda de clasificaciones.
@@ -188,7 +188,7 @@ def guardar_rutas(
     guardadas = upsert_rutas(
         db,
         [f.model_dump() for f in payload.rutas],
-        clasificado_por=employee_id,
+        clasificado_por=user.get("employeeId"),
     )
     return {"success": True, "guardadas": guardadas}
 
@@ -250,8 +250,8 @@ def listar_logs(
     desde: str | None = None,
     hasta: str | None = None,
     clase: str | None = None,
-    pagina: int = 1,
-    por_pagina: int = 50,
+    pagina: int = Query(1, ge=1),
+    por_pagina: int = Query(50, ge=1, le=200),
     logs_db: Session = Depends(get_logs_db),
 ):
     """
@@ -260,12 +260,6 @@ def listar_logs(
     Devuelve las columnas tal como estan, sin normalizar: el objetivo es
     entender que paso realmente antes de decidir si una ruta cuenta.
     """
-    if por_pagina > 200:
-        raise HTTPException(
-            status_code=400,
-            detail="por_pagina no puede superar 200",
-        )
-
     where, binds = construir_filtros({
         "metodo": metodo, "usuario": usuario, "texto": texto,
         "desde": desde, "hasta": hasta, "clase": clase,
@@ -324,6 +318,7 @@ def recalcular_scores(
     try:
         sync_productivity_scores(db, stats_db)
     except Exception as e:
+        db.rollback()
         raise HTTPException(
             status_code=502,
             detail=f"No se pudo recalcular: {e}",

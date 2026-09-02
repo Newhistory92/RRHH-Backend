@@ -6,7 +6,7 @@ mide trabajo. Estos tests fijan que solo entre al score lo que un humano
 habilito, atribuible y exitoso.
 """
 
-from app.database.score_historico import FORMULA_ACTUAL, FORMULA_LOGSISTEMA
+from app.database.score_historico import FORMULA_ACTUAL, FORMULA_LOGSISTEMA, FORMULA_VIGENTE
 from app.routes.stats import agrupar_por_usuario
 
 
@@ -71,3 +71,26 @@ def test_la_formula_nueva_es_distinta_de_la_anterior():
     grafico de trayectoria y un cambio de unidad se leeria como caida."""
     assert FORMULA_LOGSISTEMA == "eventos_logsistema_v2"
     assert FORMULA_LOGSISTEMA != FORMULA_ACTUAL
+
+
+def test_formula_vigente_coincide_con_formula_de_escritura():
+    """El escritor y los lectores deben usar el mismo identificador."""
+    assert FORMULA_VIGENTE == FORMULA_LOGSISTEMA, (
+        "FORMULA_VIGENTE debe apuntar a FORMULA_LOGSISTEMA para que lo que "
+        "se escribe en ScoreHistorico sea lo que los lectores consultan."
+    )
+
+
+def test_sync_retorna_sin_calcular_cuando_no_hay_rutas_habilitadas():
+    """Con rutas vacias, sync no debe actualizar scores: evita anular los existentes."""
+    from unittest.mock import MagicMock, patch
+
+    db = MagicMock()
+    stats_db = MagicMock()
+
+    with patch("app.routes.stats.rutas_habilitadas", return_value=set()), \
+         patch("app.routes.stats.ensure_historico"), \
+         patch("app.routes.stats.calculate_productivity_scores") as mock_calc:
+        from app.routes.stats import sync_productivity_scores
+        sync_productivity_scores(db, stats_db)
+        mock_calc.assert_not_called()

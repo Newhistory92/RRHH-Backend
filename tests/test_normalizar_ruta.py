@@ -28,6 +28,10 @@ from app.services.normalizar_ruta import normalizar_ruta
     ("/orden/789/historial?desde=2026-01-01", "/orden/:id/historial"),
     # Varios IDs
     ("/afiliado/12/grupo/34", "/afiliado/:id/grupo/:id"),
+    # Trailing slash: se elimina salvo para la raiz
+    ("/orden/123/", "/orden/:id"),
+    ("/orden/", "/orden"),
+    ("/", "/"),  # root slash preserved
 ])
 def test_normaliza(cruda, esperada):
     assert normalizar_ruta(cruda) == esperada

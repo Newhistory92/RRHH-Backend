@@ -49,4 +49,8 @@ def normalizar_ruta(url: str | None) -> str:
         ":id" if _es_identificador(p) else p
         for p in sin_query.split("/")
     ]
-    return "/".join(partes) or "/"
+    ruta = "/".join(partes) or "/"
+
+    if ruta != "/" and ruta.endswith("/"):
+        ruta = ruta.rstrip("/")
+    return ruta
