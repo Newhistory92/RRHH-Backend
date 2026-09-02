@@ -99,3 +99,53 @@ def test_catalogo_ordenado_por_volumen_descendente():
 def test_agregado_vacio_devuelve_lista_vacia():
     """Si ObraSocial no responde, la pantalla no puede romperse."""
     assert armar_catalogo(agregado=[], config={}) == []
+
+
+from app.routes.logs_productividad import (
+    ClasificacionRequest,
+    RutaClasificada,
+    guardar_rutas,
+)
+from tests.fakes import FakeSession
+
+
+def test_guardar_persiste_las_filas_recibidas():
+    db = FakeSession()
+    payload = ClasificacionRequest(rutas=[
+        RutaClasificada(metodo="POST", ruta="/afiliado/nueva-consulta",
+                        cuenta=True),
+        RutaClasificada(metodo="POST", ruta="/usuario/login", cuenta=False),
+    ])
+    resultado = guardar_rutas(payload=payload, db=db, employee_id=5)
+    assert resultado == {"success": True, "guardadas": 2}
+
+
+def test_guardar_registra_quien_clasifico():
+    """Una decision que cambia scores de ascenso tiene que ser trazable."""
+    db = FakeSession()
+    payload = ClasificacionRequest(rutas=[
+        RutaClasificada(metodo="POST", ruta="/a", cuenta=True),
+    ])
+    guardar_rutas(payload=payload, db=db, employee_id=42)
+    _sql, params = db.ejecutadas[-1]
+    assert params[0]["clasificadoPor"] == 42
+
+
+def test_guardar_lista_vacia_no_falla():
+    db = FakeSession()
+    resultado = guardar_rutas(
+        payload=ClasificacionRequest(rutas=[]), db=db, employee_id=1
+    )
+    assert resultado == {"success": True, "guardadas": 0}
+
+
+def test_guardar_nunca_escribe_en_obrasocial():
+    """Restriccion dura del proyecto: esa base es de solo lectura."""
+    db = FakeSession()
+    guardar_rutas(
+        payload=ClasificacionRequest(rutas=[
+            RutaClasificada(metodo="POST", ruta="/a", cuenta=True),
+        ]),
+        db=db, employee_id=1,
+    )
+    assert "ObraSocial" not in db.sql_ejecutado()

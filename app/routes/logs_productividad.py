@@ -19,6 +19,7 @@ from app.database.database import SessionLocal, SessionLocalObraSocial
 from app.database.rutas_productividad import (
     configuracion_actual,
     ensure_table,
+    upsert_rutas,
 )
 from app.services.normalizar_ruta import normalizar_ruta
 
@@ -158,3 +159,35 @@ def listar_rutas(
         "actividadDisponible": actividad_disponible,
         "pendientes": sum(1 for f in catalogo if f["estado"] == "pendiente"),
     }
+
+
+class RutaClasificada(BaseModel):
+    metodo: str
+    ruta: str
+    cuenta: bool
+
+
+class ClasificacionRequest(BaseModel):
+    rutas: list[RutaClasificada]
+
+
+@router.put("/rutas")
+def guardar_rutas(
+    payload: ClasificacionRequest,
+    db: Session = Depends(get_db),
+    employee_id: int | None = None,
+):
+    """
+    Guarda una tanda de clasificaciones.
+
+    Recibe el lote entero y no una ruta por request porque el flujo real es
+    tildar veinte de una pasada. Queda registrado quien clasifico: esto mueve
+    scores que se usan para decidir ascensos, y tiene que ser trazable.
+    """
+    ensure_table(db)
+    guardadas = upsert_rutas(
+        db,
+        [f.model_dump() for f in payload.rutas],
+        clasificado_por=employee_id,
+    )
+    return {"success": True, "guardadas": guardadas}
