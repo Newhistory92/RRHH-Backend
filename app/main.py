@@ -10,7 +10,10 @@ for _stream in (sys.stdout, sys.stderr):
     if hasattr(_stream, "reconfigure"):
         _stream.reconfigure(encoding="utf-8", errors="replace") # type: ignore
 
-from fastapi import FastAPI
+import traceback
+
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from app.cors_config import setup_cors
 from app.routes import employee, user, auth, role, active, rrhh, departments, tests, feedback, licenses, obrasocial, stats, configtest, contracts, professions, schedules, reubicacion, publications, activos_config, activos, activos_modelos, relojes, asistencia, asistencia_ausencias, chat, logs_productividad
@@ -24,6 +27,27 @@ from app.database.permissions import ensure_tables as ensure_permission_tables, 
 from app.database.score_exencion import ensure_columnas_exencion
 
 app = FastAPI(title="Backend RRHH", version="1.0")
+
+
+# Un error no capturado sale por ServerErrorMiddleware, que esta por fuera del
+# middleware de CORS: la respuesta 500 viaja sin Access-Control-Allow-Origin y
+# el navegador la reporta como error de CORS, escondiendo el 500 real. Este
+# middleware atrapa la excepcion adentro para que la respuesta salga por CORS
+# y el front vea el 500 con su motivo en la consola del servidor.
+#
+# Va registrado ANTES de setup_cors a proposito: add_middleware apila, asi que
+# el ultimo en registrarse queda mas afuera y CORS tiene que envolver a este.
+@app.middleware("http")
+async def errores_visibles_para_el_navegador(request: Request, call_next):
+    try:
+        return await call_next(request)
+    except Exception:
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Error interno del servidor"},
+        )
+
 
 setup_cors(app)
 
