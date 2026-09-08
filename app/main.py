@@ -16,7 +16,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from app.cors_config import setup_cors
-from app.routes import employee, user, auth, role, active, rrhh, departments, tests, feedback, licenses, obrasocial, stats, configtest, contracts, professions, schedules, reubicacion, publications, activos_config, activos, activos_modelos, relojes, asistencia, asistencia_ausencias, chat, logs_productividad
+from app.routes import employee, user, auth, role, active, rrhh, departments, tests, feedback, licenses, obrasocial, stats, configtest, contracts, professions, schedules, reubicacion, publications, activos_config, activos, activos_modelos, relojes, asistencia, asistencia_ausencias, chat, logs_productividad, carga_inicial_licencias
 from app.routes.auth import init_blacklist
 from app.scheduler import iniciar_scheduler, detener_scheduler
 from app.database.database import SessionLocal
@@ -136,6 +136,7 @@ app.include_router(asistencia.router)
 app.include_router(asistencia_ausencias.router)
 app.include_router(chat.router)
 app.include_router(logs_productividad.router)
+app.include_router(carga_inicial_licencias.router)
 
 @app.get("/")
 def root():
