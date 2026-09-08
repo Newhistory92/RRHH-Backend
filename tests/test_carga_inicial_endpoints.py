@@ -182,3 +182,65 @@ def test_el_payload_no_puede_declarar_quien_cargo():
     campos = set(CargaInicialRequest.model_fields) | set(SaldoCargado.model_fields)
     assert "cargadoPor" not in campos
     assert "employeeId" not in campos
+
+
+# ---------------------------------------------------------------------------
+# Tests de endpoint (TestClient): prueban el gate de permiso y el GET, que
+# antes no tenian ninguna cobertura a ese nivel.
+#
+# require_permission("licencias.cargaInicial") se invoca inline en la firma
+# de cada ruta, asi que cada invocacion arma un closure _check DISTINTO.
+# Overridear app.dependency_overrides con una llamada nueva a
+# require_permission(...) no apuntaria al mismo objeto que usa la ruta y el
+# override quedaria sin efecto -- el test pasaria por una razon equivocada
+# (o ni siquiera se aplicaria). En cambio get_current_user es una funcion de
+# modulo estable: overridearla y dejar correr la logica real de
+# _autorizar/tiene_permiso prueba el gate de verdad.
+# ---------------------------------------------------------------------------
+
+def test_get_carga_inicial_exige_el_permiso():
+    """Sin el permiso licencias.cargaInicial, un caller autenticado tiene que
+    recibir 403, no ver el catalogo."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from app.auth_middleware import get_current_user
+    from app.routes.carga_inicial_licencias import router
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_current_user] = lambda: {
+        "usuario": "sin_permiso", "roleId": 2, "employeeId": 7, "permisos": set(),
+    }
+    client = TestClient(app)
+
+    resp = client.get("/licenses/carga-inicial/8")
+    assert resp.status_code == 403
+
+
+def test_get_carga_inicial_permite_a_quien_tiene_el_permiso():
+    """Con el permiso, y sin tocar una base real, el catalogo se arma
+    normalmente."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from app.auth_middleware import get_current_user
+    from app.routes.carga_inicial_licencias import router, get_db
+
+    db = FakeSession({
+        "SELECT e.gender": [{"gender": "Masculino", "roleName": "rrhh"}],
+        "DISTINCT categoria": [{"categoria": "Vacaciones"}],
+        "FROM SaldoInicialLicencia": [],
+    })
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_current_user] = lambda: {
+        "usuario": "con_permiso", "roleId": 3, "employeeId": 7,
+        "permisos": {"licencias.cargaInicial"},
+    }
+    app.dependency_overrides[get_db] = lambda: db
+    client = TestClient(app)
+
+    resp = client.get("/licenses/carga-inicial/8")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert any(f["categoria"] == "Vacaciones" for f in body["acumulables"])

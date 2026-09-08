@@ -119,6 +119,13 @@ def get_tipos_disponibles(employee_id: int, db: Session = Depends(get_db)):
     today = date.today()
     current_cycle = today.year  # 👈 Usar año calendario actual (2026) directo
 
+    # 1.5 Saldo inicial: si RRHH cargo un saldo para este anio/categoria, ese
+    # saldo rige por encima de lo que diga ConfiguracionLicencias -- este es
+    # el endpoint que realmente limita cuantos dias puede pedir el empleado
+    # (el maxDays del selector de fechas sale de aca, no de /saldos).
+    ensure_saldo_inicial(db)
+    saldos_iniciales = saldos_de_empleado(db, employee_id)
+
     # 2. Triple-join: ConfiguracionLicencias con ConsumoLicencias para el ciclo actual
     query = text("""
         SELECT 
@@ -162,16 +169,20 @@ def get_tipos_disponibles(employee_id: int, db: Session = Depends(get_db)):
         # de forma temporal al renderizar y trasladado al frontend con isRRHHComponent, 
         # permitiendo que la API devuelva todo el catálogo según contrato independientemente de quién sea el target.
 
-        # Calcular días disponibles (inyectar vacaciones dinámicas si no está explícitamente configurada en la BD)
-        dias_totales = row["diasTotales"]
-        if "vacaciones" in nombre_lower:
-            if dias_totales == 0:
-                dias_vac = calcular_dias_vacaciones(
-                    tipo_contrato, fecha_ingreso,
-                    emp_data.get("fechaJubilacion"),
-                )
-                if dias_vac > 0:
-                    dias_totales = dias_vac
+        # dias_vac se calcula siempre (no solo cuando la config esta en 0):
+        # total_del_anio lo necesita incondicionalmente para decidir el
+        # fallback especifico de vacaciones cuando no hay saldo inicial cargado.
+        dias_vac = calcular_dias_vacaciones(
+            tipo_contrato, fecha_ingreso,
+            emp_data.get("fechaJubilacion"),
+        )
+
+        dias_totales = total_del_anio(
+            saldo_inicial=saldos_iniciales.get((current_cycle, nombre)),
+            es_vacaciones="vacaciones" in nombre_lower,
+            dias_vac=dias_vac,
+            dias_totales=row["diasTotales"],
+        )
 
         consumidos = row["consumidos"]
         disponibles = max(0, dias_totales - consumidos)
@@ -567,6 +578,8 @@ def armar_balances(
     dias_vac: int,
     gender: str | None,
     role_name: str,
+    consumidos_por_clave: dict[tuple[int, str], int] | None = None,
+    min_anio: int | None = None,
 ) -> list[dict]:
     """
     Arma la respuesta de saldos a partir de la configuracion y lo cargado.
@@ -578,7 +591,13 @@ def armar_balances(
     version anterior comparaba contra ["RRHH", "ADMIN"] en mayuscula, con lo
     cual la condicion era siempre verdadera y las licencias restringidas
     quedaban ocultas para todos, RRHH incluido.
+
+    consumidos_por_clave cubre los anios que no tienen fila en
+    ConfiguracionLicencias (solo existe la del anio en curso): sin esto el
+    fallback de "sin configuracion" fijaba el consumo en cero y un saldo
+    cargado para un anio anterior se podia gastar una y otra vez.
     """
+    consumidos_por_clave = consumidos_por_clave or {}
     balances = []
     cubiertas: set[tuple[int, str]] = set()
 
@@ -612,16 +631,19 @@ def armar_balances(
     # quedaria guardado y seria invisible.
     contrato = rows[0]["contrato"] if rows else None
     for anio, categoria in saldos_sin_configuracion(saldos_iniciales, cubiertas):
+        if min_anio is not None and anio < min_anio:
+            continue
         if not _le_aplica_al_empleado(categoria, gender, role_name):
             continue
         dias = saldos_iniciales[(anio, categoria)]
+        consumido = consumidos_por_clave.get((anio, categoria.lower()), 0)
         balances.append({
             "anio": anio,
             "tipo": categoria,
             "contrato": contrato,
             "diasTotales": dias,
-            "consumidos": 0,
-            "disponibles": dias,
+            "consumidos": consumido,
+            "disponibles": max(0, dias - consumido),
         })
 
     return balances
@@ -630,7 +652,7 @@ def armar_balances(
 # ---------------------------------------------------------------------------
 # GET /licenses/saldos
 # ---------------------------------------------------------------------------
-@router.get("/saldos")
+@router.get("/saldos", dependencies=[Depends(require_auth)])
 def get_license_saldos(
     employee_id: int,
     db: Session = Depends(get_db)
@@ -776,12 +798,27 @@ def get_license_saldos(
         tipo_contrato, fecha_ingreso, cl.get("fechaJubilacion"),
     )
 
+    # Consumo real independiente de ConfiguracionLicencias: la tabla de
+    # configuracion solo tiene filas del anio en curso, asi que es la unica
+    # forma de descontar consumo de anios anteriores que el fallback de
+    # "sin configuracion" tiene que mostrar.
+    consumo_rows = db.execute(text("""
+        SELECT cl_i.anio, LOWER(cl_i.tipo) AS categoria, SUM(cl_i.diasConsumidos) AS total
+        FROM ConsumoLicencias cl_i
+        INNER JOIN License l_i ON cl_i.licenseId = l_i.id
+        WHERE l_i.employeeId = :empId
+        GROUP BY cl_i.anio, LOWER(cl_i.tipo)
+    """), {"empId": employee_id}).mappings().all()
+    consumidos_por_clave = {(r["anio"], r["categoria"]): int(r["total"]) for r in consumo_rows}
+
     return {"balances": armar_balances(
         rows=[dict(r) for r in rows],
         saldos_iniciales=saldos_iniciales,
         dias_vac=dias_vac,
         gender=gender,
         role_name=role_name,
+        consumidos_por_clave=consumidos_por_clave,
+        min_anio=min_anio,
     )}
 # ---------------------------------------------------------------------------
 # GET /licenses/requests (Historial)

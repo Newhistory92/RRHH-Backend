@@ -137,3 +137,27 @@ def test_saldo_inicial_de_nacimiento_no_se_muestra_a_una_empleada():
         dias_vac=20, gender="Femenino", role_name="rrhh",
     )
     assert balances == []
+
+
+def test_el_fallback_descuenta_consumo_real_en_vez_de_asumir_cero():
+    """Sin esto, un saldo cargado para un anio sin configuracion se podia
+    gastar una y otra vez porque el consumo quedaba fijo en cero."""
+    balances = armar_balances(
+        rows=[], saldos_iniciales={(2024, "Vacaciones"): 10},
+        dias_vac=20, gender="Masculino", role_name="rrhh",
+        consumidos_por_clave={(2024, "vacaciones"): 6},
+    )
+    fila = next(b for b in balances if b["anio"] == 2024)
+    assert fila["consumidos"] == 6
+    assert fila["disponibles"] == 4
+
+
+def test_el_fallback_respeta_el_piso_de_anios():
+    """La consulta principal ya filtra por minAnio; el fallback no lo hacia,
+    asi que un saldo de hace muchos anios quedaba visible para siempre."""
+    balances = armar_balances(
+        rows=[], saldos_iniciales={(2019, "Vacaciones"): 10},
+        dias_vac=20, gender="Masculino", role_name="rrhh",
+        min_anio=2023,
+    )
+    assert balances == []
