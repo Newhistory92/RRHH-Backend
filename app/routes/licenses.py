@@ -547,6 +547,20 @@ RRHH_ONLY_TYPES = [
 ROLES_CON_LICENCIAS_RESTRINGIDAS = {"rrhh", "admin"}
 
 
+def _le_aplica_al_empleado(categoria: str, gender: str | None, role_name: str) -> bool:
+    """Mismos filtros en ambos loops de armar_balances: una categoria
+    restringida no puede aparecer via el camino de "sin configuracion" si no
+    aparece por el camino normal."""
+    tipo_lower = categoria.lower()
+    if "nacimiento" in tipo_lower and gender != "Masculino":
+        return False
+    if "embarazo" in tipo_lower and gender != "Femenino":
+        return False
+    if any(t in tipo_lower for t in RRHH_ONLY_TYPES):
+        return role_name in ROLES_CON_LICENCIAS_RESTRINGIDAS
+    return True
+
+
 def armar_balances(
     rows: list[dict],
     saldos_iniciales: dict[tuple[int, str], int],
@@ -569,16 +583,10 @@ def armar_balances(
     cubiertas: set[tuple[int, str]] = set()
 
     for row in rows:
+        if not _le_aplica_al_empleado(row["tipoLicencia"], gender, role_name):
+            continue
+
         tipo_lower = row["tipoLicencia"].lower()
-
-        if "nacimiento" in tipo_lower and gender != "Masculino":
-            continue
-        if "embarazo" in tipo_lower and gender != "Femenino":
-            continue
-        if any(t in tipo_lower for t in RRHH_ONLY_TYPES):
-            if role_name not in ROLES_CON_LICENCIAS_RESTRINGIDAS:
-                continue
-
         clave = (row["anio"], row["tipoLicencia"])
         cubiertas.add(clave)
 
@@ -604,6 +612,8 @@ def armar_balances(
     # quedaria guardado y seria invisible.
     contrato = rows[0]["contrato"] if rows else None
     for anio, categoria in saldos_sin_configuracion(saldos_iniciales, cubiertas):
+        if not _le_aplica_al_empleado(categoria, gender, role_name):
+            continue
         dias = saldos_iniciales[(anio, categoria)]
         balances.append({
             "anio": anio,

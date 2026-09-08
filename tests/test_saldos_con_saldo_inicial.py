@@ -109,3 +109,31 @@ def test_las_licencias_restringidas_no_se_le_muestran_a_un_empleado_comun():
         gender="Masculino", role_name="user",
     )
     assert balances == []
+
+
+def test_saldo_inicial_de_categoria_restringida_no_se_filtra_a_un_rol_comun():
+    """El camino de 'sin configuracion' tiene que aplicar el mismo filtro que
+    el camino normal, o una categoria restringida se filtra igual con solo
+    cargarle un saldo inicial."""
+    balances = armar_balances(
+        rows=[], saldos_iniciales={(2026, "Accidente de trabajo"): 10},
+        dias_vac=20, gender="Masculino", role_name="user",
+    )
+    assert balances == []
+
+
+def test_saldo_inicial_de_categoria_restringida_se_muestra_a_rrhh():
+    balances = armar_balances(
+        rows=[], saldos_iniciales={(2026, "Accidente de trabajo"): 10},
+        dias_vac=20, gender="Masculino", role_name="rrhh",
+    )
+    assert len(balances) == 1
+    assert balances[0]["diasTotales"] == 10
+
+
+def test_saldo_inicial_de_nacimiento_no_se_muestra_a_una_empleada():
+    balances = armar_balances(
+        rows=[], saldos_iniciales={(2026, "Nacimiento"): 5},
+        dias_vac=20, gender="Femenino", role_name="rrhh",
+    )
+    assert balances == []
