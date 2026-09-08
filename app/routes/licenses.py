@@ -1134,6 +1134,8 @@ def rrhh_apply_license(data: dict = Body(...), db: Session = Depends(get_db)):
             "licenseId": license_id,
             "employeeId": real_employee_id
         }
+    except HTTPException:
+        raise
     except Exception as e:
         db.rollback()
         import traceback

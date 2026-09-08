@@ -49,3 +49,41 @@ def test_el_tipo_sale_de_la_licencia_y_no_del_payload():
     aprobada desde ese panel descontaba dias de vacaciones."""
     lic = resolver_licencia([{"id": 3, "employeeId": 10, "type": "Nacimiento"}], None)
     assert lic["type"] == "Nacimiento"
+
+
+def test_ambiguedad_llega_como_409_no_como_500():
+    """El bug real: resolver_licencia levanta HTTPException, pero el except
+    generico del endpoint la atrapaba igual y la convertia en un 500 opaco."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from app.routes.licenses import router, get_db, require_rrhh_auth
+
+    app = FastAPI()
+    app.include_router(router)
+
+    class _FakeDbAmbiguo:
+        def execute(self, *a, **k):
+            class _R:
+                def mappings(self_inner):
+                    return self_inner
+                def all(self_inner):
+                    return [
+                        {"id": 1, "employeeId": 10, "type": "Vacaciones"},
+                        {"id": 2, "employeeId": 20, "type": "Vacaciones"},
+                    ]
+            return _R()
+        def rollback(self): pass
+        def commit(self): pass
+
+    app.dependency_overrides[get_db] = lambda: _FakeDbAmbiguo()
+    app.dependency_overrides[require_rrhh_auth] = lambda: {"id": 1, "username": "rrhh_test"}
+    client = TestClient(app)
+
+    resp = client.post("/licenses/aplicar", json={
+        "employeeId": 99,
+        "startDate": "2026-01-01",
+        "endDate": "2026-01-05",
+        "days": 5,
+    })
+
+    assert resp.status_code == 409, f"esperaba 409, llego {resp.status_code}: {resp.text}"
