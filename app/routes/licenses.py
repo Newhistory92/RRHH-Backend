@@ -998,6 +998,48 @@ def update_license_status(license_id: int, data: dict = Body(...), db: Session =
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def resolver_licencia(candidatas: list[dict], license_id_pedido: int | None) -> dict:
+    """
+    Decide que licencia se aplica, o corta.
+
+    Antes se hacia SELECT TOP 1 por fechas sin filtrar por empleado y se
+    tomaba la primera. Dos personas que se toman la misma semana -- habitual
+    -- y aprobaba la del otro, descontandole los dias a quien no correspondia.
+
+    Ahora: si viene el id explicito manda ese; si no, el match tiene que ser
+    inequivoco. Ante la duda no elige.
+    """
+    if license_id_pedido is not None:
+        for lic in candidatas:
+            if lic["id"] == license_id_pedido:
+                return lic
+        raise HTTPException(
+            status_code=404,
+            detail=f"No se encontro la licencia {license_id_pedido} para esas fechas",
+        )
+
+    if not candidatas:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "No se encontro una solicitud para esas fechas. Toda solicitud "
+                "crea su licencia, asi que revisar el listado de solicitudes "
+                "antes de reintentar."
+            ),
+        )
+
+    if len(candidatas) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Hay {len(candidatas)} licencias con esas fechas. Aplicarla "
+                "desde el listado de solicitudes, que identifica cual es."
+            ),
+        )
+
+    return candidatas[0]
+
+
 # ---------------------------------------------------------------------------
 # POST /licenses/aplicar — Endpoint exclusivo para RRHH: aplicar licencia
 # desde la bandeja de mensajes del dashboard de RRHH
@@ -1012,7 +1054,6 @@ def rrhh_apply_license(data: dict = Body(...), db: Session = Depends(get_db)):
     """
     frontend_emp_id = data.get("employeeId")
     message_id = data.get("messageId")
-    lic_type = data.get("type", "Vacaciones")
     start_date = data.get("startDate")
     end_date = data.get("endDate")
     days = data.get("days")
@@ -1024,37 +1065,27 @@ def rrhh_apply_license(data: dict = Body(...), db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Datos incompletos: startDate y endDate son requeridos")
 
     try:
-        # ── Paso 1: Buscar la License REAL por fechas (sin filtrar por employeeId) ──
-        # La licencia fue creada para el empleado solicitante, NO para el supervisor.
-        existing_lic = db.execute(text("""
-            SELECT TOP 1 id, employeeId FROM License
+        # ── Paso 1: Identificar la licencia, sin adivinar ──
+        # Se acota a las que todavia no estan aprobadas: una ya aplicada no es
+        # candidata, y eso solo ya desambigua la mayoria de los casos.
+        candidatas = [dict(f) for f in db.execute(text("""
+            SELECT id, employeeId, type FROM License
             WHERE startDate = :start AND endDate = :end
+              AND status <> 'Aprobada'
             ORDER BY createdAt DESC
-        """), {"start": start_date, "end": end_date}).mappings().first()
+        """), {"start": start_date, "end": end_date}).mappings().all()]
 
-        if existing_lic:
-            license_id = existing_lic["id"]
-            # Usar el employeeId REAL de la licencia, no el del frontend
-            real_employee_id = existing_lic["employeeId"]
-            db.execute(text("""
-                UPDATE License SET status = 'Aprobada', updatedAt = GETDATE() WHERE id = :id
-            """), {"id": license_id})
-            print(f"console.log: License existente {license_id} (Employee real: {real_employee_id}) → Aprobada")
-        else:
-            # Si no existe licencia previa, usar el employeeId del frontend como fallback
-            real_employee_id = frontend_emp_id
-            if not real_employee_id:
-                raise HTTPException(status_code=400, detail="No se encontró licencia existente y falta employeeId")
-            result = db.execute(text("""
-                INSERT INTO License (type, startDate, endDate, status, duracion, mensajeOriginal, employeeId, createdAt, updatedAt)
-                OUTPUT INSERTED.id
-                VALUES (:type, :start, :end, 'Aprobada', :days, :obs, :empId, GETDATE(), GETDATE())
-            """), {
-                "type": lic_type, "start": start_date, "end": end_date,
-                "days": days, "obs": observacion, "empId": real_employee_id
-            })
-            license_id = result.fetchone()[0]
-            print(f"console.log: Nueva License {license_id} creada para Employee {real_employee_id}")
+        lic = resolver_licencia(candidatas, data.get("licenseId"))
+        license_id = lic["id"]
+        real_employee_id = lic["employeeId"]
+        # El tipo sale de la licencia y no del payload: el frontend manda
+        # "Vacaciones" fijo, con lo cual una licencia por Nacimiento aprobada
+        # desde ese panel descontaba dias del cupo de vacaciones.
+        lic_type = lic["type"]
+
+        db.execute(text("""
+            UPDATE License SET status = 'Aprobada', updatedAt = GETDATE() WHERE id = :id
+        """), {"id": license_id})
 
         # ── Paso 2: Registrar consumo de días ──
         if days:
