@@ -1,0 +1,49 @@
+"""
+Decisiones del saldo de licencias. Funciones puras, sin I/O.
+
+Concentran tres reglas que antes vivian sueltas dentro del endpoint de saldos:
+que total rige para un anio, que saldos cargados no tienen configuracion que
+los muestre, y cual es la ventana de anios cargables.
+"""
+
+# La ventana de carga: el anio calendario en curso y los dos anteriores.
+# Coincide con el ciclo de expiracion de vacaciones; cargar algo mas viejo
+# venceria en la primera corrida.
+ANIOS_DE_VENTANA = 3
+
+
+def total_del_anio(
+    saldo_inicial: int | None,
+    es_vacaciones: bool,
+    dias_vac: int,
+    dias_totales: int,
+) -> int:
+    """
+    Cuantos dias corresponden para un anio y categoria.
+
+    El saldo cargado a mano gana sobre todo lo demas, incluido el cero: cero
+    es una afirmacion de RRHH de que no le queda nada, no la ausencia de dato.
+    La ausencia de dato es None, y recien ahi rige el calculo del sistema.
+    """
+    if saldo_inicial is not None:
+        return saldo_inicial
+    return dias_vac if es_vacaciones else dias_totales
+
+
+def saldos_sin_configuracion(
+    saldos_iniciales: dict[tuple[int, str], int],
+    cubiertas: set[tuple[int, str]],
+) -> list[tuple[int, str]]:
+    """
+    Las claves con saldo cargado que la configuracion no llego a mostrar.
+
+    El armado de saldos recorre ConfiguracionLicencias, que hoy solo tiene
+    filas de 2026: sin esto, un saldo cargado para 2024 quedaria guardado y
+    seria invisible.
+    """
+    return sorted(clave for clave in saldos_iniciales if clave not in cubiertas)
+
+
+def anios_de_carga(anio_actual: int) -> list[int]:
+    """La ventana cargable, del mas nuevo al mas viejo."""
+    return [anio_actual - i for i in range(ANIOS_DE_VENTANA)]
