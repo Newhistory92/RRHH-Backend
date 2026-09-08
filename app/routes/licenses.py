@@ -15,6 +15,11 @@ from app.database.feriados import (
     delete_feriado as delete_feriado_data,
 )
 from app.services.asistencia_recalc import recalcular_anio as recalcular_asistencia
+from app.database.saldo_inicial_licencias import (
+    ensure_table as ensure_saldo_inicial,
+    saldos_de_empleado,
+)
+from app.services.saldo_licencias import saldos_sin_configuracion, total_del_anio
 
 log = logging.getLogger(__name__)
 
@@ -525,6 +530,93 @@ def seed_configs_si_faltan(db: Session, anio: int):
         print(f"[WARN] No hay configuraciones de licencias para el año {anio}.")
         # return None
 
+# Categorias que solo ve RRHH: son las de encuadre medico y las excepcionales,
+# que no se solicitan por el circuito comun.
+RRHH_ONLY_TYPES = [
+    "lesiones de largo tratamiento",
+    "lar",
+    "accidente de trabajo",
+    "enfermedad profesional",
+    "enfermedad de miembros del grupo",
+    "guarda o tenencia",
+    "lic por enfermedad",
+    "licencia sin goce de haberes",
+    "fallecimiento en parto",
+]
+
+ROLES_CON_LICENCIAS_RESTRINGIDAS = {"rrhh", "admin"}
+
+
+def armar_balances(
+    rows: list[dict],
+    saldos_iniciales: dict[tuple[int, str], int],
+    dias_vac: int,
+    gender: str | None,
+    role_name: str,
+) -> list[dict]:
+    """
+    Arma la respuesta de saldos a partir de la configuracion y lo cargado.
+
+    Es funcion pura para poder probar las reglas sin base: el endpoint que la
+    llama encadena seis consultas y probarlo entero mediria el andamiaje.
+
+    role_name llega en minuscula. La comparacion tambien esta en minuscula: la
+    version anterior comparaba contra ["RRHH", "ADMIN"] en mayuscula, con lo
+    cual la condicion era siempre verdadera y las licencias restringidas
+    quedaban ocultas para todos, RRHH incluido.
+    """
+    balances = []
+    cubiertas: set[tuple[int, str]] = set()
+
+    for row in rows:
+        tipo_lower = row["tipoLicencia"].lower()
+
+        if "nacimiento" in tipo_lower and gender != "Masculino":
+            continue
+        if "embarazo" in tipo_lower and gender != "Femenino":
+            continue
+        if any(t in tipo_lower for t in RRHH_ONLY_TYPES):
+            if role_name not in ROLES_CON_LICENCIAS_RESTRINGIDAS:
+                continue
+
+        clave = (row["anio"], row["tipoLicencia"])
+        cubiertas.add(clave)
+
+        totales = total_del_anio(
+            saldo_inicial=saldos_iniciales.get(clave),
+            es_vacaciones=tipo_lower == "vacaciones",
+            dias_vac=dias_vac,
+            dias_totales=row["diasTotales"],
+        )
+        consumidos = row["diasConsumidos"]
+
+        balances.append({
+            "anio": row["anio"],
+            "tipo": row["tipoLicencia"],
+            "contrato": row["contrato"],
+            "diasTotales": totales,
+            "consumidos": consumidos,
+            "disponibles": max(0, totales - consumidos),
+        })
+
+    # Un anio sin fila de configuracion no aparece en rows. Como solo existe
+    # configuracion de 2026, sin esto todo saldo cargado para un anio anterior
+    # quedaria guardado y seria invisible.
+    contrato = rows[0]["contrato"] if rows else None
+    for anio, categoria in saldos_sin_configuracion(saldos_iniciales, cubiertas):
+        dias = saldos_iniciales[(anio, categoria)]
+        balances.append({
+            "anio": anio,
+            "tipo": categoria,
+            "contrato": contrato,
+            "diasTotales": dias,
+            "consumidos": 0,
+            "disponibles": dias,
+        })
+
+    return balances
+
+
 # ---------------------------------------------------------------------------
 # GET /licenses/saldos
 # ---------------------------------------------------------------------------
@@ -554,7 +646,7 @@ def get_license_saldos(
     min_anio      = current_cycle - 2
     expire_anio   = current_cycle - 3
 
-    
+    ensure_saldo_inicial(db)
 
     # ── 2. Expiración automática (VACACIONES) ────────────────────────────────
     exp_query = text("""
@@ -580,8 +672,15 @@ def get_license_saldos(
         "tipoContrato": tipo_contrato
     }).mappings().first()
 
-    if exp and (exp["totales"] - exp["consumidos"]) > 0:
-        remanente = exp["totales"] - exp["consumidos"]
+    # Si hay saldo cargado a mano para el anio que vence, ese es el total que
+    # corresponde: sin esto un saldo cargado quedaria inmortal, porque la
+    # configuracion de ese anio no existe y totales daria cero.
+    saldos_previos = saldos_de_empleado(db, employee_id)
+    total_a_vencer = saldos_previos.get(
+        (expire_anio, "Vacaciones"), exp["totales"] if exp else 0
+    )
+    if exp and (total_a_vencer - exp["consumidos"]) > 0:
+        remanente = total_a_vencer - exp["consumidos"]
         try:
             lic_id = db.execute(text("""
                 INSERT INTO License (
@@ -660,57 +759,20 @@ def get_license_saldos(
     gender = emp_data["gender"] if emp_data else None
     role_name = (emp_data["roleName"] or "").lower() if emp_data else ""
 
-    rrhh_only_types = [
-        "lesiones de largo tratamiento",
-        "lar",
-        "accidente de trabajo",
-        "enfermedad profesional",
-        "enfermedad de miembros del grupo",
-        "guarda o tenencia",
-        "lic por enfermedad",
-        "licencia sin goce de haberes",
-        "fallecimiento en parto"
-    ]
     # ── 5. Armar respuesta ───────────────────────────────────────────────────
+    saldos_iniciales = saldos_de_empleado(db, employee_id)
+
     dias_vac = calcular_dias_vacaciones(
         tipo_contrato, fecha_ingreso, cl.get("fechaJubilacion"),
     )
 
-    balances = []
-
-    for row in rows:
-        tipo_lower = row["tipoLicencia"].lower()
-
-        # ── FILTRO POR GÉNERO ─────────────────────
-        if "nacimiento" in tipo_lower and gender != "Masculino":
-            continue
-
-        if "embarazo" in tipo_lower and gender != "Femenino":
-            continue
-
-        # ── FILTRO POR ROL ────────────────────────
-        if any(t in tipo_lower for t in rrhh_only_types):
-            if role_name not in ["RRHH", "ADMIN"]:
-                continue
-
-        # ── LÓGICA EXISTENTE ─────────────────────
-        es_vac = tipo_lower == "vacaciones"
-
-        totales = dias_vac if es_vac else row["diasTotales"]
-
-        consumidos  = row["diasConsumidos"]
-        disponibles = max(0, totales - consumidos)
-
-        balances.append({
-            "anio": row["anio"],
-            "tipo": row["tipoLicencia"],
-            "contrato": row["contrato"],
-            "diasTotales": totales,
-            "consumidos": consumidos,
-            "disponibles": disponibles,
-        })
-
-    return {"balances": balances}
+    return {"balances": armar_balances(
+        rows=[dict(r) for r in rows],
+        saldos_iniciales=saldos_iniciales,
+        dias_vac=dias_vac,
+        gender=gender,
+        role_name=role_name,
+    )}
 # ---------------------------------------------------------------------------
 # GET /licenses/requests (Historial)
 # ---------------------------------------------------------------------------
