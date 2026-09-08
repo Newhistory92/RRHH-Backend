@@ -110,7 +110,10 @@ def test_guardar_rechaza_un_anio_fuera_de_la_ventana():
 
 
 def test_guardar_registra_quien_cargo():
-    db = FakeSession()
+    db = FakeSession({
+        "SELECT e.gender": [{"gender": "Masculino", "roleName": "rrhh"}],
+        "DISTINCT categoria": [{"categoria": "Vacaciones"}],
+    })
     payload = CargaInicialRequest(saldos=[
         SaldoCargado(anio=2026, categoria="Vacaciones", diasPendientes=5),
     ])
@@ -118,6 +121,59 @@ def test_guardar_registra_quien_cargo():
     _sql, params = db.ejecutadas[-1]
     assert params[0]["cargadoPor"] == 7
     assert params[0]["empId"] == 8
+
+
+def test_guardar_rechaza_categoria_que_no_le_aplica_al_empleado():
+    """Nacimiento no le aplica a una empleada: guardarlo dejaria un dato
+    huerfano que el catalogo nunca va a mostrarle."""
+    db = FakeSession({
+        "SELECT e.gender": [{"gender": "Femenino", "roleName": "user"}],
+        "DISTINCT categoria": [{"categoria": "Nacimiento"}],
+    })
+    payload = CargaInicialRequest(saldos=[
+        SaldoCargado(anio=2026, categoria="Nacimiento", diasPendientes=5),
+    ])
+    with pytest.raises(HTTPException) as e:
+        guardar_carga_inicial(8, payload, db, {"employeeId": 7})
+    assert e.value.status_code == 400
+
+
+def test_guardar_acepta_categoria_restringida_para_rol_rrhh():
+    db = FakeSession({
+        "SELECT e.gender": [{"gender": "Masculino", "roleName": "rrhh"}],
+        "DISTINCT categoria": [{"categoria": "Accidente de trabajo"}],
+    })
+    payload = CargaInicialRequest(saldos=[
+        SaldoCargado(anio=2026, categoria="Accidente de trabajo", diasPendientes=5),
+    ])
+    guardar_carga_inicial(8, payload, db, {"employeeId": 7})
+
+
+def test_guardar_rechaza_pares_anio_categoria_duplicados():
+    db = FakeSession({
+        "SELECT e.gender": [{"gender": "Masculino", "roleName": "user"}],
+        "DISTINCT categoria": [{"categoria": "Particular"}],
+    })
+    payload = CargaInicialRequest(saldos=[
+        SaldoCargado(anio=2026, categoria="Particular", diasPendientes=5),
+        SaldoCargado(anio=2026, categoria="Particular", diasPendientes=8),
+    ])
+    with pytest.raises(HTTPException) as e:
+        guardar_carga_inicial(8, payload, db, {"employeeId": 7})
+    assert e.value.status_code == 400
+
+
+def test_guardar_rechaza_categoria_no_configurada():
+    db = FakeSession({
+        "SELECT e.gender": [{"gender": "Masculino", "roleName": "user"}],
+        "DISTINCT categoria": [{"categoria": "Particular"}],
+    })
+    payload = CargaInicialRequest(saldos=[
+        SaldoCargado(anio=2026, categoria="Categoria Inexistente", diasPendientes=5),
+    ])
+    with pytest.raises(HTTPException) as e:
+        guardar_carga_inicial(8, payload, db, {"employeeId": 7})
+    assert e.value.status_code == 400
 
 
 def test_el_payload_no_puede_declarar_quien_cargo():

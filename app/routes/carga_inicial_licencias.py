@@ -169,6 +169,54 @@ def guardar_carga_inicial(
                 detail=f"El anio {s.anio} esta fuera de la ventana de carga {sorted(ventana)}",
             )
 
+    pares = [(s.anio, s.categoria) for s in payload.saldos]
+    duplicados = {p for p in pares if pares.count(p) > 1}
+    if duplicados:
+        anio, categoria = sorted(duplicados)[0]
+        raise HTTPException(
+            status_code=400,
+            detail=f"El par anio/categoria {categoria} {anio} esta repetido en el payload",
+        )
+
+    emp = db.execute(
+        text("""
+            SELECT e.gender, r.name AS roleName
+            FROM Employee e
+            INNER JOIN [User] u ON u.employeeId = e.id
+            INNER JOIN Role r ON u.roleId = r.id
+            WHERE e.id = :empId
+        """),
+        {"empId": employee_id},
+    ).mappings().first()
+
+    if not emp:
+        raise HTTPException(status_code=404, detail="Empleado no encontrado")
+
+    categorias_configuradas = {
+        f["categoria"]
+        for f in db.execute(
+            text("""
+                SELECT DISTINCT categoria
+                FROM ConfiguracionLicencias
+            """)
+        ).mappings().all()
+    }
+
+    gender = emp["gender"]
+    role_name = (emp["roleName"] or "").lower()
+
+    for s in payload.saldos:
+        if s.categoria not in categorias_configuradas:
+            raise HTTPException(
+                status_code=400,
+                detail=f"La categoria {s.categoria} no esta configurada",
+            )
+        if not _le_aplica_al_empleado(s.categoria, gender, role_name):
+            raise HTTPException(
+                status_code=400,
+                detail=f"La categoria {s.categoria} no le aplica a este empleado",
+            )
+
     guardados = upsert_saldos(
         db,
         employee_id,
