@@ -6,10 +6,15 @@ que total rige para un anio, que saldos cargados no tienen configuracion que
 los muestre, y cual es la ventana de anios cargables.
 """
 
+from datetime import date
+
 # La ventana de carga: el anio calendario en curso y los dos anteriores.
 # Coincide con el ciclo de expiracion de vacaciones; cargar algo mas viejo
 # venceria en la primera corrida.
 ANIOS_DE_VENTANA = 3
+
+# El mes en que se habilitan las vacaciones del anio en curso.
+MES_DE_CORTE = 10
 
 
 def total_del_anio(
@@ -47,3 +52,21 @@ def saldos_sin_configuracion(
 def anios_de_carga(anio_actual: int) -> list[int]:
     """La ventana cargable, del mas nuevo al mas viejo."""
     return [anio_actual - i for i in range(ANIOS_DE_VENTANA)]
+
+
+def ciclo_vacaciones(hoy: date) -> int:
+    """
+    Que anio de vacaciones rige en esta fecha.
+
+    Las vacaciones de un anio se habilitan recien el 1 de octubre de ese
+    anio: hasta entonces sigue rigiendo el saldo del anterior. Antes esta
+    regla vivia como expresion suelta dentro del endpoint de saldos y no
+    existia en el de tipos disponibles, que es el que de verdad limita
+    cuantos dias se pueden pedir -- de ahi que los dos discreparan.
+    """
+    return hoy.year if hoy.month >= MES_DE_CORTE else hoy.year - 1
+
+
+def anios_de_ventana(ciclo: int) -> list[int]:
+    """La ventana vigente, del mas nuevo al mas viejo."""
+    return [ciclo - i for i in range(ANIOS_DE_VENTANA)]
