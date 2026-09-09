@@ -13,11 +13,16 @@ armar_balances), asi que el endpoint entero es la unidad minima testeable.
 """
 
 from datetime import date
+from unittest.mock import patch
 
 from app.routes.licenses import get_tipos_disponibles
+from app.services.saldo_licencias import ciclo_vacaciones
 from tests.fakes import FakeSession
 
-ANIO_ACTUAL = date.today().year
+# Vacaciones se resuelve contra el ciclo (ver ciclo_vacaciones), no contra el
+# anio calendario -- estos tests previos cargan saldo inicial de Vacaciones,
+# asi que tienen que apuntar a la misma clave que usa el endpoint.
+ANIO_ACTUAL = ciclo_vacaciones(date.today())
 
 EMP_QUERY_FRAGMENTO = "LEFT JOIN CondicionLaboral cl ON e.id = cl.employeeId"
 CONFIG_QUERY_FRAGMENTO = "FROM ConfiguracionLicencias c"
@@ -104,3 +109,39 @@ def test_sin_saldo_inicial_un_tope_fijo_de_vacaciones_no_cero_se_respeta():
     fila = next(t for t in resultado["tipos"] if t["nombre"] == "Vacaciones")
     assert fila["diasTotales"] == 10
     assert fila["disponibles"] == 8
+
+
+def test_vacaciones_consulta_el_anio_del_ciclo_no_el_calendario():
+    """Antes del 1 de octubre rige el anio anterior. Sin esto, el empleado
+    podia pedir las vacaciones del anio nuevo desde el 1 de enero."""
+    db = FakeSession({
+        EMP_QUERY_FRAGMENTO: [_emp_row()],
+        CONFIG_QUERY_FRAGMENTO: [{"nombre": "Vacaciones", "diasTotales": 30, "consumidos": 0}],
+        SALDO_INICIAL_FRAGMENTO: [
+            {"anio": 2025, "categoria": "Vacaciones", "diasPendientes": 7},
+        ],
+    })
+
+    with patch("app.routes.licenses.date") as fake_date:
+        fake_date.today.return_value = date(2026, 9, 30)
+        resultado = get_tipos_disponibles(employee_id=8, db=db)
+
+    fila = next(t for t in resultado["tipos"] if t["nombre"] == "Vacaciones")
+    assert fila["diasTotales"] == 7
+
+
+def test_despues_del_corte_vacaciones_toma_el_anio_en_curso():
+    db = FakeSession({
+        EMP_QUERY_FRAGMENTO: [_emp_row()],
+        CONFIG_QUERY_FRAGMENTO: [{"nombre": "Vacaciones", "diasTotales": 30, "consumidos": 0}],
+        SALDO_INICIAL_FRAGMENTO: [
+            {"anio": 2026, "categoria": "Vacaciones", "diasPendientes": 12},
+        ],
+    })
+
+    with patch("app.routes.licenses.date") as fake_date:
+        fake_date.today.return_value = date(2026, 10, 1)
+        resultado = get_tipos_disponibles(employee_id=8, db=db)
+
+    fila = next(t for t in resultado["tipos"] if t["nombre"] == "Vacaciones")
+    assert fila["diasTotales"] == 12

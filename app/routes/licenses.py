@@ -80,10 +80,9 @@ def get_employee_supervisor(employee_id: int, db: Session = Depends(get_db)):
 # GET /licenses/tipos-disponibles — Tipos de licencia permitidos para un empleado
 # Triple-join: CondicionLaboral → ConfiguracionLicencias (por categoria)
 # ---------------------------------------------------------------------------
-@router.get("/tipos-disponibles", dependencies=[Depends(require_auth)])
-def get_tipos_disponibles(employee_id: int, db: Session = Depends(get_db)):
+def tipos_disponibles_de(db: Session, employee_id: int):
     """
-    Retorna los tipos de licencia que el empleado puede solicitar,
+    Calcula los tipos de licencia que el empleado puede solicitar,
     basado en su tipoContrato (CondicionLaboral) cruzado con
     ConfiguracionLicencias.categoria. Incluye diasTotales y consumidos.
     """
@@ -123,7 +122,11 @@ def get_tipos_disponibles(employee_id: int, db: Session = Depends(get_db)):
             anios_servicio = (date.today() - fi).days / 365.0
 
     today = date.today()
-    current_cycle = today.year  # 👈 Usar año calendario actual (2026) directo
+    current_cycle = today.year
+    # Las vacaciones se habilitan el 1 de octubre: hasta entonces rige el
+    # saldo del anio anterior. Solo aplica a vacaciones -- las demas
+    # categorias son anuales sin arrastre y siguen el anio calendario.
+    ciclo_vac = ciclo_vacaciones(today)
 
     # 1.5 Saldo inicial: si RRHH cargo un saldo para este anio/categoria, ese
     # saldo rige por encima de lo que diga ConfiguracionLicencias -- este es
@@ -132,26 +135,32 @@ def get_tipos_disponibles(employee_id: int, db: Session = Depends(get_db)):
     ensure_saldo_inicial(db)
     saldos_iniciales = saldos_de_empleado(db, employee_id)
 
-    # 2. Triple-join: ConfiguracionLicencias con ConsumoLicencias para el ciclo actual
+    # 2. Triple-join: ConfiguracionLicencias con ConsumoLicencias, cruzando
+    # vacaciones contra el ciclo y el resto de categorias contra el anio
+    # calendario.
     query = text("""
-        SELECT 
+        SELECT
             c.categoria as nombre,
             c.diasTotales,
             COALESCE(SUM(cons.diasConsumidos), 0) as consumidos
         FROM ConfiguracionLicencias c
         LEFT JOIN (
-            SELECT cl_i.tipo as categoria_consumo, cl_i.diasConsumidos
+            SELECT cl_i.tipo as categoria_consumo, cl_i.diasConsumidos, cl_i.anio
             FROM ConsumoLicencias cl_i
             INNER JOIN License l_i ON cl_i.licenseId = l_i.id
-            WHERE l_i.employeeId = :empId AND cl_i.anio = :anio
-        ) cons ON cons.categoria_consumo = c.categoria
-        WHERE c.tipo = :tipoConfig AND c.anio = :anio
+            WHERE l_i.employeeId = :empId
+        ) cons
+            ON cons.categoria_consumo = c.categoria
+           AND cons.anio = (CASE WHEN LOWER(c.categoria) = 'vacaciones'
+                                 THEN :cicloVac ELSE :anioCalendario END)
+        WHERE c.tipo = :tipoConfig
         GROUP BY c.categoria, c.diasTotales
     """)
-    
+
     rows = db.execute(query, {
         "empId": employee_id,
-        "anio": current_cycle,
+        "cicloVac": ciclo_vac,
+        "anioCalendario": current_cycle,
         "tipoConfig": tipo_config
     }).mappings().all()
 
@@ -191,8 +200,11 @@ def get_tipos_disponibles(employee_id: int, db: Session = Depends(get_db)):
 
         # El saldo inicial, cuando esta cargado, manda por encima de lo que
         # sea que haya decidido el bloque de arriba (config o antiguedad).
+        anio_de_esta_categoria = (
+            ciclo_vac if "vacaciones" in nombre_lower else current_cycle
+        )
         dias_totales = total_del_anio(
-            saldo_inicial=saldos_iniciales.get((current_cycle, nombre)),
+            saldo_inicial=saldos_iniciales.get((anio_de_esta_categoria, nombre)),
             es_vacaciones=False,
             dias_vac=0,
             dias_totales=dias_totales_base,
@@ -212,6 +224,19 @@ def get_tipos_disponibles(employee_id: int, db: Session = Depends(get_db)):
     tipos = sorted(tipos, key=lambda x: (x["nombre"].lower() != "vacaciones", x["nombre"]))
 
     return {"tipos": tipos, "tipoContrato": tipo_contrato, "tipoConfig": tipo_config}
+
+
+@router.get("/tipos-disponibles", dependencies=[Depends(require_auth)])
+def get_tipos_disponibles(employee_id: int, db: Session = Depends(get_db)):
+    """
+    Retorna los tipos de licencia que el empleado puede solicitar.
+
+    El cuerpo vive en tipos_disponibles_de porque la validacion de saldo al
+    crear una solicitud tiene que comparar contra exactamente este numero:
+    una segunda implementacion del mismo calculo es lo que hizo que este
+    endpoint y el de saldos discreparan durante meses.
+    """
+    return tipos_disponibles_de(db, employee_id)
 
 
 # ---------------------------------------------------------------------------
