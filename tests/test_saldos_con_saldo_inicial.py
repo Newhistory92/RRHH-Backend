@@ -53,19 +53,16 @@ def test_saldo_inicial_en_cero_no_otorga_dias():
     assert balances[0]["disponibles"] == 0
 
 
-def test_un_anio_sin_configuracion_aparece_si_tiene_saldo_cargado():
-    """Solo existe configuracion de 2026: sin esto el saldo de 2024 quedaria
-    guardado y seria invisible."""
-    balances = armar_balances(
-        rows=FILAS_CONFIG,
-        saldos_iniciales={(2026, "Vacaciones"): 20, (2024, "Vacaciones"): 5},
-        dias_vac=20, gender="Masculino", role_name="rrhh",
-    )
-    anios = {b["anio"] for b in balances}
-    assert anios == {2024, 2026}
-    fila_2024 = next(b for b in balances if b["anio"] == 2024)
-    assert fila_2024["diasTotales"] == 5
-    assert fila_2024["disponibles"] == 5
+def test_armar_balances_ya_no_recibe_los_parametros_del_fallback():
+    """El bucle de 'sin configuracion' se elimino: la expansion por anio hace
+    que todo anio de la ventana tenga fila. Si alguien reintroduce esos
+    parametros, es senal de que volvio el parche."""
+    import inspect
+    from app.routes.licenses import armar_balances
+
+    params = set(inspect.signature(armar_balances).parameters)
+    assert "consumidos_por_clave" not in params
+    assert "min_anio" not in params
 
 
 def test_nacimiento_no_se_le_ofrece_a_una_empleada():
@@ -122,15 +119,6 @@ def test_saldo_inicial_de_categoria_restringida_no_se_filtra_a_un_rol_comun():
     assert balances == []
 
 
-def test_saldo_inicial_de_categoria_restringida_se_muestra_a_rrhh():
-    balances = armar_balances(
-        rows=[], saldos_iniciales={(2026, "Accidente de trabajo"): 10},
-        dias_vac=20, gender="Masculino", role_name="rrhh",
-    )
-    assert len(balances) == 1
-    assert balances[0]["diasTotales"] == 10
-
-
 def test_saldo_inicial_de_nacimiento_no_se_muestra_a_una_empleada():
     balances = armar_balances(
         rows=[], saldos_iniciales={(2026, "Nacimiento"): 5},
@@ -139,25 +127,3 @@ def test_saldo_inicial_de_nacimiento_no_se_muestra_a_una_empleada():
     assert balances == []
 
 
-def test_el_fallback_descuenta_consumo_real_en_vez_de_asumir_cero():
-    """Sin esto, un saldo cargado para un anio sin configuracion se podia
-    gastar una y otra vez porque el consumo quedaba fijo en cero."""
-    balances = armar_balances(
-        rows=[], saldos_iniciales={(2024, "Vacaciones"): 10},
-        dias_vac=20, gender="Masculino", role_name="rrhh",
-        consumidos_por_clave={(2024, "vacaciones"): 6},
-    )
-    fila = next(b for b in balances if b["anio"] == 2024)
-    assert fila["consumidos"] == 6
-    assert fila["disponibles"] == 4
-
-
-def test_el_fallback_respeta_el_piso_de_anios():
-    """La consulta principal ya filtra por minAnio; el fallback no lo hacia,
-    asi que un saldo de hace muchos anios quedaba visible para siempre."""
-    balances = armar_balances(
-        rows=[], saldos_iniciales={(2019, "Vacaciones"): 10},
-        dias_vac=20, gender="Masculino", role_name="rrhh",
-        min_anio=2023,
-    )
-    assert balances == []

@@ -19,7 +19,13 @@ from app.database.saldo_inicial_licencias import (
     ensure_table as ensure_saldo_inicial,
     saldos_de_empleado,
 )
-from app.services.saldo_licencias import saldos_sin_configuracion, total_del_anio
+from app.services.saldo_licencias import (
+    ANIOS_DE_VENTANA,
+    anios_de_ventana,
+    ciclo_vacaciones,
+    expandir_por_anio,
+    total_del_anio,
+)
 
 log = logging.getLogger(__name__)
 
@@ -586,28 +592,19 @@ def armar_balances(
     dias_vac: int,
     gender: str | None,
     role_name: str,
-    consumidos_por_clave: dict[tuple[int, str], int] | None = None,
-    min_anio: int | None = None,
 ) -> list[dict]:
     """
     Arma la respuesta de saldos a partir de la configuracion y lo cargado.
 
     Es funcion pura para poder probar las reglas sin base: el endpoint que la
-    llama encadena seis consultas y probarlo entero mediria el andamiaje.
+    llama encadena varias consultas y probarlo entero mediria el andamiaje.
 
     role_name llega en minuscula. La comparacion tambien esta en minuscula: la
     version anterior comparaba contra ["RRHH", "ADMIN"] en mayuscula, con lo
     cual la condicion era siempre verdadera y las licencias restringidas
     quedaban ocultas para todos, RRHH incluido.
-
-    consumidos_por_clave cubre los anios que no tienen fila en
-    ConfiguracionLicencias (solo existe la del anio en curso): sin esto el
-    fallback de "sin configuracion" fijaba el consumo en cero y un saldo
-    cargado para un anio anterior se podia gastar una y otra vez.
     """
-    consumidos_por_clave = consumidos_por_clave or {}
     balances = []
-    cubiertas: set[tuple[int, str]] = set()
 
     for row in rows:
         if not _le_aplica_al_empleado(row["tipoLicencia"], gender, role_name):
@@ -615,7 +612,6 @@ def armar_balances(
 
         tipo_lower = row["tipoLicencia"].lower()
         clave = (row["anio"], row["tipoLicencia"])
-        cubiertas.add(clave)
 
         totales = total_del_anio(
             saldo_inicial=saldos_iniciales.get(clave),
@@ -632,26 +628,6 @@ def armar_balances(
             "diasTotales": totales,
             "consumidos": consumidos,
             "disponibles": max(0, totales - consumidos),
-        })
-
-    # Un anio sin fila de configuracion no aparece en rows. Como solo existe
-    # configuracion de 2026, sin esto todo saldo cargado para un anio anterior
-    # quedaria guardado y seria invisible.
-    contrato = rows[0]["contrato"] if rows else None
-    for anio, categoria in saldos_sin_configuracion(saldos_iniciales, cubiertas):
-        if min_anio is not None and anio < min_anio:
-            continue
-        if not _le_aplica_al_empleado(categoria, gender, role_name):
-            continue
-        dias = saldos_iniciales[(anio, categoria)]
-        consumido = consumidos_por_clave.get((anio, categoria.lower()), 0)
-        balances.append({
-            "anio": anio,
-            "tipo": categoria,
-            "contrato": contrato,
-            "diasTotales": dias,
-            "consumidos": consumido,
-            "disponibles": max(0, dias - consumido),
         })
 
     return balances
@@ -682,9 +658,8 @@ def get_license_saldos(
     fecha_ingreso = cl["fechaIngreso"]
 
     today         = date.today()
-    current_cycle = today.year if today.month >= 10 else today.year - 1
-    min_anio      = current_cycle - 2
-    expire_anio   = current_cycle - 3
+    current_cycle = ciclo_vacaciones(today)
+    expire_anio   = current_cycle - ANIOS_DE_VENTANA
 
     ensure_saldo_inicial(db)
 
@@ -703,7 +678,6 @@ def get_license_saldos(
         FROM ConfiguracionLicencias c
         WHERE LOWER(c.categoria) = 'vacaciones'
           AND LOWER(c.tipo) = :tipoContrato
-          AND c.anio = :expAnio
     """)
 
     exp = db.execute(exp_query, {
@@ -756,33 +730,14 @@ def get_license_saldos(
             print(f"[WARN] Expiración silenciosa: {e}")
 
     # ── 3. Obtener balances ──────────────────────────────────────────────────
-    rows_query = text("""
-        SELECT
-            c.anio,
-            c.categoria AS tipoLicencia,
-            c.tipo AS contrato,
-            c.diasTotales,
-            COALESCE(SUM(cons.diasConsumidos), 0) AS diasConsumidos
-        FROM ConfiguracionLicencias c
-        LEFT JOIN (
-            SELECT cl_i.anio, cl_i.tipo, cl_i.diasConsumidos
-            FROM ConsumoLicencias cl_i
-            INNER JOIN License l_i ON cl_i.licenseId = l_i.id
-            WHERE l_i.employeeId = :empId
-        ) cons 
-            ON cons.anio = c.anio 
-           AND LOWER(cons.tipo) = LOWER(c.categoria)
-        WHERE LOWER(c.tipo) = :tipoContrato
-          AND c.anio >= :minAnio
-        GROUP BY c.anio, c.categoria, c.tipo, c.diasTotales
-        ORDER BY c.anio DESC, c.categoria
-    """)
-
-    rows = db.execute(rows_query, {
-        "empId": employee_id,
-        "tipoContrato": tipo_contrato,
-        "minAnio": min_anio
-    }).mappings().all()
+    # La configuracion ya no tiene anio: son dias base por contrato. Los anios
+    # de la ventana los pone el codigo y se cruzan contra esa base.
+    configs = db.execute(text("""
+        SELECT categoria, tipo AS contrato, diasTotales
+        FROM ConfiguracionLicencias
+        WHERE LOWER(tipo) = :tipoContrato
+        ORDER BY categoria
+    """), {"tipoContrato": tipo_contrato}).mappings().all()
 
 
      # ── 🔥 4. Obtener datos para restricciones ───────────────────────────────
@@ -806,10 +761,6 @@ def get_license_saldos(
         tipo_contrato, fecha_ingreso, cl.get("fechaJubilacion"),
     )
 
-    # Consumo real independiente de ConfiguracionLicencias: la tabla de
-    # configuracion solo tiene filas del anio en curso, asi que es la unica
-    # forma de descontar consumo de anios anteriores que el fallback de
-    # "sin configuracion" tiene que mostrar.
     consumo_rows = db.execute(text("""
         SELECT cl_i.anio, LOWER(cl_i.tipo) AS categoria, SUM(cl_i.diasConsumidos) AS total
         FROM ConsumoLicencias cl_i
@@ -819,14 +770,18 @@ def get_license_saldos(
     """), {"empId": employee_id}).mappings().all()
     consumidos_por_clave = {(r["anio"], r["categoria"]): int(r["total"]) for r in consumo_rows}
 
+    filas = expandir_por_anio(
+        [dict(c) for c in configs],
+        anios_de_ventana(current_cycle),
+        consumidos_por_clave,
+    )
+
     return {"balances": armar_balances(
-        rows=[dict(r) for r in rows],
+        rows=filas,
         saldos_iniciales=saldos_iniciales,
         dias_vac=dias_vac,
         gender=gender,
         role_name=role_name,
-        consumidos_por_clave=consumidos_por_clave,
-        min_anio=min_anio,
     )}
 # ---------------------------------------------------------------------------
 # GET /licenses/requests (Historial)

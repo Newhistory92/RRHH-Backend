@@ -35,20 +35,6 @@ def total_del_anio(
     return dias_vac if es_vacaciones else dias_totales
 
 
-def saldos_sin_configuracion(
-    saldos_iniciales: dict[tuple[int, str], int],
-    cubiertas: set[tuple[int, str]],
-) -> list[tuple[int, str]]:
-    """
-    Las claves con saldo cargado que la configuracion no llego a mostrar.
-
-    El armado de saldos recorre ConfiguracionLicencias, que hoy solo tiene
-    filas de 2026: sin esto, un saldo cargado para 2024 quedaria guardado y
-    seria invisible.
-    """
-    return sorted(clave for clave in saldos_iniciales if clave not in cubiertas)
-
-
 def anios_de_carga(anio_actual: int) -> list[int]:
     """La ventana cargable, del mas nuevo al mas viejo."""
     return [anio_actual - i for i in range(ANIOS_DE_VENTANA)]
