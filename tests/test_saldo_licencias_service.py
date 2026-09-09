@@ -1,7 +1,7 @@
 """
 Decisiones puras del saldo de licencias, sin I/O.
 
-Estas tres funciones concentran las reglas que antes vivian sueltas dentro
+Estas dos funciones concentran las reglas que antes vivian sueltas dentro
 del endpoint de saldos, donde no se podian probar sin base.
 """
 
