@@ -29,6 +29,9 @@ from app.services.saldo_licencias import (
 
 log = logging.getLogger(__name__)
 
+# Ventana en la que se pueden tomar vacaciones: octubre a abril.
+MESES_DE_VACACIONES = (10, 11, 12, 1, 2, 3, 4)
+
 def get_db():
     db = SessionLocal()
     try:
@@ -491,12 +494,22 @@ def create_license_request(data: dict = Body(...), db: Session = Depends(get_db)
 
     # D. Vacaciones: Ventana Oct-Abr
     if "vacaciones" in type_lower:
+        # El raise va FUERA del try a proposito: cuando estaba adentro, el
+        # `except Exception: pass` atrapaba su propia HTTPException --
+        # HTTPException hereda de Exception -- y la validacion nunca corto
+        # nada. El try solo cubre el parseo de la fecha, que es lo unico que
+        # legitimamente puede fallar por un dato mal formado.
+        mes_inicio = None
         try:
-            sd = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
-            valid_months = [10, 11, 12, 1, 2, 3, 4]
-            if sd.month not in valid_months:
-                raise HTTPException(status_code=400, detail="Las vacaciones solo pueden tomarse entre el 1 de Octubre y el 30 de Abril.")
-        except Exception: pass
+            mes_inicio = datetime.fromisoformat(start_date.replace('Z', '+00:00')).month
+        except Exception:
+            pass
+
+        if mes_inicio is not None and mes_inicio not in MESES_DE_VACACIONES:
+            raise HTTPException(
+                status_code=400,
+                detail="Las vacaciones solo pueden tomarse entre el 1 de Octubre y el 30 de Abril.",
+            )
 
     # E. Embarazo: 90 días corrido
     if "embarazo" in type_lower:
