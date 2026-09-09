@@ -85,3 +85,22 @@ def test_saldo_inicial_positivo_reemplaza_el_total_de_vacaciones():
     fila = next(t for t in resultado["tipos"] if t["nombre"] == "Vacaciones")
     assert fila["diasTotales"] == 12
     assert fila["disponibles"] == 11
+
+
+def test_sin_saldo_inicial_un_tope_fijo_de_vacaciones_no_cero_se_respeta():
+    """El caso real de 'contratado': ConfiguracionLicencias tiene Vacaciones
+    en 10 dias fijos, no en 0. Sin saldo inicial cargado, ese 10 tiene que
+    regir -- el calculo por antiguedad es solo el relleno para cuando la
+    config esta en cero, no un reemplazo general. Confundir esto le cambiaria
+    el tope real a cualquier "contratado" que no tenga saldo inicial."""
+    db = FakeSession({
+        EMP_QUERY_FRAGMENTO: [_emp_row(tipoContrato="contratado")],
+        CONFIG_QUERY_FRAGMENTO: [{"nombre": "Vacaciones", "diasTotales": 10, "consumidos": 2}],
+        SALDO_INICIAL_FRAGMENTO: [],
+    })
+
+    resultado = get_tipos_disponibles(employee_id=8, db=db)
+
+    fila = next(t for t in resultado["tipos"] if t["nombre"] == "Vacaciones")
+    assert fila["diasTotales"] == 10
+    assert fila["disponibles"] == 8

@@ -169,19 +169,27 @@ def get_tipos_disponibles(employee_id: int, db: Session = Depends(get_db)):
         # de forma temporal al renderizar y trasladado al frontend con isRRHHComponent, 
         # permitiendo que la API devuelva todo el catálogo según contrato independientemente de quién sea el target.
 
-        # dias_vac se calcula siempre (no solo cuando la config esta en 0):
-        # total_del_anio lo necesita incondicionalmente para decidir el
-        # fallback especifico de vacaciones cuando no hay saldo inicial cargado.
-        dias_vac = calcular_dias_vacaciones(
-            tipo_contrato, fecha_ingreso,
-            emp_data.get("fechaJubilacion"),
-        )
+        # Calcular dias totales base (inyectar vacaciones dinamicas solo si
+        # la config esta en 0 -- a diferencia de /saldos, aca "contratado"
+        # puede tener un tope fijo cargado (hoy 10), y ese config manda
+        # mientras no sea cero. El calculo por antiguedad es solo el relleno
+        # para cuando nadie configuro nada.
+        dias_totales_base = row["diasTotales"]
+        if "vacaciones" in nombre_lower and dias_totales_base == 0:
+            dias_vac = calcular_dias_vacaciones(
+                tipo_contrato, fecha_ingreso,
+                emp_data.get("fechaJubilacion"),
+            )
+            if dias_vac > 0:
+                dias_totales_base = dias_vac
 
+        # El saldo inicial, cuando esta cargado, manda por encima de lo que
+        # sea que haya decidido el bloque de arriba (config o antiguedad).
         dias_totales = total_del_anio(
             saldo_inicial=saldos_iniciales.get((current_cycle, nombre)),
-            es_vacaciones="vacaciones" in nombre_lower,
-            dias_vac=dias_vac,
-            dias_totales=row["diasTotales"],
+            es_vacaciones=False,
+            dias_vac=0,
+            dias_totales=dias_totales_base,
         )
 
         consumidos = row["consumidos"]
