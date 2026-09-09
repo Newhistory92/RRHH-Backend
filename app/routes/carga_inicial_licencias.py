@@ -25,7 +25,7 @@ from app.database.saldo_inicial_licencias import (
     saldos_de_empleado,
     upsert_saldos,
 )
-from app.routes.licenses import _le_aplica_al_empleado
+from app.routes.licenses import _le_aplica_al_empleado, normalizar_tipo_contrato
 from app.services.saldo_licencias import anios_de_carga
 
 router = APIRouter(prefix="/licenses/carga-inicial", tags=["Carga inicial licencias"])
@@ -59,6 +59,7 @@ def armar_catalogo_carga(
     anio_actual: int,
     gender: str | None,
     role_name: str,
+    dias_configurados: dict[str, int] | None = None,
 ) -> dict:
     """
     Que se le ofrece cargar a este empleado, partido en dos bloques.
@@ -66,11 +67,22 @@ def armar_catalogo_carga(
     diasPendientes viene en None cuando no se cargo nada y en 0 cuando se
     cargo un cero: son estados distintos y la pantalla los muestra distinto.
 
+    diasConfigurados es el tope que ConfiguracionLicencias tiene para el
+    contrato de este empleado, y la pantalla lo usa como valor por defecto
+    del casillero: el caso comun es que la licencia anual este entera, asi
+    que se arranca de ahi y RRHH baja solo las excepciones en vez de tipear
+    las veinte.
+
+    Solo se completa en las anuales. Para vacaciones el tope no sale de la
+    configuracion sino de la antiguedad, asi que ofrecer el numero del config
+    ahi seria ofrecer un default equivocado: va en None a proposito.
+
     El filtro de quien ve que categoria (_le_aplica_al_empleado) se reusa de
     app.routes.licenses en lugar de reimplementarse aca: es exactamente la
     misma regla que decide el saldo en balances, y duplicarla arriesgaria que
     las dos copias se desincronicen con el tiempo.
     """
+    dias_configurados = dias_configurados or {}
     acumulables = []
     anuales = []
 
@@ -84,12 +96,14 @@ def armar_catalogo_carga(
                     "anio": anio,
                     "categoria": categoria,
                     "diasPendientes": saldos.get((anio, categoria)),
+                    "diasConfigurados": None,
                 })
         else:
             anuales.append({
                 "anio": anio_actual,
                 "categoria": categoria,
                 "diasPendientes": saldos.get((anio_actual, categoria)),
+                "diasConfigurados": dias_configurados.get(categoria),
             })
 
     return {"acumulables": acumulables, "anuales": anuales}
@@ -106,10 +120,11 @@ def get_carga_inicial(
 
     emp = db.execute(
         text("""
-            SELECT e.gender, r.name AS roleName
+            SELECT e.gender, r.name AS roleName, cl.tipoContrato
             FROM Employee e
             INNER JOIN [User] u ON u.employeeId = e.id
             INNER JOIN Role r ON u.roleId = r.id
+            LEFT JOIN CondicionLaboral cl ON cl.employeeId = e.id
             WHERE e.id = :empId
         """),
         {"empId": employee_id},
@@ -131,12 +146,30 @@ def get_carga_inicial(
         ).mappings().all()
     ]
 
+    # El tope configurado para el contrato de este empleado, que la pantalla
+    # usa como valor por defecto. Va filtrado por tipo de contrato porque el
+    # mismo tope difiere entre contratos, y sin el filtro se ofreceria el
+    # numero de un contrato ajeno.
+    tipo_config = normalizar_tipo_contrato(emp["tipoContrato"] or "permanente")
+    dias_configurados = {
+        f["categoria"]: f["diasTotales"]
+        for f in db.execute(
+            text("""
+                SELECT categoria, diasTotales
+                FROM ConfiguracionLicencias
+                WHERE anio = :anio AND tipo = :tipoConfig
+            """),
+            {"anio": anio_actual, "tipoConfig": tipo_config},
+        ).mappings().all()
+    }
+
     return armar_catalogo_carga(
         categorias=categorias,
         saldos=saldos_de_empleado(db, employee_id),
         anio_actual=anio_actual,
         gender=emp["gender"],
         role_name=(emp["roleName"] or "").lower(),
+        dias_configurados=dias_configurados,
     )
 
 

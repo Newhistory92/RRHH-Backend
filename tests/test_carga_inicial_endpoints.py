@@ -226,8 +226,11 @@ def test_get_carga_inicial_permite_a_quien_tiene_el_permiso():
     from app.routes.carga_inicial_licencias import router, get_db
 
     db = FakeSession({
-        "SELECT e.gender": [{"gender": "Masculino", "roleName": "rrhh"}],
-        "DISTINCT categoria": [{"categoria": "Vacaciones"}],
+        "SELECT e.gender": [
+            {"gender": "Masculino", "roleName": "rrhh", "tipoContrato": "permanente"},
+        ],
+        "DISTINCT categoria": [{"categoria": "Vacaciones"}, {"categoria": "Particular"}],
+        "categoria, diasTotales": [{"categoria": "Particular", "diasTotales": 5}],
         "FROM SaldoInicialLicencia": [],
     })
 
@@ -244,3 +247,56 @@ def test_get_carga_inicial_permite_a_quien_tiene_el_permiso():
     assert resp.status_code == 200
     body = resp.json()
     assert any(f["categoria"] == "Vacaciones" for f in body["acumulables"])
+    # El default configurado llega hasta la respuesta, filtrado por el
+    # contrato del empleado.
+    particular = next(f for f in body["anuales"] if f["categoria"] == "Particular")
+    assert particular["diasConfigurados"] == 5
+
+
+# ---------------------------------------------------------------------------
+# diasConfigurados: el valor por defecto del casillero, para que RRHH no
+# tenga que tipear las veinte categorias una por una.
+# ---------------------------------------------------------------------------
+
+def test_las_anuales_traen_el_tope_configurado_como_default():
+    """El caso comun es que la licencia anual este entera: se arranca del tope
+    configurado y RRHH baja solo las excepciones."""
+    cat = armar_catalogo_carga(
+        categorias=["Particular"], saldos={}, anio_actual=2026,
+        gender="Masculino", role_name="rrhh",
+        dias_configurados={"Particular": 5},
+    )
+    assert cat["anuales"][0]["diasConfigurados"] == 5
+
+
+def test_vacaciones_no_trae_default_configurado():
+    """Para vacaciones el tope sale de la antiguedad, no de la configuracion:
+    ofrecer ahi el numero del config seria ofrecer un default equivocado."""
+    cat = armar_catalogo_carga(
+        categorias=["Vacaciones"], saldos={}, anio_actual=2026,
+        gender="Masculino", role_name="rrhh",
+        dias_configurados={"Vacaciones": 10},
+    )
+    assert all(f["diasConfigurados"] is None for f in cat["acumulables"])
+
+
+def test_lo_ya_cargado_no_lo_pisa_el_default():
+    """diasPendientes y diasConfigurados son datos distintos: el primero es lo
+    que RRHH ya decidio, el segundo solo el punto de partida sugerido."""
+    cat = armar_catalogo_carga(
+        categorias=["Particular"], saldos={(2026, "Particular"): 2},
+        anio_actual=2026, gender="Masculino", role_name="rrhh",
+        dias_configurados={"Particular": 5},
+    )
+    fila = cat["anuales"][0]
+    assert fila["diasPendientes"] == 2
+    assert fila["diasConfigurados"] == 5
+
+
+def test_sin_configuracion_para_esa_categoria_el_default_va_en_none():
+    cat = armar_catalogo_carga(
+        categorias=["Particular"], saldos={}, anio_actual=2026,
+        gender="Masculino", role_name="rrhh",
+        dias_configurados={},
+    )
+    assert cat["anuales"][0]["diasConfigurados"] is None
