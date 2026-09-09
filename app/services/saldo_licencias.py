@@ -70,3 +70,33 @@ def ciclo_vacaciones(hoy: date) -> int:
 def anios_de_ventana(ciclo: int) -> list[int]:
     """La ventana vigente, del mas nuevo al mas viejo."""
     return [ciclo - i for i in range(ANIOS_DE_VENTANA)]
+
+
+def expandir_por_anio(
+    configs: list[dict],
+    anios: list[int],
+    consumidos_por_clave: dict[tuple[int, str], int],
+) -> list[dict]:
+    """
+    Cruza la base de cada categoria con cada anio de la ventana.
+
+    ConfiguracionLicencias guarda dias base por contrato y categoria, sin
+    anio: los anios son una decision de codigo. Sin este cruce, un anio sin
+    fila de configuracion simplemente no existia, que es de donde venia toda
+    la familia de problemas de saldos invisibles.
+
+    Devuelve la misma forma de fila que armar_balances ya consume.
+    """
+    return [
+        {
+            "anio": anio,
+            "tipoLicencia": cfg["categoria"],
+            "contrato": cfg["contrato"],
+            "diasTotales": cfg["diasTotales"],
+            "diasConsumidos": consumidos_por_clave.get(
+                (anio, cfg["categoria"].lower()), 0
+            ),
+        }
+        for anio in anios
+        for cfg in configs
+    ]
