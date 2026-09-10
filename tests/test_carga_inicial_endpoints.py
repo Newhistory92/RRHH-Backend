@@ -111,8 +111,8 @@ def test_guardar_registra_quien_cargo():
     from datetime import date
 
     db = FakeSession({
-        "SELECT e.gender": [{"gender": "Masculino", "roleName": "rrhh"}],
-        "DISTINCT categoria": [{"categoria": "Vacaciones"}],
+        "SELECT e.gender": [{"gender": "Masculino", "roleName": "rrhh", "tipoContrato": "permanente"}],
+        "FROM ConfiguracionLicencias": [{"categoria": "Vacaciones", "diasTotales": 0}],
     })
     payload = CargaInicialRequest(saldos=[
         SaldoCargado(anio=ciclo_vacaciones(date.today()), categoria="Vacaciones", diasPendientes=5),
@@ -129,8 +129,8 @@ def test_guardar_rechaza_categoria_que_no_le_aplica_al_empleado():
     from datetime import date
 
     db = FakeSession({
-        "SELECT e.gender": [{"gender": "Femenino", "roleName": "user"}],
-        "DISTINCT categoria": [{"categoria": "Nacimiento"}],
+        "SELECT e.gender": [{"gender": "Femenino", "roleName": "user", "tipoContrato": "permanente"}],
+        "FROM ConfiguracionLicencias": [{"categoria": "Nacimiento", "diasTotales": 5}],
     })
     payload = CargaInicialRequest(saldos=[
         SaldoCargado(anio=date.today().year, categoria="Nacimiento", diasPendientes=5),
@@ -144,8 +144,8 @@ def test_guardar_acepta_categoria_restringida_para_rol_rrhh():
     from datetime import date
 
     db = FakeSession({
-        "SELECT e.gender": [{"gender": "Masculino", "roleName": "rrhh"}],
-        "DISTINCT categoria": [{"categoria": "Accidente de trabajo"}],
+        "SELECT e.gender": [{"gender": "Masculino", "roleName": "rrhh", "tipoContrato": "permanente"}],
+        "FROM ConfiguracionLicencias": [{"categoria": "Accidente de trabajo", "diasTotales": 60}],
     })
     payload = CargaInicialRequest(saldos=[
         SaldoCargado(anio=date.today().year, categoria="Accidente de trabajo", diasPendientes=5),
@@ -157,8 +157,8 @@ def test_guardar_rechaza_pares_anio_categoria_duplicados():
     from datetime import date
 
     db = FakeSession({
-        "SELECT e.gender": [{"gender": "Masculino", "roleName": "user"}],
-        "DISTINCT categoria": [{"categoria": "Particular"}],
+        "SELECT e.gender": [{"gender": "Masculino", "roleName": "user", "tipoContrato": "permanente"}],
+        "FROM ConfiguracionLicencias": [{"categoria": "Particular", "diasTotales": 6}],
     })
     anio = date.today().year
     payload = CargaInicialRequest(saldos=[
@@ -174,8 +174,8 @@ def test_guardar_rechaza_categoria_no_configurada():
     from datetime import date
 
     db = FakeSession({
-        "SELECT e.gender": [{"gender": "Masculino", "roleName": "user"}],
-        "DISTINCT categoria": [{"categoria": "Particular"}],
+        "SELECT e.gender": [{"gender": "Masculino", "roleName": "user", "tipoContrato": "permanente"}],
+        "FROM ConfiguracionLicencias": [{"categoria": "Particular", "diasTotales": 6}],
     })
     payload = CargaInicialRequest(saldos=[
         SaldoCargado(anio=date.today().year, categoria="Categoria Inexistente", diasPendientes=5),
@@ -238,8 +238,12 @@ def test_get_carga_inicial_permite_a_quien_tiene_el_permiso():
         "SELECT e.gender": [
             {"gender": "Masculino", "roleName": "rrhh", "tipoContrato": "permanente"},
         ],
-        "DISTINCT categoria": [{"categoria": "Vacaciones"}, {"categoria": "Particular"}],
-        "categoria, diasTotales": [{"categoria": "Particular", "diasTotales": 5}],
+        # Categorias y topes salen de la misma consulta, ya filtrada por el
+        # contrato del empleado.
+        "FROM ConfiguracionLicencias": [
+            {"categoria": "Vacaciones", "diasTotales": 0},
+            {"categoria": "Particular", "diasTotales": 5},
+        ],
         "FROM SaldoInicialLicencia": [],
     })
 
@@ -319,3 +323,69 @@ def test_la_ventana_de_carga_sigue_al_ciclo_no_al_calendario():
 
     assert anios_de_ventana(ciclo_vacaciones(date(2026, 9, 30))) == [2025, 2024, 2023]
     assert anios_de_ventana(ciclo_vacaciones(date(2026, 10, 1))) == [2026, 2025, 2024]
+
+
+def test_las_categorias_ofrecidas_se_filtran_por_el_contrato_del_empleado():
+    """A un "contratado" no se le pueden ofrecer las categorias de
+    "permanente". Antes las categorias se leian con un SELECT DISTINCT sin
+    filtrar, asi que la pantalla ofrecia las veinte de permanente a cualquiera
+    -y para las que su contrato no contempla el tope venia vacio, porque no
+    hay fila configurada. Se afirma sobre el SQL: el filtro tiene que viajar
+    a la consulta, no aplicarse despues en Python sobre un catalogo ajeno."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from app.auth_middleware import get_current_user
+    from app.routes.carga_inicial_licencias import router, get_db
+
+    db = FakeSession({
+        "SELECT e.gender": [
+            {"gender": "Masculino", "roleName": "user", "tipoContrato": "contratado"},
+        ],
+        "FROM ConfiguracionLicencias": [
+            {"categoria": "Vacaciones", "diasTotales": 10},
+            {"categoria": "Lic por Examen", "diasTotales": 20},
+        ],
+        "FROM SaldoInicialLicencia": [],
+    })
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_current_user] = lambda: {
+        "usuario": "con_permiso", "roleId": 3, "employeeId": 7,
+        "permisos": {"licencias.cargaInicial"},
+    }
+    app.dependency_overrides[get_db] = lambda: db
+    client = TestClient(app)
+
+    resp = client.get("/licenses/carga-inicial/8")
+    assert resp.status_code == 200
+
+    consulta = next(
+        (sql, params)
+        for sql, params in db.ejecutadas
+        if "FROM ConfiguracionLicencias" in sql
+    )
+    assert "WHERE tipo = :tipoConfig" in consulta[0]
+    assert consulta[1] == {"tipoConfig": "contratado"}
+
+
+def test_guardar_rechaza_una_categoria_de_otro_contrato():
+    """El catalogo filtrado no alcanza: la validacion de escritura tambien
+    tiene que mirar el contrato, o un payload viejo -o armado a mano- carga
+    un saldo de una categoria que ese contrato no contempla."""
+    from datetime import date
+
+    db = FakeSession({
+        "SELECT e.gender": [
+            {"gender": "Masculino", "roleName": "user", "tipoContrato": "contratado"},
+        ],
+        # Lo unico configurado para "contratado" en este doble.
+        "FROM ConfiguracionLicencias": [{"categoria": "Lic por Examen"}],
+    })
+    payload = CargaInicialRequest(saldos=[
+        SaldoCargado(anio=date.today().year, categoria="Matrimonio del empleado", diasPendientes=12),
+    ])
+    with pytest.raises(HTTPException) as e:
+        guardar_carga_inicial(8, payload, db, {"employeeId": 7})
+    assert e.value.status_code == 400
+    assert "contratado" in str(e.value.detail)

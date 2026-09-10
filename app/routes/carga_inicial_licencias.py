@@ -138,21 +138,12 @@ def get_carga_inicial(
     ciclo_actual = ciclo_vacaciones(hoy)
     anio_calendario = hoy.year
 
-    categorias = [
-        f["categoria"]
-        for f in db.execute(
-            text("""
-                SELECT DISTINCT categoria
-                FROM ConfiguracionLicencias
-                ORDER BY categoria
-            """)
-        ).mappings().all()
-    ]
-
-    # El tope configurado para el contrato de este empleado, que la pantalla
-    # usa como valor por defecto. Va filtrado por tipo de contrato porque el
-    # mismo tope difiere entre contratos, y sin el filtro se ofreceria el
-    # numero de un contrato ajeno.
+    # Las categorias y su tope salen de la misma consulta, filtrada por el
+    # tipo de contrato de este empleado. Antes las categorias se leian con un
+    # SELECT DISTINCT sin filtrar, asi que a un "contratado" -que tiene tres
+    # categorias configuradas- se le ofrecian las veinte de "permanente", y el
+    # tope venia en None porque para esas categorias su contrato no tiene fila:
+    # se podia cargar un saldo de una licencia que ese contrato no contempla.
     tipo_config = normalizar_tipo_contrato(emp["tipoContrato"] or "permanente")
     dias_configurados = {
         f["categoria"]: f["diasTotales"]
@@ -161,10 +152,12 @@ def get_carga_inicial(
                 SELECT categoria, diasTotales
                 FROM ConfiguracionLicencias
                 WHERE tipo = :tipoConfig
+                ORDER BY categoria
             """),
             {"tipoConfig": tipo_config},
         ).mappings().all()
     }
+    categorias = list(dias_configurados)
 
     return armar_catalogo_carga(
         categorias=categorias,
@@ -229,10 +222,11 @@ def guardar_carga_inicial(
 
     emp = db.execute(
         text("""
-            SELECT e.gender, r.name AS roleName
+            SELECT e.gender, r.name AS roleName, cl.tipoContrato
             FROM Employee e
             INNER JOIN [User] u ON u.employeeId = e.id
             INNER JOIN Role r ON u.roleId = r.id
+            LEFT JOIN CondicionLaboral cl ON cl.employeeId = e.id
             WHERE e.id = :empId
         """),
         {"empId": employee_id},
@@ -241,13 +235,19 @@ def guardar_carga_inicial(
     if not emp:
         raise HTTPException(status_code=404, detail="Empleado no encontrado")
 
+    # Filtrado por el tipo de contrato del empleado, igual que el catalogo que
+    # ofrece get_carga_inicial: una categoria que su contrato no contempla no
+    # es cargable, aunque exista configurada para otro contrato.
+    tipo_config = normalizar_tipo_contrato(emp["tipoContrato"] or "permanente")
     categorias_configuradas = {
         f["categoria"]
         for f in db.execute(
             text("""
-                SELECT DISTINCT categoria
+                SELECT categoria
                 FROM ConfiguracionLicencias
-            """)
+                WHERE tipo = :tipoConfig
+            """),
+            {"tipoConfig": tipo_config},
         ).mappings().all()
     }
 
@@ -258,7 +258,7 @@ def guardar_carga_inicial(
         if s.categoria not in categorias_configuradas:
             raise HTTPException(
                 status_code=400,
-                detail=f"La categoria {s.categoria} no esta configurada",
+                detail=f"La categoria {s.categoria} no esta configurada para el contrato {tipo_config}",
             )
         if not _le_aplica_al_empleado(s.categoria, gender, role_name):
             raise HTTPException(
