@@ -1,4 +1,5 @@
 import logging
+import re
 from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -484,7 +485,11 @@ def create_license_request(data: dict = Body(...), db: Session = Depends(get_db)
     rrhh_only_types = ["lesiones de largo tratamiento", "lar", "accidente de trabajo", "enfermedad profesional", "enfermedad de miembros del grupo", "guarda o tenencia", "lic por enfermedad", "licencia sin goce de haberes", "fallecimiento en parto"]
     is_caller_rrhh = tiene_permiso(current_user["permisos"], "licencias.configurar")
 
-    if any(t in type_lower for t in rrhh_only_types) and not is_caller_rrhh:
+    # Se compara por palabra completa (no substring): "lar" no debe matchear
+    # dentro de "particular". Antes de este ajuste cualquier tipo que
+    # contuviera esas letras seguidas caia, sin querer, bajo la restriccion
+    # de RRHH.
+    if any(re.search(r"\b" + re.escape(t) + r"\b", type_lower) for t in rrhh_only_types) and not is_caller_rrhh:
         raise HTTPException(status_code=403, detail="Esta licencia solo puede ser tramitada por un administrador de RRHH.")
 
     # F. employeeId solo puede diferir del usuario autenticado si quien llama es RRHH/Admin
