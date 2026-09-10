@@ -537,8 +537,12 @@ def create_license_request(data: dict = Body(...), db: Session = Depends(get_db)
     if int(employee_id) != current_user.get("employeeId") and not is_caller_rrhh:
         raise HTTPException(status_code=403, detail="No podés solicitar una licencia a nombre de otro empleado.")
 
-    # D. Vacaciones: Ventana Oct-Abr
-    if "vacaciones" in type_lower:
+    # D. Vacaciones: Ventana Oct-Abr. No aplica a la carga manual de RRHH: la
+    # ventana existe para que un empleado no se autogestione vacaciones fuera
+    # de temporada, pero RRHH puede necesitar registrar dias ya tomados (o
+    # acordados) fuera de esa ventana. El saldo (D bis) igual se valida sin
+    # distincion de rol, asi que esto no habilita a inventar dias de mas.
+    if "vacaciones" in type_lower and not is_caller_rrhh:
         # El raise va FUERA del try a proposito: cuando estaba adentro, el
         # `except Exception: pass` atrapaba su propia HTTPException --
         # HTTPException hereda de Exception -- y la validacion nunca corto
