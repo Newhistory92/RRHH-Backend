@@ -110,12 +110,15 @@ def test_guardar_rechaza_un_anio_fuera_de_la_ventana():
 
 
 def test_guardar_registra_quien_cargo():
+    from app.services.saldo_licencias import ciclo_vacaciones
+    from datetime import date
+
     db = FakeSession({
         "SELECT e.gender": [{"gender": "Masculino", "roleName": "rrhh"}],
         "DISTINCT categoria": [{"categoria": "Vacaciones"}],
     })
     payload = CargaInicialRequest(saldos=[
-        SaldoCargado(anio=2026, categoria="Vacaciones", diasPendientes=5),
+        SaldoCargado(anio=ciclo_vacaciones(date.today()), categoria="Vacaciones", diasPendientes=5),
     ])
     guardar_carga_inicial(8, payload, db, {"employeeId": 7})
     _sql, params = db.ejecutadas[-1]
@@ -139,12 +142,15 @@ def test_guardar_rechaza_categoria_que_no_le_aplica_al_empleado():
 
 
 def test_guardar_acepta_categoria_restringida_para_rol_rrhh():
+    from app.services.saldo_licencias import ciclo_vacaciones
+    from datetime import date
+
     db = FakeSession({
         "SELECT e.gender": [{"gender": "Masculino", "roleName": "rrhh"}],
         "DISTINCT categoria": [{"categoria": "Accidente de trabajo"}],
     })
     payload = CargaInicialRequest(saldos=[
-        SaldoCargado(anio=2026, categoria="Accidente de trabajo", diasPendientes=5),
+        SaldoCargado(anio=ciclo_vacaciones(date.today()), categoria="Accidente de trabajo", diasPendientes=5),
     ])
     guardar_carga_inicial(8, payload, db, {"employeeId": 7})
 
@@ -300,3 +306,13 @@ def test_sin_configuracion_para_esa_categoria_el_default_va_en_none():
         dias_configurados={},
     )
     assert cat["anuales"][0]["diasConfigurados"] is None
+
+
+def test_la_ventana_de_carga_sigue_al_ciclo_no_al_calendario():
+    """Las dos ventanas -- la que se carga y la que /saldos muestra -- tienen
+    que ser la misma, o se cargarian anios que no se ven."""
+    from datetime import date
+    from app.services.saldo_licencias import anios_de_ventana, ciclo_vacaciones
+
+    assert anios_de_ventana(ciclo_vacaciones(date(2026, 9, 30))) == [2025, 2024, 2023]
+    assert anios_de_ventana(ciclo_vacaciones(date(2026, 10, 1))) == [2026, 2025, 2024]

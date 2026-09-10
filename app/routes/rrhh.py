@@ -196,10 +196,10 @@ def get_all_employees(db: Session = Depends(get_db)):
 
         # 3a. Configuraciones de licencias bulk
         configs_bulk = db.execute(text(f"""
-            SELECT id, anio, tipo, categoria, diasTotales, createdAt, updatedAt, licenseId
+            SELECT id, tipo, categoria, diasTotales, createdAt, updatedAt, licenseId
             FROM ConfiguracionLicencias
             WHERE licenseId IN ({lic_ids_param})
-            ORDER BY anio DESC
+            ORDER BY id DESC
         """)).mappings().all()
         configs_by_lic = _group_by(configs_bulk, "licenseId")
 

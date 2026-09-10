@@ -5,10 +5,7 @@ Estas dos funciones concentran las reglas que antes vivian sueltas dentro
 del endpoint de saldos, donde no se podian probar sin base.
 """
 
-from app.services.saldo_licencias import (
-    anios_de_carga,
-    total_del_anio,
-)
+from app.services.saldo_licencias import total_del_anio
 
 
 def test_saldo_inicial_manda_sobre_vacaciones():
@@ -34,11 +31,3 @@ def test_sin_saldo_inicial_vacaciones_usa_la_antiguedad():
 def test_sin_saldo_inicial_el_resto_usa_la_configuracion():
     assert total_del_anio(None, es_vacaciones=False, dias_vac=20, dias_totales=30) == 30
 
-
-def test_anios_de_carga_son_el_actual_y_los_dos_previos():
-    assert anios_de_carga(2026) == [2026, 2025, 2024]
-
-
-def test_anios_de_carga_van_de_mas_nuevo_a_mas_viejo():
-    """La pantalla los lista en ese orden y el mas relevante es el actual."""
-    assert anios_de_carga(2030)[0] == 2030

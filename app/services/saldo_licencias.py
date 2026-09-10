@@ -35,11 +35,6 @@ def total_del_anio(
     return dias_vac if es_vacaciones else dias_totales
 
 
-def anios_de_carga(anio_actual: int) -> list[int]:
-    """La ventana cargable, del mas nuevo al mas viejo."""
-    return [anio_actual - i for i in range(ANIOS_DE_VENTANA)]
-
-
 def ciclo_vacaciones(hoy: date) -> int:
     """
     Que anio de vacaciones rige en esta fecha.

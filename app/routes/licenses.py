@@ -340,15 +340,9 @@ def calcular_dias_vacaciones(tipo_contrato: str, fecha_ingreso,
 # GET /licenses/configuracion — Obtiene las configuraciones anuales
 # ---------------------------------------------------------------------------
 @router.get("/configuracion", dependencies=[Depends(require_auth)])
-def get_configuraciones(anio: Optional[int] = None, db: Session = Depends(get_db)):
-    query = "SELECT id, anio, tipo, categoria , diasTotales, createdAt, updatedAt FROM ConfiguracionLicencias"
-    params = {}
-    if anio:
-        query += " WHERE anio = :anio"
-        params["anio"] = anio
-    query += " ORDER BY anio DESC, tipo ASC, categoria  ASC"
-    
-    config_result = db.execute(text(query), params).mappings().all()
+def get_configuraciones(db: Session = Depends(get_db)):
+    query = "SELECT id, tipo, categoria , diasTotales, createdAt, updatedAt FROM ConfiguracionLicencias ORDER BY tipo ASC, categoria ASC"
+    config_result = db.execute(text(query)).mappings().all()
     return {"configuraciones": [dict(c) for c in config_result]}
 
 # ---------------------------------------------------------------------------
@@ -356,21 +350,19 @@ def get_configuraciones(anio: Optional[int] = None, db: Session = Depends(get_db
 # ---------------------------------------------------------------------------
 @router.post("/configuracion", dependencies=[Depends(require_rrhh_auth)])
 def create_configuracion(data: dict = Body(...), db: Session = Depends(get_db)):
-    anio = data.get("anio")
     tipo = data.get("tipo")
     categoria  = data.get("categoria", "General")
     dias_totales = data.get("diasTotales")
 
-    if not all([anio, tipo, dias_totales]):
-        raise HTTPException(status_code=400, detail="Faltan datos obligatorios (anio, tipo, diasTotales)")
+    if not all([tipo, dias_totales]):
+        raise HTTPException(status_code=400, detail="Faltan datos obligatorios (tipo, diasTotales)")
 
     try:
         result = db.execute(text("""
-            INSERT INTO ConfiguracionLicencias (anio, tipo, categoria , diasTotales, createdAt, updatedAt)
+            INSERT INTO ConfiguracionLicencias (tipo, categoria , diasTotales, createdAt, updatedAt)
             OUTPUT INSERTED.id
-            VALUES (:anio, :tipo, :categoria , :diasTotales, GETDATE(), GETDATE())
+            VALUES (:tipo, :categoria , :diasTotales, GETDATE(), GETDATE())
         """), {
-            "anio": anio,
             "tipo": tipo,
             "categoria": categoria ,
             "diasTotales": dias_totales
@@ -387,7 +379,6 @@ def create_configuracion(data: dict = Body(...), db: Session = Depends(get_db)):
 # ---------------------------------------------------------------------------
 @router.put("/configuracion/{config_id}", dependencies=[Depends(require_rrhh_auth)])
 def update_configuracion(config_id: int, data: dict = Body(...), db: Session = Depends(get_db)):
-    anio = data.get("anio")
     tipo = data.get("tipo")
     categoria = data.get("categoria")
     dias_totales = data.get("diasTotales")
@@ -395,9 +386,9 @@ def update_configuracion(config_id: int, data: dict = Body(...), db: Session = D
     try:
         db.execute(text("""
             UPDATE ConfiguracionLicencias 
-            SET anio = :anio, tipo = :tipo, categoria = :categoria, diasTotales = :dias, updatedAt = GETDATE()
+            SET tipo = :tipo, categoria = :categoria, diasTotales = :dias, updatedAt = GETDATE()
             WHERE id = :id
-        """), {"anio": anio, "tipo": tipo, "categoria": categoria, "dias": dias_totales, "id": config_id})
+        """), {"tipo": tipo, "categoria": categoria, "dias": dias_totales, "id": config_id})
         db.commit()
         return {"message": "Configuración actualizada"}
     except Exception as e:
@@ -596,27 +587,6 @@ def get_tipos_para_contrato(tipo_contrato: str) -> list[str]:
     elif "contratado" in tc:
         return TIPOS_POR_CONTRATO["contratado"]
     return TIPOS_POR_CONTRATO["permanente"]  # fallback
-
-# ---------------------------------------------------------------------------
-# SEEDER — inserta solo filas faltantes para el año dado
-# Usa el tipo normalizado que ahora vive en ConfiguracionLicencias.tipo
-# ---------------------------------------------------------------------------
-def seed_configs_si_faltan(db: Session, anio: int):
-    """
-    No hardcodea días: solo se asegura de que existan filas para el año.
-    Si la tabla ya tiene datos del año (insertados por el SQL anterior),
-    este seed es un no-op.
-    """
-    existe_algo = db.execute(
-        text("SELECT TOP 1 id FROM ConfiguracionLicencias WHERE anio = :anio"),
-        {"anio": anio}
-    ).first()
-
-    if not existe_algo:
-        # No bloqueante: solo advertimos en el log y retornamos. 
-        # Esto permite que RRHH entre a la configuración y cree la fila.
-        print(f"[WARN] No hay configuraciones de licencias para el año {anio}.")
-        # return None
 
 # Categorias que solo ve RRHH: son las de encuadre medico y las excepcionales,
 # que no se solicitan por el circuito comun.

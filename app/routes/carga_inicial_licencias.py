@@ -26,7 +26,7 @@ from app.database.saldo_inicial_licencias import (
     upsert_saldos,
 )
 from app.routes.licenses import _le_aplica_al_empleado, normalizar_tipo_contrato
-from app.services.saldo_licencias import anios_de_carga
+from app.services.saldo_licencias import anios_de_ventana, ciclo_vacaciones
 
 router = APIRouter(prefix="/licenses/carga-inicial", tags=["Carga inicial licencias"])
 
@@ -91,7 +91,7 @@ def armar_catalogo_carga(
             continue
 
         if categoria == CATEGORIA_ACUMULABLE:
-            for anio in anios_de_carga(anio_actual):
+            for anio in anios_de_ventana(anio_actual):
                 acumulables.append({
                     "anio": anio,
                     "categoria": categoria,
@@ -133,7 +133,7 @@ def get_carga_inicial(
     if not emp:
         raise HTTPException(status_code=404, detail="Empleado no encontrado")
 
-    anio_actual = date.today().year
+    anio_actual = ciclo_vacaciones(date.today())
 
     categorias = [
         f["categoria"]
@@ -157,9 +157,9 @@ def get_carga_inicial(
             text("""
                 SELECT categoria, diasTotales
                 FROM ConfiguracionLicencias
-                WHERE anio = :anio AND tipo = :tipoConfig
+                WHERE tipo = :tipoConfig
             """),
-            {"anio": anio_actual, "tipoConfig": tipo_config},
+            {"tipoConfig": tipo_config},
         ).mappings().all()
     }
 
@@ -189,7 +189,7 @@ def guardar_carga_inicial(
     """
     ensure_table(db)
 
-    ventana = set(anios_de_carga(date.today().year))
+    ventana = set(anios_de_ventana(ciclo_vacaciones(date.today())))
     for s in payload.saldos:
         if s.diasPendientes < 0:
             raise HTTPException(
