@@ -85,11 +85,21 @@ def get_employee_supervisor(employee_id: int, db: Session = Depends(get_db)):
 # GET /licenses/tipos-disponibles — Tipos de licencia permitidos para un empleado
 # Triple-join: CondicionLaboral → ConfiguracionLicencias (por categoria)
 # ---------------------------------------------------------------------------
-def tipos_disponibles_de(db: Session, employee_id: int):
+def tipos_disponibles_de(db: Session, employee_id: int, fecha_referencia: date | None = None):
     """
     Calcula los tipos de licencia que el empleado puede solicitar,
     basado en su tipoContrato (CondicionLaboral) cruzado con
     ConfiguracionLicencias.categoria. Incluye diasTotales y consumidos.
+
+    fecha_referencia decide contra que ciclo/anio se mide vacaciones y el
+    resto de las categorias. Por defecto es hoy (lo que necesita la pantalla,
+    que pregunta que puede pedir ahora mismo antes de que el usuario elija
+    fecha). Pero cuando esta funcion valida una solicitud concreta, tiene que
+    recibir la fecha de inicio de esa solicitud: pedir hoy unas vacaciones
+    para el mes que viene, cuando el ciclo todavia no roto, se tiene que medir
+    contra el ciclo al que esas vacaciones van a pertenecer, no contra el de
+    hoy. Sin esto, reservar con anticipacion quedaba fuera del alcance de la
+    regla de octubre que esta funcion existe para hacer cumplir.
     """
     # 1. Obtener datos del empleado: tipoContrato, género, fecha de ingreso, rol
     emp_query = text("""
@@ -126,11 +136,15 @@ def tipos_disponibles_de(db: Session, employee_id: int):
         if fi:
             anios_servicio = (date.today() - fi).days / 365.0
 
-    today = date.today()
+    today = fecha_referencia or date.today()
     current_cycle = today.year
     # Las vacaciones se habilitan el 1 de octubre: hasta entonces rige el
     # saldo del anio anterior. Solo aplica a vacaciones -- las demas
     # categorias son anuales sin arrastre y siguen el anio calendario.
+    #
+    # "today" aca es la fecha de referencia (hoy, salvo que la llamada la
+    # haya fijado a la fecha de inicio de una solicitud puntual) y no
+    # necesariamente el reloj real -- ver el docstring de la funcion.
     ciclo_vac = ciclo_vacaciones(today)
 
     # 1.5 Saldo inicial: si RRHH cargo un saldo para este anio/categoria, ese
@@ -358,6 +372,16 @@ def create_configuracion(data: dict = Body(...), db: Session = Depends(get_db)):
     if not all([tipo, dias_totales]):
         raise HTTPException(status_code=400, detail="Faltan datos obligatorios (tipo, diasTotales)")
 
+    # Sin el anio, (tipo, categoria) es la unica identidad de una fila, y no
+    # hay restriccion de base que la proteja -- se chequea a mano antes de
+    # insertar. Sin esto, una segunda fila para el mismo par duplicaria el
+    # SUM de diasTotales en todo lugar que lea la configuracion.
+    existe = db.execute(text("""
+        SELECT TOP 1 id FROM ConfiguracionLicencias WHERE tipo = :tipo AND categoria = :categoria
+    """), {"tipo": tipo, "categoria": categoria}).first()
+    if existe:
+        raise HTTPException(status_code=400, detail="Ya existe una configuración para ese tipo y contrato. Edita la existente en vez de crear otra.")
+
     try:
         # anio sigue siendo NOT NULL en la tabla (la columna se deja para un DROP
         # COLUMN posterior, no se toca en esta rama) pero el codigo ya no la usa
@@ -540,7 +564,17 @@ def create_license_request(data: dict = Body(...), db: Session = Depends(get_db)
     if not duration or int(duration) <= 0:
         raise HTTPException(status_code=400, detail="La duracion de la licencia es obligatoria y debe ser mayor a cero")
 
-    catalogo = tipos_disponibles_de(db, int(employee_id))
+    # La fecha de referencia es el inicio de ESTA solicitud, no hoy: pedir
+    # hoy unas vacaciones para el mes que viene tiene que medirse contra el
+    # ciclo al que esas vacaciones van a pertenecer, no contra el de hoy --
+    # ver el docstring de tipos_disponibles_de. Si la fecha no parsea, se cae
+    # a hoy en vez de romper la solicitud: mismo criterio de tolerancia que
+    # ya usa el bloque D de arriba para esta misma cadena.
+    try:
+        fecha_inicio_solicitud = datetime.fromisoformat(start_date.replace("Z", "+00:00")).date()
+    except Exception:
+        fecha_inicio_solicitud = date.today()
+    catalogo = tipos_disponibles_de(db, int(employee_id), fecha_referencia=fecha_inicio_solicitud)
     fila = next(
         (t for t in catalogo["tipos"] if t["nombre"].lower() == type_lower),
         None,
