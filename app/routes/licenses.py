@@ -516,6 +516,26 @@ def create_license_request(data: dict = Body(...), db: Session = Depends(get_db)
                 detail="Las vacaciones solo pueden tomarse entre el 1 de Octubre y el 30 de Abril.",
             )
 
+    # D bis. Saldo disponible. Se compara contra el mismo numero que ofrecio
+    # la pantalla, reusando su calculo: reimplementarlo aca es lo que hizo
+    # que /saldos y /tipos-disponibles discreparan.
+    #
+    # No distingue por rol: RRHH tampoco puede exceder el saldo.
+    if duration:
+        catalogo = tipos_disponibles_de(db, int(employee_id))
+        fila = next(
+            (t for t in catalogo["tipos"] if t["nombre"].lower() == type_lower),
+            None,
+        )
+        if fila is not None and int(duration) > fila["disponibles"]:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"No hay saldo suficiente de {fila['nombre']}: "
+                    f"pediste {int(duration)} dias y hay {fila['disponibles']} disponibles."
+                ),
+            )
+
     # E. Embarazo: 90 días corrido
     if "embarazo" in type_lower:
         duration = 90
