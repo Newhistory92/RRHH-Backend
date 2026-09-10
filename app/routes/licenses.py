@@ -22,6 +22,7 @@ from app.database.saldo_inicial_licencias import (
 )
 from app.services.saldo_licencias import (
     ANIOS_DE_VENTANA,
+    anio_de_categoria,
     anios_de_ventana,
     ciclo_vacaciones,
     expandir_por_anio,
@@ -358,20 +359,26 @@ def create_configuracion(data: dict = Body(...), db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Faltan datos obligatorios (tipo, diasTotales)")
 
     try:
+        # anio sigue siendo NOT NULL en la tabla (la columna se deja para un DROP
+        # COLUMN posterior, no se toca en esta rama) pero el codigo ya no la usa
+        # para nada: se escribe un sentinel fijo solo para satisfacer la
+        # restriccion, no como dato real.
         result = db.execute(text("""
-            INSERT INTO ConfiguracionLicencias (tipo, categoria , diasTotales, createdAt, updatedAt)
+            INSERT INTO ConfiguracionLicencias (tipo, categoria , diasTotales, anio, createdAt, updatedAt)
             OUTPUT INSERTED.id
-            VALUES (:tipo, :categoria , :diasTotales, GETDATE(), GETDATE())
+            VALUES (:tipo, :categoria , :diasTotales, :anio, GETDATE(), GETDATE())
         """), {
             "tipo": tipo,
             "categoria": categoria ,
-            "diasTotales": dias_totales
+            "diasTotales": dias_totales,
+            "anio": 0
         })
         new_id = result.fetchone()[0]
         db.commit()
         return {"message": "Configuración creada", "id": new_id}
     except Exception as e:
         db.rollback()
+        print(f"[ERROR] create_configuracion: {e}")
         raise HTTPException(status_code=400, detail="Error al crear. Es posible que ya exista una configuración para ese tipo y contrato.")
 
 # ---------------------------------------------------------------------------
@@ -997,10 +1004,11 @@ def update_license_status(license_id: int, data: dict = Body(...), db: Session =
         # para que una segunda llamada al mismo license_id -- doble click, reintento de
         # red -- no duplique el ConsumoLicencias) ──
         if status == "Aprobada" and lic['duracion'] and lic['status'] != "Aprobada":
-            if isinstance(lic['startDate'], str):
-                anio_consumo = int(lic['startDate'][:4])
-            else:
-                anio_consumo = lic['startDate'].year
+            inicio_lic = lic['startDate']
+            if isinstance(inicio_lic, str):
+                inicio_lic = datetime.fromisoformat(inicio_lic.replace('Z', '+00:00'))
+            fecha_inicio_lic = inicio_lic.date() if hasattr(inicio_lic, 'date') else inicio_lic
+            anio_consumo = anio_de_categoria(lic['type'], fecha_inicio_lic)
                 
             db.execute(text("""
                 INSERT INTO ConsumoLicencias (anio, tipo, diasConsumidos, licenseId, fechaConsumo, createdAt, updatedAt)
@@ -1122,10 +1130,11 @@ def rrhh_apply_license(data: dict = Body(...), db: Session = Depends(get_db)):
 
         # ── Paso 2: Registrar consumo de días ──
         if days:
-            if isinstance(start_date, str):
-                anio = int(start_date[:4])
-            else:
-                anio = start_date.year
+            inicio_aplicada = start_date
+            if isinstance(inicio_aplicada, str):
+                inicio_aplicada = datetime.fromisoformat(inicio_aplicada.replace('Z', '+00:00'))
+            fecha_inicio_aplicada = inicio_aplicada.date() if hasattr(inicio_aplicada, 'date') else inicio_aplicada
+            anio = anio_de_categoria(lic_type, fecha_inicio_aplicada)
 
             db.execute(text("""
                 INSERT INTO ConsumoLicencias (anio, tipo, diasConsumidos, licenseId, fechaConsumo, createdAt, updatedAt)

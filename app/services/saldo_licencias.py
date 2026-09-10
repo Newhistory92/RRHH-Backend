@@ -53,6 +53,20 @@ def anios_de_ventana(ciclo: int) -> list[int]:
     return [ciclo - i for i in range(ANIOS_DE_VENTANA)]
 
 
+def anio_de_categoria(categoria: str, fecha: date) -> int:
+    """
+    Bajo que anio se contabiliza esta categoria en una fecha dada.
+
+    Vacaciones se cuenta contra el ciclo (ver ciclo_vacaciones): un pedido en
+    enero pertenece al ciclo que empezo en octubre del anio anterior, no al
+    anio calendario en que cae la fecha. Las demas categorias no tienen
+    ciclo, se cuentan por anio calendario.
+    """
+    if categoria.strip().lower() == "vacaciones":
+        return ciclo_vacaciones(fecha)
+    return fecha.year
+
+
 def expandir_por_anio(
     configs: list[dict],
     anios: list[int],
