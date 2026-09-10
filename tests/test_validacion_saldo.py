@@ -33,6 +33,11 @@ def _db():
             "tipoContrato": "permanente", "fechaIngreso": None,
             "roleName": "user",
         }],
+        # Permite que la insercion de la licencia (y su OUTPUT INSERTED.id)
+        # se resuelva sin TypeError, para que un test pueda seguir el
+        # camino de exito hasta el final en lugar de cortar a mitad de
+        # camino con un 500 disfrazado de HTTPException.
+        "INSERT INTO License": [(101,)],
     })
 
 
@@ -52,17 +57,21 @@ def test_rechaza_pedir_mas_de_lo_disponible():
 
 
 def test_permite_pedir_exactamente_el_limite():
-    """El borde tiene que entrar: pedir justo lo que hay no es excederse."""
+    """El borde tiene que entrar: pedir justo lo que hay no es excederse.
+
+    Antes este test tragaba cualquier HTTPException y solo miraba que el
+    mensaje no dijera "saldo" -- contra FakeSession sin fila para el INSERT,
+    la insercion de la licencia fallaba con TypeError (None[0]), que el
+    propio create_license_request reconvertia en un HTTPException 500, y
+    el test lo dejaba pasar sin darse cuenta de que nunca habia probado el
+    camino de exito. Ahora _db() responde el INSERT y el test afirma
+    exactamente el resultado esperado, sin capturar nada."""
     with patch("app.routes.licenses.tipos_disponibles_de", return_value=DISPONIBLES_5):
-        try:
-            create_license_request(
-                data=_payload(5), db=_db(),
-                current_user={"employeeId": 8, "permisos": set()},
-            )
-        except HTTPException as e:
-            # Contra FakeSession la insercion posterior puede fallar; lo que
-            # este test afirma es que NO corta por saldo.
-            assert "saldo" not in str(e.detail).lower()
+        resultado = create_license_request(
+            data=_payload(5), db=_db(),
+            current_user={"employeeId": 8, "permisos": set()},
+        )
+    assert resultado == {"message": "Solicitud creada exitosamente", "id": 101}
 
 
 def test_la_validacion_tambien_alcanza_a_rrhh():

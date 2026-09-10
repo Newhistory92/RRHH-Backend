@@ -15,6 +15,8 @@ cosas complementarias para cada escenario:
      via FakeSession) produce el comportamiento esperado en la ruta:
      bloquea con 400 nombrando el tipo, o deja continuar la solicitud.
 """
+from unittest.mock import patch
+
 import pytest
 from fastapi import HTTPException
 
@@ -86,7 +88,13 @@ def test_vacaciones_pendiente_no_bloquea_matrimonio():
         "INSERT INTO License": [(101,)],
     })
 
-    resultado = create_license_request(_data("Matrimonio"), db, CURRENT_USER)
+    # La validacion de saldo (D bis) exige que el tipo pedido exista en el
+    # catalogo real de tipos_disponibles_de -- no es lo que este test quiere
+    # ejercitar, asi que se mockea con un catalogo que ya incluye Matrimonio.
+    catalogo = {"tipos": [{"nombre": "Matrimonio", "diasTotales": 10,
+                           "consumidos": 0, "disponibles": 10}]}
+    with patch("app.routes.licenses.tipos_disponibles_de", return_value=catalogo):
+        resultado = create_license_request(_data("Matrimonio"), db, CURRENT_USER)
 
     assert resultado == {"message": "Solicitud creada exitosamente", "id": 101}
 

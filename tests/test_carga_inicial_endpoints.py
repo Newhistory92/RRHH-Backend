@@ -21,7 +21,7 @@ CATEGORIAS = ["Vacaciones", "Particular", "Nacimiento", "Accidente de trabajo"]
 
 def test_vacaciones_va_a_acumulables_con_tres_anios():
     cat = armar_catalogo_carga(
-        categorias=["Vacaciones"], saldos={}, anio_actual=2026,
+        categorias=["Vacaciones"], saldos={}, ciclo_actual=2026, anio_calendario=2026,
         gender="Masculino", role_name="rrhh",
     )
     assert [f["anio"] for f in cat["acumulables"]] == [2026, 2025, 2024]
@@ -30,7 +30,7 @@ def test_vacaciones_va_a_acumulables_con_tres_anios():
 
 def test_las_demas_van_a_anuales_solo_con_el_anio_actual():
     cat = armar_catalogo_carga(
-        categorias=["Particular"], saldos={}, anio_actual=2026,
+        categorias=["Particular"], saldos={}, ciclo_actual=2026, anio_calendario=2026,
         gender="Masculino", role_name="rrhh",
     )
     assert [f["anio"] for f in cat["anuales"]] == [2026]
@@ -40,7 +40,7 @@ def test_las_demas_van_a_anuales_solo_con_el_anio_actual():
 def test_devuelve_el_valor_ya_cargado():
     cat = armar_catalogo_carga(
         categorias=["Vacaciones"], saldos={(2024, "Vacaciones"): 5},
-        anio_actual=2026, gender="Masculino", role_name="rrhh",
+        ciclo_actual=2026, anio_calendario=2026, gender="Masculino", role_name="rrhh",
     )
     fila = next(f for f in cat["acumulables"] if f["anio"] == 2024)
     assert fila["diasPendientes"] == 5
@@ -50,7 +50,7 @@ def test_lo_no_cargado_viene_en_none_y_no_en_cero():
     """None es 'no se cargo'; cero es 'no le queda nada'. La pantalla los
     muestra distinto y el backend no puede aplastarlos."""
     cat = armar_catalogo_carga(
-        categorias=["Vacaciones"], saldos={}, anio_actual=2026,
+        categorias=["Vacaciones"], saldos={}, ciclo_actual=2026, anio_calendario=2026,
         gender="Masculino", role_name="rrhh",
     )
     assert all(f["diasPendientes"] is None for f in cat["acumulables"])
@@ -59,7 +59,7 @@ def test_lo_no_cargado_viene_en_none_y_no_en_cero():
 def test_el_cero_cargado_se_conserva():
     cat = armar_catalogo_carga(
         categorias=["Vacaciones"], saldos={(2026, "Vacaciones"): 0},
-        anio_actual=2026, gender="Masculino", role_name="rrhh",
+        ciclo_actual=2026, anio_calendario=2026, gender="Masculino", role_name="rrhh",
     )
     fila = next(f for f in cat["acumulables"] if f["anio"] == 2026)
     assert fila["diasPendientes"] == 0
@@ -67,7 +67,7 @@ def test_el_cero_cargado_se_conserva():
 
 def test_no_ofrece_nacimiento_a_una_empleada():
     cat = armar_catalogo_carga(
-        categorias=CATEGORIAS, saldos={}, anio_actual=2026,
+        categorias=CATEGORIAS, saldos={}, ciclo_actual=2026, anio_calendario=2026,
         gender="Femenino", role_name="rrhh",
     )
     assert all(f["categoria"] != "Nacimiento" for f in cat["anuales"])
@@ -75,7 +75,7 @@ def test_no_ofrece_nacimiento_a_una_empleada():
 
 def test_no_ofrece_restringidas_a_un_rol_comun():
     cat = armar_catalogo_carga(
-        categorias=CATEGORIAS, saldos={}, anio_actual=2026,
+        categorias=CATEGORIAS, saldos={}, ciclo_actual=2026, anio_calendario=2026,
         gender="Masculino", role_name="user",
     )
     assert all(f["categoria"] != "Accidente de trabajo" for f in cat["anuales"])
@@ -83,7 +83,7 @@ def test_no_ofrece_restringidas_a_un_rol_comun():
 
 def test_ofrece_restringidas_a_rrhh():
     cat = armar_catalogo_carga(
-        categorias=CATEGORIAS, saldos={}, anio_actual=2026,
+        categorias=CATEGORIAS, saldos={}, ciclo_actual=2026, anio_calendario=2026,
         gender="Masculino", role_name="rrhh",
     )
     assert any(f["categoria"] == "Accidente de trabajo" for f in cat["anuales"])
@@ -129,7 +129,6 @@ def test_guardar_registra_quien_cargo():
 def test_guardar_rechaza_categoria_que_no_le_aplica_al_empleado():
     """Nacimiento no le aplica a una empleada: guardarlo dejaria un dato
     huerfano que el catalogo nunca va a mostrarle."""
-    from app.services.saldo_licencias import ciclo_vacaciones
     from datetime import date
 
     db = FakeSession({
@@ -137,7 +136,7 @@ def test_guardar_rechaza_categoria_que_no_le_aplica_al_empleado():
         "DISTINCT categoria": [{"categoria": "Nacimiento"}],
     })
     payload = CargaInicialRequest(saldos=[
-        SaldoCargado(anio=ciclo_vacaciones(date.today()), categoria="Nacimiento", diasPendientes=5),
+        SaldoCargado(anio=date.today().year, categoria="Nacimiento", diasPendientes=5),
     ])
     with pytest.raises(HTTPException) as e:
         guardar_carga_inicial(8, payload, db, {"employeeId": 7})
@@ -145,7 +144,6 @@ def test_guardar_rechaza_categoria_que_no_le_aplica_al_empleado():
 
 
 def test_guardar_acepta_categoria_restringida_para_rol_rrhh():
-    from app.services.saldo_licencias import ciclo_vacaciones
     from datetime import date
 
     db = FakeSession({
@@ -153,20 +151,19 @@ def test_guardar_acepta_categoria_restringida_para_rol_rrhh():
         "DISTINCT categoria": [{"categoria": "Accidente de trabajo"}],
     })
     payload = CargaInicialRequest(saldos=[
-        SaldoCargado(anio=ciclo_vacaciones(date.today()), categoria="Accidente de trabajo", diasPendientes=5),
+        SaldoCargado(anio=date.today().year, categoria="Accidente de trabajo", diasPendientes=5),
     ])
     guardar_carga_inicial(8, payload, db, {"employeeId": 7})
 
 
 def test_guardar_rechaza_pares_anio_categoria_duplicados():
-    from app.services.saldo_licencias import ciclo_vacaciones
     from datetime import date
 
     db = FakeSession({
         "SELECT e.gender": [{"gender": "Masculino", "roleName": "user"}],
         "DISTINCT categoria": [{"categoria": "Particular"}],
     })
-    anio = ciclo_vacaciones(date.today())
+    anio = date.today().year
     payload = CargaInicialRequest(saldos=[
         SaldoCargado(anio=anio, categoria="Particular", diasPendientes=5),
         SaldoCargado(anio=anio, categoria="Particular", diasPendientes=8),
@@ -177,7 +174,6 @@ def test_guardar_rechaza_pares_anio_categoria_duplicados():
 
 
 def test_guardar_rechaza_categoria_no_configurada():
-    from app.services.saldo_licencias import ciclo_vacaciones
     from datetime import date
 
     db = FakeSession({
@@ -185,7 +181,7 @@ def test_guardar_rechaza_categoria_no_configurada():
         "DISTINCT categoria": [{"categoria": "Particular"}],
     })
     payload = CargaInicialRequest(saldos=[
-        SaldoCargado(anio=ciclo_vacaciones(date.today()), categoria="Categoria Inexistente", diasPendientes=5),
+        SaldoCargado(anio=date.today().year, categoria="Categoria Inexistente", diasPendientes=5),
     ])
     with pytest.raises(HTTPException) as e:
         guardar_carga_inicial(8, payload, db, {"employeeId": 7})
@@ -278,7 +274,7 @@ def test_las_anuales_traen_el_tope_configurado_como_default():
     """El caso comun es que la licencia anual este entera: se arranca del tope
     configurado y RRHH baja solo las excepciones."""
     cat = armar_catalogo_carga(
-        categorias=["Particular"], saldos={}, anio_actual=2026,
+        categorias=["Particular"], saldos={}, ciclo_actual=2026, anio_calendario=2026,
         gender="Masculino", role_name="rrhh",
         dias_configurados={"Particular": 5},
     )
@@ -289,7 +285,7 @@ def test_vacaciones_no_trae_default_configurado():
     """Para vacaciones el tope sale de la antiguedad, no de la configuracion:
     ofrecer ahi el numero del config seria ofrecer un default equivocado."""
     cat = armar_catalogo_carga(
-        categorias=["Vacaciones"], saldos={}, anio_actual=2026,
+        categorias=["Vacaciones"], saldos={}, ciclo_actual=2026, anio_calendario=2026,
         gender="Masculino", role_name="rrhh",
         dias_configurados={"Vacaciones": 10},
     )
@@ -301,7 +297,7 @@ def test_lo_ya_cargado_no_lo_pisa_el_default():
     que RRHH ya decidio, el segundo solo el punto de partida sugerido."""
     cat = armar_catalogo_carga(
         categorias=["Particular"], saldos={(2026, "Particular"): 2},
-        anio_actual=2026, gender="Masculino", role_name="rrhh",
+        ciclo_actual=2026, anio_calendario=2026, gender="Masculino", role_name="rrhh",
         dias_configurados={"Particular": 5},
     )
     fila = cat["anuales"][0]
@@ -311,7 +307,7 @@ def test_lo_ya_cargado_no_lo_pisa_el_default():
 
 def test_sin_configuracion_para_esa_categoria_el_default_va_en_none():
     cat = armar_catalogo_carga(
-        categorias=["Particular"], saldos={}, anio_actual=2026,
+        categorias=["Particular"], saldos={}, ciclo_actual=2026, anio_calendario=2026,
         gender="Masculino", role_name="rrhh",
         dias_configurados={},
     )

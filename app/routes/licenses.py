@@ -479,15 +479,20 @@ def create_license_request(data: dict = Body(...), db: Session = Depends(get_db)
         if fi and (date.today() - fi.date()).days < 730:
             raise HTTPException(status_code=400, detail="Requiere 2 años de antigüedad para Licencia sin Goce de Haberes.")
             
-    # C. Roles RRHH para licencias médicas pesadas
-    rrhh_only_types = ["lesiones de largo tratamiento", "lar", "accidente de trabajo", "enfermedad profesional", "enfermedad de miembros del grupo", "guarda o tenencia", "lic por enfermedad", "licencia sin goce de haberes", "fallecimiento en parto"]
+    # C. Roles RRHH para licencias médicas pesadas. RRHH_ONLY_TYPES (definida
+    # mas abajo, junto con _le_aplica_al_empleado) es la unica lista: antes
+    # habia una copia local aca que ya se habia arreglado para comparar por
+    # palabra completa, mientras la version a nivel de modulo seguia
+    # matcheando por substring -- las dos discrepaban sobre la misma
+    # categoria ("particular" contiene "lar"). Se dejo esta, la de
+    # _le_aplica_al_empleado, como unica fuente de verdad.
     is_caller_rrhh = tiene_permiso(current_user["permisos"], "licencias.configurar")
 
     # Se compara por palabra completa (no substring): "lar" no debe matchear
     # dentro de "particular". Antes de este ajuste cualquier tipo que
     # contuviera esas letras seguidas caia, sin querer, bajo la restriccion
     # de RRHH.
-    if any(re.search(r"\b" + re.escape(t) + r"\b", type_lower) for t in rrhh_only_types) and not is_caller_rrhh:
+    if any(re.search(r"\b" + re.escape(t) + r"\b", type_lower) for t in RRHH_ONLY_TYPES) and not is_caller_rrhh:
         raise HTTPException(status_code=403, detail="Esta licencia solo puede ser tramitada por un administrador de RRHH.")
 
     # F. employeeId solo puede diferir del usuario autenticado si quien llama es RRHH/Admin
@@ -514,33 +519,42 @@ def create_license_request(data: dict = Body(...), db: Session = Depends(get_db)
                 detail="Las vacaciones solo pueden tomarse entre el 1 de Octubre y el 30 de Abril.",
             )
 
-    # D bis. Saldo disponible. Se compara contra el mismo numero que ofrecio
-    # la pantalla, reusando su calculo: reimplementarlo aca es lo que hizo
-    # que /saldos y /tipos-disponibles discreparan.
-    #
-    # No distingue por rol: RRHH tampoco puede exceder el saldo.
-    if duration:
-        catalogo = tipos_disponibles_de(db, int(employee_id))
-        fila = next(
-            (t for t in catalogo["tipos"] if t["nombre"].lower() == type_lower),
-            None,
-        )
-        if fila is not None and int(duration) > fila["disponibles"]:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"No hay saldo suficiente de {fila['nombre']}: "
-                    f"pediste {int(duration)} dias y hay {fila['disponibles']} disponibles."
-                ),
-            )
-
-    # E. Embarazo: 90 días corrido
+    # E. Embarazo: 90 dias corrido. Va ANTES de la validacion de saldo (D bis):
+    # el duration real que se guarda para Embarazo siempre es este 90, nunca
+    # el que mande el cliente, asi que el saldo tiene que validarse contra el
+    # numero final, no contra lo que haya llegado en el payload.
     if "embarazo" in type_lower:
         duration = 90
         # Recalcular EndDate si es necesario
         sd = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
         ed = sd + timedelta(days=90)
         end_date = ed.isoformat()
+
+    # D bis. Saldo disponible. Se compara contra el mismo numero que ofrecio
+    # la pantalla, reusando su calculo: reimplementarlo aca es lo que hizo
+    # que /saldos y /tipos-disponibles discreparan.
+    #
+    # No distingue por rol: RRHH tampoco puede exceder el saldo. Ni la
+    # duracion ausente ni un tipo no reconocido se dejan pasar en silencio:
+    # antes esto era la puerta de atras que evitaba la validacion entera.
+    if not duration or int(duration) <= 0:
+        raise HTTPException(status_code=400, detail="La duracion de la licencia es obligatoria y debe ser mayor a cero")
+
+    catalogo = tipos_disponibles_de(db, int(employee_id))
+    fila = next(
+        (t for t in catalogo["tipos"] if t["nombre"].lower() == type_lower),
+        None,
+    )
+    if fila is None:
+        raise HTTPException(status_code=400, detail=f"El tipo de licencia '{lic_type}' no esta disponible para este empleado")
+    if int(duration) > fila["disponibles"]:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"No hay saldo suficiente de {fila['nombre']}: "
+                f"pediste {int(duration)} dias y hay {fila['disponibles']} disponibles."
+            ),
+        )
 
     try:
         result = db.execute(text("""
@@ -621,7 +635,7 @@ def _le_aplica_al_empleado(categoria: str, gender: str | None, role_name: str) -
         return False
     if "embarazo" in tipo_lower and gender != "Femenino":
         return False
-    if any(t in tipo_lower for t in RRHH_ONLY_TYPES):
+    if any(re.search(r"\b" + re.escape(t) + r"\b", tipo_lower) for t in RRHH_ONLY_TYPES):
         return role_name in ROLES_CON_LICENCIAS_RESTRINGIDAS
     return True
 
@@ -810,11 +824,18 @@ def get_license_saldos(
     """), {"empId": employee_id}).mappings().all()
     consumidos_por_clave = {(r["anio"], r["categoria"]): int(r["total"]) for r in consumo_rows}
 
-    filas = expandir_por_anio(
-        [dict(c) for c in configs],
-        anios_de_ventana(current_cycle),
-        consumidos_por_clave,
-    )
+    # Solo Vacaciones arrastra la ventana de 3 anios; el resto de las
+    # categorias son anuales sobre el anio calendario en curso. Aplicar la
+    # ventana entera a todo generaria filas fantasma (anios sin exito de
+    # expiracion) para categorias que no tienen ciclo.
+    filas = []
+    for cfg in configs:
+        cfg_dict = dict(cfg)
+        if cfg_dict["categoria"].strip().lower() == "vacaciones":
+            anios_de_esta_categoria = anios_de_ventana(current_cycle)
+        else:
+            anios_de_esta_categoria = [today.year]
+        filas.extend(expandir_por_anio([cfg_dict], anios_de_esta_categoria, consumidos_por_clave))
 
     return {"balances": armar_balances(
         rows=filas,

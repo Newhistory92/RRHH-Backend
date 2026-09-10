@@ -56,7 +56,8 @@ class CargaInicialRequest(BaseModel):
 def armar_catalogo_carga(
     categorias: list[str],
     saldos: dict[tuple[int, str], int],
-    anio_actual: int,
+    ciclo_actual: int,
+    anio_calendario: int,
     gender: str | None,
     role_name: str,
     dias_configurados: dict[str, int] | None = None,
@@ -91,7 +92,7 @@ def armar_catalogo_carga(
             continue
 
         if categoria == CATEGORIA_ACUMULABLE:
-            for anio in anios_de_ventana(anio_actual):
+            for anio in anios_de_ventana(ciclo_actual):
                 acumulables.append({
                     "anio": anio,
                     "categoria": categoria,
@@ -100,9 +101,9 @@ def armar_catalogo_carga(
                 })
         else:
             anuales.append({
-                "anio": anio_actual,
+                "anio": anio_calendario,
                 "categoria": categoria,
-                "diasPendientes": saldos.get((anio_actual, categoria)),
+                "diasPendientes": saldos.get((anio_calendario, categoria)),
                 "diasConfigurados": dias_configurados.get(categoria),
             })
 
@@ -133,7 +134,9 @@ def get_carga_inicial(
     if not emp:
         raise HTTPException(status_code=404, detail="Empleado no encontrado")
 
-    anio_actual = ciclo_vacaciones(date.today())
+    hoy = date.today()
+    ciclo_actual = ciclo_vacaciones(hoy)
+    anio_calendario = hoy.year
 
     categorias = [
         f["categoria"]
@@ -166,7 +169,8 @@ def get_carga_inicial(
     return armar_catalogo_carga(
         categorias=categorias,
         saldos=saldos_de_empleado(db, employee_id),
-        anio_actual=anio_actual,
+        ciclo_actual=ciclo_actual,
+        anio_calendario=anio_calendario,
         gender=emp["gender"],
         role_name=(emp["roleName"] or "").lower(),
         dias_configurados=dias_configurados,
@@ -189,17 +193,29 @@ def guardar_carga_inicial(
     """
     ensure_table(db)
 
-    ventana = set(anios_de_ventana(ciclo_vacaciones(date.today())))
+    hoy = date.today()
+    ciclo_actual = ciclo_vacaciones(hoy)
+    anio_calendario = hoy.year
+    ventana_vacaciones = set(anios_de_ventana(ciclo_actual))
     for s in payload.saldos:
         if s.diasPendientes < 0:
             raise HTTPException(
                 status_code=400,
                 detail=f"Los dias de {s.categoria} {s.anio} no pueden ser negativos",
             )
-        if s.anio not in ventana:
+        # Vacaciones arrastra, se valida contra la ventana del ciclo; el
+        # resto de las categorias son anuales sobre el anio calendario en
+        # curso, sin ciclo, asi que solo aceptan ese unico anio.
+        if s.categoria == CATEGORIA_ACUMULABLE:
+            if s.anio not in ventana_vacaciones:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"El anio {s.anio} esta fuera de la ventana de carga {sorted(ventana_vacaciones)}",
+                )
+        elif s.anio != anio_calendario:
             raise HTTPException(
                 status_code=400,
-                detail=f"El anio {s.anio} esta fuera de la ventana de carga {sorted(ventana)}",
+                detail=f"El anio {s.anio} no es el anio calendario en curso ({anio_calendario}) para {s.categoria}",
             )
 
     pares = [(s.anio, s.categoria) for s in payload.saldos]
