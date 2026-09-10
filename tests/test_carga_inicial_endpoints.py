@@ -129,12 +129,15 @@ def test_guardar_registra_quien_cargo():
 def test_guardar_rechaza_categoria_que_no_le_aplica_al_empleado():
     """Nacimiento no le aplica a una empleada: guardarlo dejaria un dato
     huerfano que el catalogo nunca va a mostrarle."""
+    from app.services.saldo_licencias import ciclo_vacaciones
+    from datetime import date
+
     db = FakeSession({
         "SELECT e.gender": [{"gender": "Femenino", "roleName": "user"}],
         "DISTINCT categoria": [{"categoria": "Nacimiento"}],
     })
     payload = CargaInicialRequest(saldos=[
-        SaldoCargado(anio=2026, categoria="Nacimiento", diasPendientes=5),
+        SaldoCargado(anio=ciclo_vacaciones(date.today()), categoria="Nacimiento", diasPendientes=5),
     ])
     with pytest.raises(HTTPException) as e:
         guardar_carga_inicial(8, payload, db, {"employeeId": 7})
@@ -156,13 +159,17 @@ def test_guardar_acepta_categoria_restringida_para_rol_rrhh():
 
 
 def test_guardar_rechaza_pares_anio_categoria_duplicados():
+    from app.services.saldo_licencias import ciclo_vacaciones
+    from datetime import date
+
     db = FakeSession({
         "SELECT e.gender": [{"gender": "Masculino", "roleName": "user"}],
         "DISTINCT categoria": [{"categoria": "Particular"}],
     })
+    anio = ciclo_vacaciones(date.today())
     payload = CargaInicialRequest(saldos=[
-        SaldoCargado(anio=2026, categoria="Particular", diasPendientes=5),
-        SaldoCargado(anio=2026, categoria="Particular", diasPendientes=8),
+        SaldoCargado(anio=anio, categoria="Particular", diasPendientes=5),
+        SaldoCargado(anio=anio, categoria="Particular", diasPendientes=8),
     ])
     with pytest.raises(HTTPException) as e:
         guardar_carga_inicial(8, payload, db, {"employeeId": 7})
@@ -170,12 +177,15 @@ def test_guardar_rechaza_pares_anio_categoria_duplicados():
 
 
 def test_guardar_rechaza_categoria_no_configurada():
+    from app.services.saldo_licencias import ciclo_vacaciones
+    from datetime import date
+
     db = FakeSession({
         "SELECT e.gender": [{"gender": "Masculino", "roleName": "user"}],
         "DISTINCT categoria": [{"categoria": "Particular"}],
     })
     payload = CargaInicialRequest(saldos=[
-        SaldoCargado(anio=2026, categoria="Categoria Inexistente", diasPendientes=5),
+        SaldoCargado(anio=ciclo_vacaciones(date.today()), categoria="Categoria Inexistente", diasPendientes=5),
     ])
     with pytest.raises(HTTPException) as e:
         guardar_carga_inicial(8, payload, db, {"employeeId": 7})

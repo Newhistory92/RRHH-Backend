@@ -337,7 +337,7 @@ def calcular_dias_vacaciones(tipo_contrato: str, fecha_ingreso,
         return 25
     return 30
 # ---------------------------------------------------------------------------
-# GET /licenses/configuracion — Obtiene las configuraciones anuales
+# GET /licenses/configuracion — Obtiene las configuraciones de licencias
 # ---------------------------------------------------------------------------
 @router.get("/configuracion", dependencies=[Depends(require_auth)])
 def get_configuraciones(db: Session = Depends(get_db)):
@@ -372,7 +372,7 @@ def create_configuracion(data: dict = Body(...), db: Session = Depends(get_db)):
         return {"message": "Configuración creada", "id": new_id}
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=400, detail="Error al crear. Es posible que ya exista una configuración para ese año, tipo y contrato.")
+        raise HTTPException(status_code=400, detail="Error al crear. Es posible que ya exista una configuración para ese tipo y contrato.")
 
 # ---------------------------------------------------------------------------
 # PUT /licenses/configuracion/{id} — Actualiza una regla
