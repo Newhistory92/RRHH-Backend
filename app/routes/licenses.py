@@ -414,6 +414,18 @@ def update_configuracion(config_id: int, data: dict = Body(...), db: Session = D
     categoria = data.get("categoria")
     dias_totales = data.get("diasTotales")
 
+    # Mismo chequeo que create_configuracion, con AND id <> :id: sin esto se
+    # podia editar una fila para que su (tipo, categoria) chocara con otra ya
+    # existente -- la misma puerta trasera que el chequeo del POST cierra,
+    # abierta del lado del PUT.
+    if tipo and categoria:
+        existe = db.execute(text("""
+            SELECT TOP 1 id FROM ConfiguracionLicencias
+            WHERE tipo = :tipo AND categoria = :categoria AND id <> :id
+        """), {"tipo": tipo, "categoria": categoria, "id": config_id}).first()
+        if existe:
+            raise HTTPException(status_code=400, detail="Ya existe otra configuración para ese tipo y contrato.")
+
     try:
         db.execute(text("""
             UPDATE ConfiguracionLicencias 
