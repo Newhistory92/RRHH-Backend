@@ -21,6 +21,7 @@ from app.database.saldo_inicial_licencias import (
     saldos_de_empleado,
 )
 from app.services.saldo_licencias import (
+    anios_de_vacaciones_con_datos,
     ANIOS_DE_VENTANA,
     anio_de_categoria,
     anios_de_ventana,
@@ -669,20 +670,33 @@ RRHH_ONLY_TYPES = [
     "fallecimiento en parto",
 ]
 
-ROLES_CON_LICENCIAS_RESTRINGIDAS = {"rrhh", "admin"}
+def _es_categoria_restringida(categoria: str) -> bool:
+    """Categorias de asignacion exclusiva de RRHH: encuadre medico y
+    excepcionales, que no se autogestionan por el circuito comun. Quien
+    puede VERLAS depende de donde se mire, no del rol del dueno del saldo --
+    ver el uso en armar_balances y en armar_catalogo_carga."""
+    tipo_lower = categoria.lower()
+    return any(re.search(r"\b" + re.escape(t) + r"\b", tipo_lower) for t in RRHH_ONLY_TYPES)
 
 
 def _le_aplica_al_empleado(categoria: str, gender: str | None, role_name: str) -> bool:
-    """Mismos filtros en ambos loops de armar_balances: una categoria
-    restringida no puede aparecer via el camino de "sin configuracion" si no
-    aparece por el camino normal."""
+    """Filtro de genero: nacimiento solo para hombres, embarazo solo para
+    mujeres.
+
+    El chequeo de rol para categorias restringidas se saco de aca: antes
+    dependia de que el DUENO del saldo tuviera rol RRHH/ADMIN, lo cual
+    mostraba esas nueve categorias vacias en el saldo personal de cualquier
+    empleado con ese rol -- aunque nadie se las hubiera cargado nunca -- y
+    de paso se las escondia a Carga Inicial para cualquier empleado que NO
+    tuviera ese rol, cuando ahi RRHH tiene que poder ofrecerlas siempre.
+    role_name se mantiene en la firma por compatibilidad con los llamadores
+    existentes, pero ya no se usa aca.
+    """
     tipo_lower = categoria.lower()
     if "nacimiento" in tipo_lower and gender != "Masculino":
         return False
     if "embarazo" in tipo_lower and gender != "Femenino":
         return False
-    if any(re.search(r"\b" + re.escape(t) + r"\b", tipo_lower) for t in RRHH_ONLY_TYPES):
-        return role_name in ROLES_CON_LICENCIAS_RESTRINGIDAS
     return True
 
 
@@ -710,8 +724,17 @@ def armar_balances(
         if not _le_aplica_al_empleado(row["tipoLicencia"], gender, role_name):
             continue
 
-        tipo_lower = row["tipoLicencia"].lower()
         clave = (row["anio"], row["tipoLicencia"])
+
+        # Las categorias restringidas a RRHH no se autogestionan: en la vista
+        # personal solo aparecen si RRHH ya cargo un saldo para esta persona
+        # y este anio. Sin esto, alguien con rol RRHH/ADMIN veia las nueve
+        # categorias restringidas vacias en su propio saldo, aunque nunca se
+        # las hubieran cargado.
+        if _es_categoria_restringida(row["tipoLicencia"]) and clave not in saldos_iniciales:
+            continue
+
+        tipo_lower = row["tipoLicencia"].lower()
 
         totales = total_del_anio(
             saldo_inicial=saldos_iniciales.get(clave),
@@ -874,11 +897,19 @@ def get_license_saldos(
     # categorias son anuales sobre el anio calendario en curso. Aplicar la
     # ventana entera a todo generaria filas fantasma (anios sin exito de
     # expiracion) para categorias que no tienen ciclo.
+    #
+    # Dentro de la ventana de vacaciones, un anio anterior al vigente solo se
+    # muestra si tiene algo real -saldo cargado o consumo registrado-. Sin
+    # esto, alguien sin historial previo (el caso normal) veia dos anios mas
+    # con "0/0 dias" sin ningun significado, solo porque la ventana existe.
     filas = []
     for cfg in configs:
         cfg_dict = dict(cfg)
-        if cfg_dict["categoria"].strip().lower() == "vacaciones":
-            anios_de_esta_categoria = anios_de_ventana(current_cycle)
+        categoria = cfg_dict["categoria"]
+        if categoria.strip().lower() == "vacaciones":
+            anios_de_esta_categoria = anios_de_vacaciones_con_datos(
+                current_cycle, categoria, saldos_iniciales, consumidos_por_clave
+            )
         else:
             anios_de_esta_categoria = [today.year]
         filas.extend(expandir_por_anio([cfg_dict], anios_de_esta_categoria, consumidos_por_clave))

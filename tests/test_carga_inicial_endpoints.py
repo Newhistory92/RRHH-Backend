@@ -73,18 +73,15 @@ def test_no_ofrece_nacimiento_a_una_empleada():
     assert all(f["categoria"] != "Nacimiento" for f in cat["anuales"])
 
 
-def test_no_ofrece_restringidas_a_un_rol_comun():
+def test_ofrece_restringidas_sin_importar_el_rol_del_empleado():
+    """Carga Inicial es la herramienta con la que RRHH decide que cargarle a
+    CUALQUIER empleado -esa decision no depende del rol de a quien se le esta
+    cargando. Antes se las ofrecia solo si el empleado destino ya tenia rol
+    RRHH/ADMIN, lo que le impedia a RRHH cargarle "Accidente de trabajo" a un
+    empleado comun -justo el caso mas habitual."""
     cat = armar_catalogo_carga(
         categorias=CATEGORIAS, saldos={}, ciclo_actual=2026, anio_calendario=2026,
         gender="Masculino", role_name="user",
-    )
-    assert all(f["categoria"] != "Accidente de trabajo" for f in cat["anuales"])
-
-
-def test_ofrece_restringidas_a_rrhh():
-    cat = armar_catalogo_carga(
-        categorias=CATEGORIAS, saldos={}, ciclo_actual=2026, anio_calendario=2026,
-        gender="Masculino", role_name="rrhh",
     )
     assert any(f["categoria"] == "Accidente de trabajo" for f in cat["anuales"])
 

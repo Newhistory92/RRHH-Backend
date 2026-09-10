@@ -85,27 +85,32 @@ def test_embarazo_no_se_le_ofrece_a_un_empleado():
     assert balances == []
 
 
-def test_las_licencias_restringidas_se_le_muestran_a_rrhh():
-    """El rol llega en minuscula y se comparaba contra mayuscula, asi que la
-    condicion era siempre verdadera y estas licencias estaban ocultas para
-    todos, RRHH incluido."""
+def test_las_licencias_restringidas_no_se_muestran_sin_saldo_cargado():
+    """Son de asignacion manual por RRHH, no se autogestionan: sin un saldo
+    ya cargado no pertenecen a la vista personal de nadie, ni siquiera de
+    alguien con rol RRHH o ADMIN -- antes se mostraban vacias para ese rol
+    aunque nunca se las hubieran cargado, lo que era puro ruido."""
     filas = [{"anio": 2026, "tipoLicencia": "Accidente de trabajo",
               "contrato": "permanente", "diasTotales": 30, "diasConsumidos": 0}]
     balances = armar_balances(
         rows=filas, saldos_iniciales={}, dias_vac=20,
         gender="Masculino", role_name="rrhh",
     )
-    assert len(balances) == 1
+    assert balances == []
 
 
-def test_las_licencias_restringidas_no_se_le_muestran_a_un_empleado_comun():
+def test_las_licencias_restringidas_se_muestran_si_rrhh_ya_cargo_un_saldo():
+    """El caso que si tiene que andar: RRHH carga un saldo para un empleado
+    comun -sin rol RRHH/ADMIN- y a partir de ahi la categoria le aparece en
+    su propio saldo, con el numero cargado."""
     filas = [{"anio": 2026, "tipoLicencia": "Accidente de trabajo",
               "contrato": "permanente", "diasTotales": 30, "diasConsumidos": 0}]
     balances = armar_balances(
-        rows=filas, saldos_iniciales={}, dias_vac=20,
+        rows=filas, saldos_iniciales={(2026, "Accidente de trabajo"): 10}, dias_vac=20,
         gender="Masculino", role_name="user",
     )
-    assert balances == []
+    assert len(balances) == 1
+    assert balances[0]["diasTotales"] == 10
 
 
 

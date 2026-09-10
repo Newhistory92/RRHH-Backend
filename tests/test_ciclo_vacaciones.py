@@ -59,3 +59,42 @@ def test_el_consumo_se_cruza_sin_importar_mayusculas():
     filas = expandir_por_anio(CONFIGS, [2026], {(2026, "vacaciones"): 4})
     fila = next(f for f in filas if f["tipoLicencia"] == "Vacaciones")
     assert fila["diasConsumidos"] == 4
+
+
+from app.services.saldo_licencias import anios_de_vacaciones_con_datos
+
+
+def test_sin_historial_previo_solo_se_muestra_el_anio_vigente():
+    """El caso comun: un empleado sin saldo cargado ni consumo en anios
+    anteriores no tiene por que ver dos filas mas en 0/0."""
+    anios = anios_de_vacaciones_con_datos(
+        ciclo=2025, categoria="Vacaciones",
+        saldos_iniciales={}, consumidos_por_clave={},
+    )
+    assert anios == [2025]
+
+
+def test_un_anio_anterior_con_saldo_cargado_se_muestra():
+    anios = anios_de_vacaciones_con_datos(
+        ciclo=2025, categoria="Vacaciones",
+        saldos_iniciales={(2024, "Vacaciones"): 5}, consumidos_por_clave={},
+    )
+    assert set(anios) == {2025, 2024}
+
+
+def test_un_anio_anterior_con_consumo_se_muestra_aunque_no_tenga_saldo_cargado():
+    anios = anios_de_vacaciones_con_datos(
+        ciclo=2025, categoria="Vacaciones",
+        saldos_iniciales={}, consumidos_por_clave={(2023, "vacaciones"): 3},
+    )
+    assert set(anios) == {2025, 2023}
+
+
+def test_el_anio_vigente_se_muestra_aunque_este_vacio():
+    """Es el "anio correspondiente" de la regla: siempre aparece, tenga o no
+    datos cargados."""
+    anios = anios_de_vacaciones_con_datos(
+        ciclo=2025, categoria="Vacaciones",
+        saldos_iniciales={}, consumidos_por_clave={},
+    )
+    assert 2025 in anios

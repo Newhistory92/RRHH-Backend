@@ -95,3 +95,26 @@ def expandir_por_anio(
         for anio in anios
         for cfg in configs
     ]
+
+
+def anios_de_vacaciones_con_datos(
+    ciclo: int,
+    categoria: str,
+    saldos_iniciales: dict[tuple[int, str], int],
+    consumidos_por_clave: dict[tuple[int, str], int],
+) -> list[int]:
+    """
+    De la ventana de 3 anios de vacaciones, cuales mostrar.
+
+    El anio vigente (el ciclo) siempre se muestra, sea cual sea su
+    contenido: es el "anio correspondiente" por defecto. Los dos anteriores
+    solo se muestran si tienen algo real -saldo cargado o consumo
+    registrado-, para no llenar la pantalla de filas en 0/0 sin significado
+    cuando el empleado no tiene historial previo.
+    """
+    return [
+        anio for anio in anios_de_ventana(ciclo)
+        if anio == ciclo
+        or (anio, categoria) in saldos_iniciales
+        or (anio, categoria.lower()) in consumidos_por_clave
+    ]
