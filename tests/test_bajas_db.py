@@ -71,6 +71,39 @@ def test_aplicar_efectos_cancela_las_pendientes_y_limpia_la_cola():
     assert "UPDATE Aprobaciones" in sql
 
 
+def test_aplicar_efectos_reasigna_sus_aprobaciones_pendientes_al_jefe():
+    """Si el dado de baja era supervisor, su cola pasa a su propio superior."""
+    db = FakeSession({
+        "SELECT managerId FROM Employee": [{"managerId": 5}],
+        "SET supervisorId = :jefe": [{"id": 1}, {"id": 2}],
+    })
+    resultado = aplicar_efectos(db, 8, HOY)
+    assert resultado == {"reasignadas": 2, "sinReasignar": 0}
+    params = next(p for sql, p in db.ejecutadas if "SET supervisorId = :jefe" in sql)
+    assert params == {"jefe": 5, "id": 8}
+
+
+def test_aplicar_efectos_sin_jefe_no_reasigna_y_cuenta_las_pendientes():
+    db = FakeSession({
+        "SELECT managerId FROM Employee": [{"managerId": None}],
+        "SELECT COUNT(*) AS n FROM Aprobaciones": [{"n": 3}],
+    })
+    resultado = aplicar_efectos(db, 8, HOY)
+    assert resultado == {"reasignadas": 0, "sinReasignar": 3}
+    assert "SET supervisorId" not in db.sql_ejecutado()
+
+
+def test_aplicar_efectos_no_reasigna_a_un_jefe_que_tambien_esta_de_baja():
+    db = FakeSession({
+        "SELECT managerId FROM Employee": [{"managerId": 5}],
+        "FROM EmployeeBaja": [{"fechaBaja": date(2026, 1, 1), "fechaReingreso": None}],
+        "SELECT COUNT(*) AS n FROM Aprobaciones": [{"n": 2}],
+    })
+    resultado = aplicar_efectos(db, 8, HOY)
+    assert resultado == {"reasignadas": 0, "sinReasignar": 2}
+    assert "SET supervisorId" not in db.sql_ejecutado()
+
+
 def test_borrar_baja_devuelve_true_cuando_borro_algo_y_reactiva():
     db = FakeSession({"DELETE FROM EmployeeBaja": [{"id": 1}]})
     assert borrar_baja(db, 8) is True

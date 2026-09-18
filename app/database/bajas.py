@@ -78,12 +78,52 @@ def _marcar_estado(db: Session, employee_id: int, estado: str) -> None:
                     "WHERE id = :id"), {"e": estado, "id": employee_id})
 
 
-def aplicar_efectos(db: Session, employee_id: int) -> None:
+ACCIONES_PENDIENTES = "('Pendiente', 'Pendiente Siguiente Aprobación')"
+
+
+def _reasignar_aprobaciones(db: Session, employee_id: int, hoy: date) -> dict:
+    """
+    Pasa las aprobaciones que el dado de baja tenia pendientes como
+    supervisor a su propio superior (Employee.managerId).
+
+    Aprobaciones.supervisorId guarda el employeeId del supervisor, igual que
+    lo escribe create_license_request. Si no tiene superior cargado, o el
+    superior tambien esta de baja, no se toca nada: se cuentan para que RRHH
+    sepa cuantas quedaron sin nadie que las resuelva.
+    """
+    fila = db.execute(text("SELECT managerId FROM Employee WHERE id = :id"),
+                      {"id": employee_id}).mappings().first()
+    jefe = fila["managerId"] if fila else None
+
+    if (jefe is not None and jefe != employee_id
+            and baja_vigente_de(db, jefe, hoy) is None):
+        res = db.execute(text(f"""
+            UPDATE Aprobaciones
+            SET supervisorId = :jefe, updatedAt = GETDATE()
+            WHERE supervisorId = :id
+              AND accion IN {ACCIONES_PENDIENTES}
+        """), {"jefe": jefe, "id": employee_id})
+        return {"reasignadas": res.rowcount, "sinReasignar": 0}
+
+    pendientes = db.execute(text(f"""
+        SELECT COUNT(*) AS n FROM Aprobaciones
+        WHERE supervisorId = :id
+          AND accion IN {ACCIONES_PENDIENTES}
+    """), {"id": employee_id}).mappings().first()
+    return {"reasignadas": 0,
+            "sinReasignar": int(pendientes["n"]) if pendientes else 0}
+
+
+def aplicar_efectos(db: Session, employee_id: int,
+                    hoy: Optional[date] = None) -> dict:
     """
     Los efectos colaterales de una baja que ya tiene efecto.
 
-    Cancela las solicitudes de licencia sin resolver y marca el cache de
+    Cancela las solicitudes de licencia sin resolver, reasigna las
+    aprobaciones que tenia pendientes como supervisor y marca el cache de
     estado. No hace commit: el llamador decide la transaccion.
+
+    Devuelve {reasignadas, sinReasignar} de sus aprobaciones como supervisor.
 
     Las dos sentencias de cancelacion son necesarias. License.status es lo que
     ve la persona, pero la cola del supervisor se arma leyendo Aprobaciones
@@ -108,7 +148,10 @@ def aplicar_efectos(db: Session, employee_id: int) -> None:
           AND licenseId IN (SELECT id FROM License WHERE employeeId = :id)
     """), {"id": employee_id})
 
+    aprobaciones = _reasignar_aprobaciones(db, employee_id, hoy or date.today())
+
     _marcar_estado(db, employee_id, ESTADO_BAJA)
+    return aprobaciones
 
 
 def registrar_baja(db: Session, employee_id: int, motivo: str, fecha: date,
@@ -134,11 +177,13 @@ def registrar_baja(db: Session, employee_id: int, motivo: str, fecha: date,
 
     vigente = baja_vigente([{"fechaBaja": fecha, "fechaReingreso": None}],
                            hoy) is not None
+    aprobaciones = {"reasignadas": 0, "sinReasignar": 0}
     if vigente:
-        aplicar_efectos(db, employee_id)
+        aprobaciones = aplicar_efectos(db, employee_id, hoy)
 
     db.commit()
-    return {"id": int(fila[0]) if fila else None, "vigente": vigente}
+    return {"id": int(fila[0]) if fila else None, "vigente": vigente,
+            "aprobaciones": aprobaciones}
 
 
 def borrar_baja(db: Session, employee_id: int) -> bool:

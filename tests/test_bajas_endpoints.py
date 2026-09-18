@@ -46,6 +46,18 @@ def test_registra_la_baja_y_devuelve_el_motivo_y_la_fecha():
     assert resultado["vigente"] is True
 
 
+def test_la_respuesta_informa_las_aprobaciones_que_no_se_pudieron_reasignar():
+    """El modal avisa cuantas quedaron trabadas si el dado de baja no tiene jefe."""
+    db = _db({
+        "SELECT managerId FROM Employee": [{"managerId": None}],
+        "SELECT COUNT(*) AS n FROM Aprobaciones": [{"n": 4}],
+    })
+    resultado = post_baja(8, {"motivo": "Renuncia", "fechaBaja": "2026-09-01"},
+                          db=db, user=USUARIO_RRHH)
+    assert resultado["aprobacionesReasignadas"] == 0
+    assert resultado["aprobacionesSinReasignar"] == 4
+
+
 def test_rechaza_un_motivo_fuera_del_catalogo():
     with pytest.raises(HTTPException) as e:
         post_baja(8, {"motivo": "Se fue nomás", "fechaBaja": "2026-09-01"},

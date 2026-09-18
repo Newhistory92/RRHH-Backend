@@ -1013,6 +1013,10 @@ def post_baja(employee_id: int, data: dict = Body(...),
         "motivo": motivo,
         "fechaBaja": fecha.isoformat(),
         "vigente": resultado["vigente"],
+        # Las que tenia pendientes como supervisor: pasan a su jefe, o quedan
+        # trabadas si no tiene uno disponible, y el modal lo avisa.
+        "aprobacionesReasignadas": resultado["aprobaciones"]["reasignadas"],
+        "aprobacionesSinReasignar": resultado["aprobaciones"]["sinReasignar"],
     }
 
 

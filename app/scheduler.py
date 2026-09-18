@@ -184,8 +184,11 @@ def _tick_bajas():
             log.info("Bajas: no hay ninguna para aplicar hoy")
             return
         for eid in ids:
-            aplicar_efectos(db, eid)
+            aprobaciones = aplicar_efectos(db, eid, hoy)
             log.info("Baja aplicada: empleado %s", eid)
+            if aprobaciones["sinReasignar"]:
+                log.warning("Baja de %s: %s aprobaciones pendientes sin superior "
+                            "a quien reasignar", eid, aprobaciones["sinReasignar"])
         db.commit()
         log.info("Bajas: %s empleados pasaron a Baja", len(ids))
     except Exception as e:
