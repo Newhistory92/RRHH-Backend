@@ -1045,11 +1045,23 @@ def update_license_status(license_id: int, data: dict = Body(...), db: Session =
     observacion = data.get("observacion", "")
     supervisor_emp_id = data.get("supervisorId")
 
-    # Quien aprueba/rechaza debe ser el supervisor indicado (su propio employeeId)
-    # o un usuario RRHH/Admin -- evita que cualquier empleado autenticado apruebe
-    # o rechace licencias ajenas llamando al endpoint directamente.
-    if supervisor_emp_id and supervisor_emp_id != current_user.get("employeeId") and not tiene_permiso(current_user["permisos"], "licencias.configurar"):
-        raise HTTPException(status_code=403, detail="No tenés permiso para gestionar esta solicitud de licencia.")
+    # Quien aprueba/rechaza es RRHH/Admin, o el supervisor que tiene esta
+    # licencia entre sus pendientes. Las dos condiciones del supervisor hacen
+    # falta: sin exigir supervisorId, omitirlo salteaba el chequeo entero; sin
+    # exigir la aprobacion pendiente, el fallback de Paso B la insertaba y
+    # bastaba mandar el propio employeeId para aprobar cualquier licencia.
+    if not tiene_permiso(current_user["permisos"], "licencias.configurar"):
+        propio = current_user.get("employeeId")
+        es_el_supervisor = (supervisor_emp_id is not None and propio is not None
+                            and str(supervisor_emp_id) == str(propio))
+        pendiente = es_el_supervisor and db.execute(text("""
+            SELECT 1 FROM Aprobaciones
+            WHERE licenseId = :licId
+              AND supervisorId = :supId
+              AND accion IN ('Pendiente', 'Pendiente Siguiente Aprobación')
+        """), {"licId": license_id, "supId": propio}).fetchone()
+        if not pendiente:
+            raise HTTPException(status_code=403, detail="No tenés permiso para gestionar esta solicitud de licencia.")
 
     print(f"console.log: Transaction Started for License: {license_id}, status={status}, supervisor={supervisor_emp_id}")
 

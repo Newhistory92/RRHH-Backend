@@ -10,6 +10,8 @@ chequeo de duenio, no el token (eso lo cubren test_auth_middleware y
 test_rutas_de_baja).
 """
 
+from datetime import date
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -155,5 +157,60 @@ def test_rrhh_carga_una_solicitud_a_nombre_de_otro(catalogo):
     """El panel de RRHH (DetailTables) carga licencias por el empleado."""
     cliente, db = _cliente(RRHH, SOLICITANTE)
     resp = cliente.post("/licenses/request", json=_solicitud(OTRO))
+    assert resp.status_code == 200
+    assert db.commits == 1
+
+
+# ---------------------------------------------------------------------------
+# PATCH /licenses/requests/{license_id}/status
+# ---------------------------------------------------------------------------
+LICENCIA_DE_YO = {"SELECT * FROM License WHERE id": [
+    {"id": 5, "employeeId": YO, "type": "Estudio", "status": "Pendiente",
+     "duracion": 2, "startDate": date(2026, 11, 2), "endDate": date(2026, 11, 3)}]}
+APROBACION_PENDIENTE = {"SELECT 1 FROM Aprobaciones": [{"x": 1}]}
+
+
+def _resolver(usuario, respuestas, **payload):
+    cliente, db = _cliente(usuario, respuestas)
+    resp = cliente.patch("/licenses/requests/5/status",
+                         json={"status": "Rechazada", **payload})
+    return resp, db
+
+
+def test_sin_supervisor_id_no_se_saltea_el_chequeo():
+    """Omitir supervisorId salteaba el chequeo entero: cualquiera podia
+    cambiarle el estado a cualquier licencia, la propia incluida."""
+    resp, db = _resolver(EMPLEADO_COMUN, LICENCIA_DE_YO)
+    assert resp.status_code == 403
+    assert "UPDATE License" not in db.sql_ejecutado()
+
+
+def test_poner_el_propio_id_como_supervisor_no_alcanza():
+    """El fallback de Paso B insertaba la aprobacion si no existia: bastaba
+    con mandar el propio employeeId para aprobar cualquier licencia."""
+    resp, db = _resolver(EMPLEADO_COMUN, LICENCIA_DE_YO, supervisorId=YO)
+    assert resp.status_code == 403
+    assert "UPDATE License" not in db.sql_ejecutado()
+
+
+def test_supervisor_con_aprobacion_pendiente_resuelve():
+    """El flujo de Gestion de Licencias: manda su employeeId como supervisorId
+    y la licencia figura entre sus pendientes."""
+    supervisor = {**EMPLEADO_COMUN, "employeeId": OTRO}
+    resp, db = _resolver(supervisor, {**APROBACION_PENDIENTE, **LICENCIA_DE_YO},
+                         supervisorId=OTRO)
+    assert resp.status_code == 200
+    assert db.commits == 1
+
+
+def test_supervisor_no_puede_resolver_en_nombre_de_otro_supervisor():
+    supervisor = {**EMPLEADO_COMUN, "employeeId": OTRO}
+    resp, _ = _resolver(supervisor, {**APROBACION_PENDIENTE, **LICENCIA_DE_YO},
+                        supervisorId=99)
+    assert resp.status_code == 403
+
+
+def test_rrhh_resuelve_sin_supervisor_id():
+    resp, db = _resolver(RRHH, LICENCIA_DE_YO)
     assert resp.status_code == 200
     assert db.commits == 1
