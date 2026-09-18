@@ -18,10 +18,10 @@ from typing import Optional
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.database.estado_empleado import estado_segun_licencias
 from app.services.bajas import a_date, antiguedad_en_anios, baja_abierta, baja_vigente
 
 ESTADO_BAJA = "Baja"
-ESTADO_ACTIVO = "Activo"
 
 CREATE_TABLE_SQL = """
 IF NOT EXISTS (
@@ -202,7 +202,7 @@ def borrar_baja(db: Session, employee_id: int) -> bool:
     if res.rowcount == 0:
         return False
 
-    _marcar_estado(db, employee_id, ESTADO_ACTIVO)
+    _marcar_estado(db, employee_id, estado_segun_licencias(db, employee_id))
     db.commit()
     return True
 
@@ -222,7 +222,7 @@ def reincorporar(db: Session, employee_id: int, fecha_reingreso: date) -> bool:
     if res.rowcount == 0:
         return False
 
-    _marcar_estado(db, employee_id, ESTADO_ACTIVO)
+    _marcar_estado(db, employee_id, estado_segun_licencias(db, employee_id))
     db.commit()
     return True
 
@@ -364,6 +364,6 @@ def pendientes_de_aplicar(db: Session, hoy: date) -> list[int]:
         JOIN Employee e ON e.id = b.employeeId
         WHERE b.fechaReingreso IS NULL
           AND b.fechaBaja <= :hoy
-          AND e.status <> :baja
+          AND (e.status IS NULL OR e.status <> :baja)
     """), {"hoy": hoy, "baja": ESTADO_BAJA}).mappings().all()
     return [int(f["employeeId"]) for f in filas]

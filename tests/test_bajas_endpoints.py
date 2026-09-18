@@ -119,6 +119,25 @@ def test_rechaza_la_baja_del_ultimo_admin():
     assert "ADMIN" in str(e.value.detail)
 
 
+def test_dos_bajas_programadas_de_admin_no_dejan_al_sistema_sin_admin():
+    """Otro ADMIN con una baja programada, o con la cuenta bloqueada, no
+    cuenta como disponible: si no, dos bajas programadas se validarian una
+    contra la otra y al llegar el dia no quedaria ninguno."""
+    db = _db({
+        "r.name = 'ADMIN' AND u.employeeId = :id": [{"n": 1}],
+        "u.employeeId <> :id": [{"n": 0}],
+    })
+    with pytest.raises(HTTPException) as e:
+        post_baja(8, {"motivo": "Renuncia", "fechaBaja": "2999-01-01"},
+                  db=db, user=USUARIO_RRHH)
+    assert e.value.status_code == 400
+    sql = next(sql for sql, _ in db.ejecutadas if "u.employeeId <> :id" in sql)
+    assert "u.activo = 1" in sql
+    # Cualquier baja abierta lo descarta, tenga efecto o sea programada.
+    assert "fechaReingreso IS NULL" in sql
+    assert "fechaBaja <= :hoy" not in sql
+
+
 def test_permite_la_baja_de_un_admin_si_queda_otro():
     db = _db({
         "r.name = 'ADMIN' AND u.employeeId = :id": [{"n": 1}],

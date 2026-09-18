@@ -922,22 +922,27 @@ def _es_admin(db: Session, employee_id: int) -> bool:
     return bool(fila and fila["n"])
 
 
-def _quedan_otros_admin(db: Session, employee_id: int, hoy: date) -> bool:
+def _quedan_otros_admin(db: Session, employee_id: int) -> bool:
     """
     Si hay algun otro ADMIN operativo aparte de este empleado.
 
     Una cuenta ADMIN sin empleado asociado -el admin de sistema- cuenta como
     otro: no se le puede dar de baja, asi que siempre queda disponible.
+
+    No cuentan los que tienen la cuenta bloqueada ni los que tienen cualquier
+    baja abierta, tambien programada: si no, dos bajas programadas de ADMIN
+    se validarian una contra la otra y al llegar el dia no quedaria ninguno.
     """
     fila = db.execute(text("""
         SELECT COUNT(*) AS n
         FROM [User] u JOIN Role r ON r.id = u.roleId
         WHERE r.name = 'ADMIN'
+          AND u.activo = 1
           AND (u.employeeId IS NULL OR u.employeeId <> :id)
           AND (u.employeeId IS NULL OR u.employeeId NOT IN (
                 SELECT employeeId FROM EmployeeBaja
-                WHERE fechaReingreso IS NULL AND fechaBaja <= :hoy))
-    """), {"id": employee_id, "hoy": hoy}).mappings().first()
+                WHERE fechaReingreso IS NULL))
+    """), {"id": employee_id}).mappings().first()
     return bool(fila and fila["n"])
 
 
@@ -995,7 +1000,7 @@ def post_baja(employee_id: int, data: dict = Body(...),
                        "Cancelala antes de registrar otra.")
         raise HTTPException(status_code=400, detail=detalle)
 
-    if _es_admin(db, employee_id) and not _quedan_otros_admin(db, employee_id, hoy):
+    if _es_admin(db, employee_id) and not _quedan_otros_admin(db, employee_id):
         raise HTTPException(
             status_code=400,
             detail="Es el último usuario ADMIN activo: si se da de baja nadie "

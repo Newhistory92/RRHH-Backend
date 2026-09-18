@@ -154,6 +154,7 @@ Ese argumento no aplica acá, y vale la pena dejar escrito por qué:
   > está de baja se le deniega por defecto toda ruta que no figure en
   > `RUTAS_DE_BAJA`, una allowlist explícita de `(método, plantilla de ruta)`
   > limitada a su legajo (su empleado, sus documentos y `/auth/permisos`).
+
 - **El modo de falla se invierte.** Con el estado derivado, el corte de accesos
   no puede desincronizarse: se calcula con la fecha en el momento de usarlo. Una
   baja cargada con fecha futura pasa a tener efecto sola a la medianoche, sin
@@ -202,7 +203,8 @@ Una sola función, en una transacción:
 4. **No toca `User.activo`.** Es toda la diferencia con el bloqueo de ADMIN.
 
 Corregir y reincorporar hacen el camino inverso sobre el caché:
-`Employee.status` vuelve a `'Activo'`. Las solicitudes canceladas **no** se
+`Employee.status` vuelve a `'Activo'` (o a `'Licencia'` si tiene una licencia
+aprobada en curso, la misma regla que `_sync_employee_status`). Las solicitudes canceladas **no** se
 resucitan —quedan rechazadas con su observación— porque volver a la cola del
 supervisor una licencia que se rechazó semanas antes sería más confuso que
 pedirla de nuevo.

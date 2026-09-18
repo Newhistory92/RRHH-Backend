@@ -123,6 +123,32 @@ def test_reincorporar_escribe_la_fecha_y_reactiva():
     assert "UPDATE Employee SET status" in sql
 
 
+def _estado_escrito(db):
+    return next(p["e"] for sql, p in db.ejecutadas
+                if "UPDATE Employee SET status" in sql)
+
+
+def test_corregir_deja_en_licencia_a_quien_tiene_una_aprobada_en_curso():
+    """Mismo criterio que _sync_employee_status: no se pisa 'Licencia'."""
+    db = FakeSession({"DELETE FROM EmployeeBaja": [{"id": 1}],
+                      "status = 'Aprobada'": [{"id": 3}]})
+    borrar_baja(db, 8)
+    assert _estado_escrito(db) == "Licencia"
+
+
+def test_reincorporar_deja_en_licencia_a_quien_tiene_una_aprobada_en_curso():
+    db = FakeSession({"UPDATE EmployeeBaja": [{"id": 1}],
+                      "status = 'Aprobada'": [{"id": 3}]})
+    reincorporar(db, 8, date(2026, 10, 1))
+    assert _estado_escrito(db) == "Licencia"
+
+
+def test_reincorporar_sin_licencia_en_curso_deja_activo():
+    db = FakeSession({"UPDATE EmployeeBaja": [{"id": 1}]})
+    reincorporar(db, 8, date(2026, 10, 1))
+    assert _estado_escrito(db) == "Activo"
+
+
 def test_reincorporar_sin_baja_abierta_devuelve_false():
     db = FakeSession({"UPDATE EmployeeBaja": []})
     assert reincorporar(db, 8, date(2026, 10, 1)) is False
@@ -169,3 +195,10 @@ def test_pendientes_de_aplicar_devuelve_los_ids():
         {"employeeId": 8}, {"employeeId": 9},
     ]})
     assert pendientes_de_aplicar(db, HOY) == [8, 9]
+
+
+def test_pendientes_de_aplicar_no_saltea_a_quien_tiene_status_null():
+    """e.status <> 'Baja' es NULL -no verdadero- con status NULL en SQL."""
+    db = FakeSession({"FROM EmployeeBaja b": []})
+    pendientes_de_aplicar(db, HOY)
+    assert "e.status IS NULL OR e.status <> :baja" in db.sql_ejecutado()

@@ -9,6 +9,7 @@ from app.permisos import tiene_permiso
 from datetime import datetime, date, timedelta
 from typing import Optional
 from app.database.bajas import fecha_de_corte
+from app.database.estado_empleado import estado_segun_licencias
 from app.database.feriados import (
     ensure_table as ensure_feriado_table,
     get_feriados as get_feriados_data,
@@ -1026,15 +1027,7 @@ def _sync_employee_status(db: Session, employee_id: int):
     if actual and actual["status"] in ESTADOS_TERMINALES:
         return
 
-    active_lic = db.execute(text("""
-        SELECT id FROM License
-        WHERE employeeId = :empId
-          AND status = 'Aprobada'
-          AND CAST(startDate AS DATE) <= CAST(GETDATE() AS DATE)
-          AND CAST(endDate AS DATE) >= CAST(GETDATE() AS DATE)
-    """), {"empId": employee_id}).first()
-
-    new_status = "Licencia" if active_lic else "Activo"
+    new_status = estado_segun_licencias(db, employee_id)
     db.execute(text("""
         UPDATE Employee SET status = :status, updatedAt = GETDATE() WHERE id = :empId
     """), {"status": new_status, "empId": employee_id})

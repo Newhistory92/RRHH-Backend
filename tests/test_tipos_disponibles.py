@@ -33,7 +33,6 @@ def _emp_row(**overrides):
     row = {
         "tipoContrato": "permanente",
         "fechaIngreso": None,
-        "fechaJubilacion": None,
         "gender": "Masculino",
         "roleName": "user",
     }

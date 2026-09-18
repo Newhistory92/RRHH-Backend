@@ -52,7 +52,7 @@ def _db(saldos_iniciales: list[dict]) -> FakeSession:
         }],
         EMP_QUERY_TIPOS: [{
             "tipoContrato": "permanente", "fechaIngreso": None,
-            "fechaJubilacion": None, "gender": "Masculino",
+            "gender": "Masculino",
             "roleName": "user",
         }],
         CONFIG_QUERY: [{"nombre": "Vacaciones", "diasTotales": 30, "consumidos": 0}],
