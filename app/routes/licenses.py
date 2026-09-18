@@ -478,6 +478,14 @@ def create_license_request(data: dict = Body(...), db: Session = Depends(get_db)
     if not employee_id or not start_date or not end_date:
         raise HTTPException(status_code=400, detail="Datos incompletos")
 
+    # employeeId solo puede diferir del usuario autenticado si quien llama es
+    # RRHH/Admin (evita que un empleado solicite licencias a nombre de otro).
+    # Va antes de tocar la base: mas abajo las validaciones de genero y
+    # antiguedad responden con un 400 que describe al empleado, y ese mensaje
+    # no puede llegarle a quien no tiene por que conocerlo.
+    is_caller_rrhh = tiene_permiso(current_user["permisos"], "licencias.configurar")
+    exigir_propio_o_permiso(current_user, employee_id, "licencias.configurar")
+
     # Bloqueo: no se puede crear una nueva solicitud del MISMO tipo si ya hay una
     # pendiente sin resolver. Tipos distintos no se bloquean entre si -- una
     # Vacaciones pendiente no debe impedir pedir, por ejemplo, un permiso por
@@ -529,19 +537,13 @@ def create_license_request(data: dict = Body(...), db: Session = Depends(get_db)
     # matcheando por substring -- las dos discrepaban sobre la misma
     # categoria ("particular" contiene "lar"). Se dejo esta, la de
     # _le_aplica_al_empleado, como unica fuente de verdad.
-    is_caller_rrhh = tiene_permiso(current_user["permisos"], "licencias.configurar")
-
+    #
     # Se compara por palabra completa (no substring): "lar" no debe matchear
     # dentro de "particular". Antes de este ajuste cualquier tipo que
     # contuviera esas letras seguidas caia, sin querer, bajo la restriccion
     # de RRHH.
     if any(re.search(r"\b" + re.escape(t) + r"\b", type_lower) for t in RRHH_ONLY_TYPES) and not is_caller_rrhh:
         raise HTTPException(status_code=403, detail="Esta licencia solo puede ser tramitada por un administrador de RRHH.")
-
-    # F. employeeId solo puede diferir del usuario autenticado si quien llama es RRHH/Admin
-    # (evita que un empleado solicite licencias a nombre de otro)
-    if int(employee_id) != current_user.get("employeeId") and not is_caller_rrhh:
-        raise HTTPException(status_code=403, detail="No podés solicitar una licencia a nombre de otro empleado.")
 
     # D. Vacaciones: Ventana Oct-Abr. No aplica a la carga manual de RRHH: la
     # ventana existe para que un empleado no se autogestione vacaciones fuera

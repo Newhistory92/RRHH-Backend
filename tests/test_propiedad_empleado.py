@@ -106,3 +106,54 @@ def test_notificaciones_ajenas_con_licencias_configurar_es_200():
     cliente, _ = _cliente(RRHH, MENSAJES)
     resp = cliente.get(f"/licenses/notificaciones?employee_id={OTRO}")
     assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# POST /licenses/request
+# ---------------------------------------------------------------------------
+SOLICITANTE = {
+    "INNER JOIN CondicionLaboral cl": [{"gender": "Femenino", "employee_name": "X",
+                                        "tipoContrato": "Planta", "fechaIngreso": None,
+                                        "roleName": "USER"}],
+    # OUTPUT INSERTED.id: el endpoint lee fetchone()[0].
+    "INSERT INTO License": [(99,)],
+}
+
+
+def _solicitud(employee_id, tipo="Estudio"):
+    return {"employeeId": employee_id, "type": tipo, "duration": 2,
+            "startDate": "2026-11-02T00:00:00", "endDate": "2026-11-03T00:00:00"}
+
+
+@pytest.fixture
+def catalogo(monkeypatch):
+    """El saldo tiene su propio test; aca solo tiene que alcanzar."""
+    monkeypatch.setattr(licenses, "tipos_disponibles_de",
+                        lambda *a, **k: {"tipos": [{"nombre": "Estudio",
+                                                    "disponibles": 10}]})
+
+
+def test_solicitud_a_nombre_de_otro_corta_antes_de_leer_sus_datos():
+    """El 403 existia, pero despues de las validaciones de genero y
+    antiguedad: pedir 'Nacimiento' a nombre de otro devolvia el 400 que
+    delataba su genero antes de llegar al chequeo de duenio."""
+    cliente, db = _cliente(EMPLEADO_COMUN, SOLICITANTE)
+    resp = cliente.post("/licenses/request", json=_solicitud(OTRO, "Nacimiento"))
+    assert resp.status_code == 403
+    assert "FROM Employee" not in db.sql_ejecutado()
+    assert "FROM License" not in db.sql_ejecutado()
+
+
+def test_solicitud_propia_es_200(catalogo):
+    cliente, db = _cliente(EMPLEADO_COMUN, SOLICITANTE)
+    resp = cliente.post("/licenses/request", json=_solicitud(YO))
+    assert resp.status_code == 200
+    assert db.commits == 1
+
+
+def test_rrhh_carga_una_solicitud_a_nombre_de_otro(catalogo):
+    """El panel de RRHH (DetailTables) carga licencias por el empleado."""
+    cliente, db = _cliente(RRHH, SOLICITANTE)
+    resp = cliente.post("/licenses/request", json=_solicitud(OTRO))
+    assert resp.status_code == 200
+    assert db.commits == 1
