@@ -8,6 +8,7 @@ from app.auth_middleware import require_auth, require_permission, get_current_us
 from app.permisos import tiene_permiso
 from datetime import datetime, date, timedelta
 from typing import Optional
+from app.database.bajas import fecha_de_corte
 from app.database.feriados import (
     ensure_table as ensure_feriado_table,
     get_feriados as get_feriados_data,
@@ -34,6 +35,10 @@ log = logging.getLogger(__name__)
 
 # Ventana en la que se pueden tomar vacaciones: octubre a abril.
 MESES_DE_VACACIONES = (10, 11, 12, 1, 2, 3, 4)
+
+# Estados que no se recalculan a partir de las licencias: los pone la baja y
+# solo ella los saca.
+ESTADOS_TERMINALES = frozenset({"Baja"})
 
 def get_db():
     db = SessionLocal()
@@ -104,7 +109,7 @@ def tipos_disponibles_de(db: Session, employee_id: int, fecha_referencia: date |
     """
     # 1. Obtener datos del empleado: tipoContrato, género, fecha de ingreso, rol
     emp_query = text("""
-        SELECT cl.tipoContrato, cl.fechaIngreso, cl.fechaJubilacion, e.gender,
+        SELECT cl.tipoContrato, cl.fechaIngreso, e.gender,
                r.name as roleName
         FROM Employee e
         LEFT JOIN CondicionLaboral cl ON e.id = cl.employeeId
@@ -213,7 +218,7 @@ def tipos_disponibles_de(db: Session, employee_id: int, fecha_referencia: date |
         if "vacaciones" in nombre_lower and dias_totales_base == 0:
             dias_vac = calcular_dias_vacaciones(
                 tipo_contrato, fecha_ingreso,
-                emp_data.get("fechaJubilacion"),
+                fecha_de_corte(db, employee_id, today),
             )
             if dias_vac > 0:
                 dias_totales_base = dias_vac
@@ -771,7 +776,7 @@ def get_license_saldos(
     # ── 1. Condición laboral ─────────────────────────────────────────────────
     cl = db.execute(
         text("""
-            SELECT tipoContrato, fechaIngreso, fechaJubilacion
+            SELECT tipoContrato, fechaIngreso
             FROM CondicionLaboral
             WHERE employeeId = :id
         """),
@@ -885,7 +890,7 @@ def get_license_saldos(
     saldos_iniciales = saldos_de_empleado(db, employee_id)
 
     dias_vac = calcular_dias_vacaciones(
-        tipo_contrato, fecha_ingreso, cl.get("fechaJubilacion"),
+        tipo_contrato, fecha_ingreso, fecha_de_corte(db, employee_id, today),
     )
 
     consumo_rows = db.execute(text("""
@@ -1009,10 +1014,19 @@ def marcar_notificacion_leida(notif_id: int, db: Session = Depends(get_db)):
 def _sync_employee_status(db: Session, employee_id: int):
     """
     Compara la fecha actual con las licencias aprobadas del empleado.
-    - Si hoy está dentro del rango [startDate, endDate] de alguna licencia aprobada → status = 'Licencia'
-    - Si no hay ninguna licencia activa hoy → status = 'Activo'
+    - Si hoy esta dentro del rango de alguna licencia aprobada → 'Licencia'
+    - Si no hay ninguna licencia activa hoy → 'Activo'
+
+    No toca los estados terminales. Sin este guard, aprobar una licencia le
+    devolvia el estado 'Activo' a alguien dado de baja, porque el UPDATE se
+    escribia sin mirar lo que habia: el mismo bug que ya le pisaba el
+    'Jubilado' al jubilado.
     """
-    print(f"console.log: Sincronizando status del Employee {employee_id}...")
+    actual = db.execute(text("SELECT status FROM Employee WHERE id = :empId"),
+                        {"empId": employee_id}).mappings().first()
+    if actual and actual["status"] in ESTADOS_TERMINALES:
+        return
+
     active_lic = db.execute(text("""
         SELECT id FROM License
         WHERE employeeId = :empId
@@ -1022,7 +1036,6 @@ def _sync_employee_status(db: Session, employee_id: int):
     """), {"empId": employee_id}).first()
 
     new_status = "Licencia" if active_lic else "Activo"
-    print(f"console.log: Employee Status Updated to: {new_status}")
     db.execute(text("""
         UPDATE Employee SET status = :status, updatedAt = GETDATE() WHERE id = :empId
     """), {"status": new_status, "empId": employee_id})

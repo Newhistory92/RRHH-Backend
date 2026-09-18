@@ -45,13 +45,14 @@ def _datos_empleado(db: Session, employee_id: int) -> Optional[dict]:
     fila = db.execute(text("""
         SELECT e.id, e.biometricoId,
                h.horaInicio, h.horaFin, h.horasTrabajo,
-               c.fechaIngreso, c.fechaJubilacion
+               c.fechaIngreso,
+               (SELECT MAX(b.fechaBaja) FROM EmployeeBaja b
+                WHERE b.employeeId = e.id AND b.fechaReingreso IS NULL
+                  AND b.fechaBaja <= CAST(GETDATE() AS DATE)) AS fechaBaja
         FROM Employee e
         LEFT JOIN Horario h ON e.cronogramaId = h.id
         LEFT JOIN (
-            SELECT employeeId,
-                   MIN(fechaIngreso)    AS fechaIngreso,
-                   MAX(fechaJubilacion) AS fechaJubilacion
+            SELECT employeeId, MIN(fechaIngreso) AS fechaIngreso
             FROM CondicionLaboral
             GROUP BY employeeId
         ) c ON c.employeeId = e.id
@@ -164,17 +165,18 @@ def _a_date(valor) -> Optional[date]:
 
 def rango_de_calculo(anio: int, inicio_modulo: date,
                      fecha_ingreso: Optional[date],
-                     fecha_jubilacion: Optional[date],
+                     fecha_baja: Optional[date],
                      hoy: date) -> Optional[tuple[date, date]]:
     """
     Los dias a calcular para un empleado en un anio, o None si no hay ninguno.
 
     Cuatro fechas lo acotan. Por abajo, el inicio del modulo y el ingreso del
-    empleado. Por arriba, el fin del anio, hoy y la jubilacion.
+    empleado. Por arriba, el fin del anio, hoy y la baja.
 
-    La jubilacion es el espejo exacto del ingreso: por eso el saldo de un
-    jubilado se congela sin ningun caso especial, simplemente deja de haber
-    dias que calcular despues de su fecha.
+    La baja es el espejo exacto del ingreso: por eso el saldo de quien se fue
+    se congela sin ningun caso especial, simplemente deja de haber dias que
+    calcular despues de su fecha. Aplica a cualquier motivo, no solo a la
+    jubilacion.
     """
     desde = max(date(anio, 1, 1), inicio_modulo)
     ingreso = _a_date(fecha_ingreso)
@@ -182,9 +184,9 @@ def rango_de_calculo(anio: int, inicio_modulo: date,
         desde = max(desde, ingreso)
 
     hasta = min(date(anio, 12, 31), hoy)
-    jubilacion = _a_date(fecha_jubilacion)
-    if jubilacion is not None:
-        hasta = min(hasta, jubilacion)
+    baja = _a_date(fecha_baja)
+    if baja is not None:
+        hasta = min(hasta, baja)
 
     if desde > hasta:
         return None
@@ -200,7 +202,7 @@ def recalcular_anio(db: Session, employee_id: int, anio: int) -> int:
     cfg = get_config(db)
     rango = rango_de_calculo(
         anio, _a_date(cfg["fechaInicioModulo"]),
-        emp.get("fechaIngreso"), emp.get("fechaJubilacion"), date.today(),
+        emp.get("fechaIngreso"), emp.get("fechaBaja"), date.today(),
     )
     if rango is None:
         return 0
