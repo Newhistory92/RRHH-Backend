@@ -13,6 +13,9 @@ from fastapi import HTTPException
 
 from tests.fakes import FakeSession
 
+# El endpoint ahora exige ser el duenio de las notificaciones.
+DUENIO = {"employeeId": 42, "permisos": set()}
+
 
 def test_get_notificaciones_devuelve_nueva_cuando_no_leida():
     from app.routes.licenses import get_notificaciones
@@ -23,7 +26,7 @@ def test_get_notificaciones_devuelve_nueva_cuando_no_leida():
         ],
     })
 
-    resultado = get_notificaciones(employee_id=42, db=db)
+    resultado = get_notificaciones(employee_id=42, db=db, current_user=DUENIO)
 
     assert resultado["notifications"][0]["status"] == "nueva"
 
@@ -37,7 +40,7 @@ def test_get_notificaciones_devuelve_leida_cuando_ya_fue_marcada():
         ],
     })
 
-    resultado = get_notificaciones(employee_id=42, db=db)
+    resultado = get_notificaciones(employee_id=42, db=db, current_user=DUENIO)
 
     assert resultado["notifications"][0]["status"] == "leida"
 
