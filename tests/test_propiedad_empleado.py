@@ -78,3 +78,31 @@ def test_legajo_propio_es_200():
     cliente, _ = _cliente(EMPLEADO_COMUN, fila)
     resp = cliente.get(f"/employee/{YO}")
     assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# GET /licenses/notificaciones?employee_id=
+# ---------------------------------------------------------------------------
+MENSAJES = {"FROM Message": [{"id": 1, "text": "hola", "createdAt": "2026-09-01",
+                              "leida": False}]}
+
+
+def test_notificaciones_ajenas_sin_permiso_es_403():
+    cliente, db = _cliente(EMPLEADO_COMUN, MENSAJES)
+    resp = cliente.get(f"/licenses/notificaciones?employee_id={OTRO}")
+    assert resp.status_code == 403
+    assert "FROM Message" not in db.sql_ejecutado()
+
+
+def test_notificaciones_propias_es_200():
+    """La campanita del header las pide con el employeeId propio."""
+    cliente, _ = _cliente(EMPLEADO_COMUN, MENSAJES)
+    resp = cliente.get(f"/licenses/notificaciones?employee_id={YO}")
+    assert resp.status_code == 200
+    assert len(resp.json()["notifications"]) == 1
+
+
+def test_notificaciones_ajenas_con_licencias_configurar_es_200():
+    cliente, _ = _cliente(RRHH, MENSAJES)
+    resp = cliente.get(f"/licenses/notificaciones?employee_id={OTRO}")
+    assert resp.status_code == 200

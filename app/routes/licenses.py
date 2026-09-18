@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from app.database.database import SessionLocal
-from app.auth_middleware import require_auth, require_permission, get_current_user
+from app.auth_middleware import require_auth, require_permission, get_current_user, exigir_propio_o_permiso
 from app.permisos import tiene_permiso
 from datetime import datetime, date, timedelta
 from typing import Optional
@@ -975,7 +975,8 @@ def get_license_requests(status: Optional[str] = None, employee_id: Optional[int
 # GET /licenses/notificaciones — Mensajes activos de un empleado (campanita)
 # ---------------------------------------------------------------------------
 @router.get("/notificaciones", dependencies=[Depends(require_auth)])
-def get_notificaciones(employee_id: int, db: Session = Depends(get_db)):
+def get_notificaciones(employee_id: int, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
+    exigir_propio_o_permiso(current_user, employee_id, "licencias.configurar")
     rows = db.execute(text("""
         SELECT id, text, createdAt, leida
         FROM Message
