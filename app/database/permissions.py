@@ -139,9 +139,19 @@ def permisos_de_rol(db: Session, role_id: int | None) -> set[str]:
     return {f["code"] for f in filas}
 
 
+def esta_de_baja(db: Session, employee_id: int | None,
+                 hoy: date | None = None) -> bool:
+    """Si la persona tiene hoy una baja con efecto. Sin empleado, nunca."""
+    if employee_id is None:
+        return False
+    bajas = bajas_de_empleado(db, employee_id)
+    return baja_vigente(bajas, hoy or date.today()) is not None
+
+
 def permisos_efectivos(db: Session, role_id: int | None,
                        employee_id: int | None,
-                       hoy: date | None = None) -> set[str]:
+                       hoy: date | None = None,
+                       de_baja: bool | None = None) -> set[str]:
     """
     Los permisos con los que realmente opera alguien: los del rol, recortados
     si esta de baja.
@@ -156,10 +166,11 @@ def permisos_efectivos(db: Session, role_id: int | None,
     chica. Se elige eso antes que cachear el estado en el token: un cache
     dejaria a alguien operando con los permisos de antes hasta que expire, que
     es exactamente el modo de falla que este diseno evita.
+
+    de_baja permite pasar el estado ya calculado (el middleware lo necesita
+    tambien para el corte por ruta) y no consultar EmployeeBaja dos veces.
     """
     permisos = permisos_de_rol(db, role_id)
-    if employee_id is None:
-        return permisos
-    bajas = bajas_de_empleado(db, employee_id)
-    de_baja = baja_vigente(bajas, hoy or date.today()) is not None
+    if de_baja is None:
+        de_baja = esta_de_baja(db, employee_id, hoy)
     return recortar_por_baja(permisos, de_baja)

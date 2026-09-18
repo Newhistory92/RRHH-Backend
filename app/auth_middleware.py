@@ -6,16 +6,19 @@ Provee tres dependencias reutilizables:
   - require_auth:      exige token valido, sin pedir permiso puntual
   - require_permission: exige un codigo de permiso concreto
 
-Los permisos salen de la base en CADA request (ver permisos_de_rol). El JWT
-lleva el roleId solo como pista: si el admin cambia el rol de alguien, el
-cambio aplica en el request siguiente y no queda congelado hasta que expire
-el token.
+Los permisos salen de la base en CADA request (ver permisos_efectivos, que
+aplica el recorte por baja sobre los del rol). El JWT lleva el roleId solo
+como pista: si el admin cambia el rol de alguien, el cambio aplica en el
+request siguiente y no queda congelado hasta que expire el token.
+
+Alguien de baja, ademas, solo puede usar las rutas de RUTAS_DE_BAJA: el
+corte vive en get_current_user para alcanzar tambien a require_auth.
 
 No hay ids de rol en este modulo: la autorizacion habla de codigos de
 permiso, y que rol tiene cuales vive en la tabla RolePermission.
 """
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -24,7 +27,7 @@ import os
 from dotenv import load_dotenv
 from app.database.database import SessionLocal
 from app.database.token_blacklist import is_blacklisted
-from app.database.permissions import permisos_efectivos
+from app.database.permissions import esta_de_baja, permisos_efectivos
 from app.permisos import tiene_permiso
 
 load_dotenv()
@@ -44,9 +47,49 @@ def get_db():
 
 
 # ---------------------------------------------------------------------------
+# Lo unico que puede usar alguien de baja
+# ---------------------------------------------------------------------------
+# El recorte de permisos solo frena a los endpoints con require_permission.
+# Los que piden solo estar logueado (require_auth, o get_current_user directo)
+# no miran permisos, asi que el dado de baja se deniega por defecto aca, en el
+# punto comun a todos, y solo pasa lo que figura en esta lista.
+#
+# Clave: (metodo, plantilla de ruta tal como la registra FastAPI).
+# Valor: True si la ruta tiene que ser sobre SU legajo ({employee_id} propio).
+RUTAS_DE_BAJA: dict[tuple[str, str], bool] = {
+    # El shell rearma el menu al montar con los permisos del servidor.
+    ("GET", "/auth/permisos"): False,
+    # El shell carga su propio empleado; sin esto la pantalla de Documentos
+    # se queda en "Cargando informacion del empleado...". Solo el propio: el
+    # endpoint no chequea duenio y cualquier logueado podria leer otro legajo.
+    ("GET", "/employee/{employee_id}"): True,
+    # La pantalla de Documentos: listar y abrir los suyos, que es todo lo que
+    # la baja le deja.
+    ("GET", "/employee/{employee_id}/documents"): True,
+    ("GET", "/employee/{employee_id}/documents/{document_id}/download"): True,
+}
+
+
+def ruta_permitida_de_baja(metodo: str, ruta: str | None, path_params: dict,
+                           employee_id: int | None) -> bool:
+    """
+    Si alguien de baja puede usar esta ruta. Chequeo puro, sin base.
+
+    Una ruta desconocida (None) se deniega: el corte es por defecto cerrado.
+    """
+    solo_propio = RUTAS_DE_BAJA.get((metodo.upper(), ruta or ""))
+    if solo_propio is None:
+        return False
+    if solo_propio:
+        return str(path_params.get("employee_id")) == str(employee_id)
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Dependencia: usuario autenticado
 # ---------------------------------------------------------------------------
 def get_current_user(
+    request: Request,
     token: str = Depends(oauth2_scheme),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -55,9 +98,11 @@ def get_current_user(
       1. Extrae el token Bearer del header Authorization
       2. Verifica que no esté en la blacklist
       3. Decodifica el JWT
-      4. Retorna un dict con {usuario, roleId, employeeId}
+      4. Si la persona esta de baja, corta toda ruta fuera de RUTAS_DE_BAJA
+      5. Retorna un dict con {usuario, roleId, employeeId, permisos}
 
-    Lanza 401 en cualquier caso de fallo.
+    Lanza 401 en cualquier caso de fallo de token, y 403 si esta de baja y
+    la ruta no esta permitida.
     """
     credentials_error = HTTPException(
         status_code=401,
@@ -108,11 +153,22 @@ def get_current_user(
         ).fetchone()
         employee_id = row.employeeId if row else None
 
+    de_baja = esta_de_baja(db, employee_id)
+    if de_baja:
+        ruta = getattr(request.scope.get("route"), "path", None)
+        if not ruta_permitida_de_baja(request.method, ruta,
+                                      request.path_params, employee_id):
+            raise HTTPException(
+                status_code=403,
+                detail="Estás de baja: solo podés consultar tus documentos.",
+            )
+
     return {
         "usuario":    usuario,
         "roleId":     role_id,
         "employeeId": employee_id,
-        "permisos":   permisos_efectivos(db, role_id, employee_id),
+        "permisos":   permisos_efectivos(db, role_id, employee_id,
+                                         de_baja=de_baja),
     }
 
 

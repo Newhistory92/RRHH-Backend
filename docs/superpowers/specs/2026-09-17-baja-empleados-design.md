@@ -144,6 +144,15 @@ Ese argumento no aplica acá, y vale la pena dejar escrito por qué:
   auditar. Lo que se recorta son los permisos, y esos ya se resuelven contra la
   base en **cada** request, en un único lugar (`permisos_de_rol` en
   `app/auth_middleware.py`). No hay superficie dispersa donde olvidarse.
+
+  > **Nota (revisión final):** esto resultó incompleto. El recorte de permisos
+  > solo frena a los endpoints con `require_permission`; unos cuarenta usaban
+  > solo `require_auth` (o `get_current_user` directo) y seguían abiertos al
+  > dado de baja por URL directa. Se cerró con una segunda capa en
+  > `get_current_user`, el punto común a todas las rutas autenticadas: a quien
+  > está de baja se le deniega por defecto toda ruta que no figure en
+  > `RUTAS_DE_BAJA`, una allowlist explícita de `(método, plantilla de ruta)`
+  > limitada a su legajo (su empleado, sus documentos y `/auth/permisos`).
 - **El modo de falla se invierte.** Con el estado derivado, el corte de accesos
   no puede desincronizarse: se calcula con la fecha en el momento de usarlo. Una
   baja cargada con fecha futura pasa a tener efecto sola a la medianoche, sin
