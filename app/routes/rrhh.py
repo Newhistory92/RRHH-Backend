@@ -99,6 +99,7 @@ def _group_by(rows, key: str) -> dict:
 def get_all_employees(db: Session = Depends(get_db)):
     # ── 1. Query principal: empleados con datos de departamento, oficina,
     #       manager, condición laboral, horario y satisfacción ──────────────
+    # Los dados de baja siguen en la lista: desde su perfil RRHH corrige o reincorpora la baja.
     employees_result = db.execute(text("""
         SELECT
             e.id,
@@ -159,7 +160,6 @@ def get_all_employees(db: Session = Depends(get_db)):
         LEFT JOIN CondicionLaboral c ON e.id = c.employeeId
         LEFT JOIN Horario h ON e.cronogramaId = h.id
         LEFT JOIN SatisfaccionMetrica sm ON e.id = sm.employeeId
-        WHERE e.status <> 'Baja'
         ORDER BY e.name ASC
     """)).mappings().all()
 
