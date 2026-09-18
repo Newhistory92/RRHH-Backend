@@ -1,0 +1,280 @@
+"""
+Persistencia de las bajas de empleados.
+
+La tabla EmployeeBaja es la fuente de verdad. Employee.status es cache
+cosmetico para los listados que ya muestran esa columna: la condicion real se
+calcula con baja_vigente cada vez que se usa, asi que el cache no puede
+desincronizar nada importante.
+
+User.activo NO se toca en ningun camino de este modulo. Ese campo es el
+bloqueo de cuenta del panel de ADMIN, que es un caso distinto: el dado de baja
+conserva el acceso, recortado a su legajo.
+"""
+
+from datetime import date
+from typing import Optional
+
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+
+from app.services.bajas import a_date, antiguedad_en_anios, baja_vigente
+
+ESTADO_BAJA = "Baja"
+ESTADO_ACTIVO = "Activo"
+
+CREATE_TABLE_SQL = """
+IF NOT EXISTS (
+    SELECT * FROM sysobjects WHERE name = 'EmployeeBaja' AND xtype = 'U'
+)
+BEGIN
+    CREATE TABLE EmployeeBaja (
+        id             INT IDENTITY(1,1) PRIMARY KEY,
+        employeeId     INT            NOT NULL,
+        motivo         NVARCHAR(50)   NOT NULL,
+        fechaBaja      DATE           NOT NULL,
+        observaciones  NVARCHAR(500)  NULL,
+        fechaReingreso DATE           NULL,
+        registradaPor  INT            NULL,
+        createdAt      DATETIME2      NOT NULL
+    );
+    CREATE INDEX IX_EmployeeBaja_employeeId ON EmployeeBaja (employeeId);
+END
+"""
+
+
+def ensure_table(db: Session) -> None:
+    """
+    DDL idempotente de EmployeeBaja.
+
+    Se llama en el startup de la app, no en los endpoints: bajas_de_empleado
+    corre en CADA request autenticado (el recorte de permisos), y meter DDL en
+    ese camino seria pagar una verificacion de esquema por request.
+    """
+    db.execute(text(CREATE_TABLE_SQL))
+    db.commit()
+
+
+def bajas_de_empleado(db: Session, employee_id: int) -> list[dict]:
+    """
+    Todas las bajas de una persona, de la mas nueva a la mas vieja.
+
+    Devuelve el historial completo, no solo la vigente: quien decide cual
+    aplica es baja_vigente, que es una regla pura y testeable aparte.
+    """
+    filas = db.execute(text("""
+        SELECT id, employeeId, motivo, fechaBaja, observaciones,
+               fechaReingreso, registradaPor, createdAt
+        FROM EmployeeBaja
+        WHERE employeeId = :id
+        ORDER BY fechaBaja DESC
+    """), {"id": employee_id}).mappings().all()
+    return [dict(f) for f in filas]
+
+
+def _marcar_estado(db: Session, employee_id: int, estado: str) -> None:
+    """Escribe el cache cosmetico de Employee.status."""
+    db.execute(text("UPDATE Employee SET status = :e, updatedAt = GETDATE() "
+                    "WHERE id = :id"), {"e": estado, "id": employee_id})
+
+
+def aplicar_efectos(db: Session, employee_id: int) -> None:
+    """
+    Los efectos colaterales de una baja que ya tiene efecto.
+
+    Cancela las solicitudes de licencia sin resolver y marca el cache de
+    estado. No hace commit: el llamador decide la transaccion.
+
+    Las dos sentencias de cancelacion son necesarias. License.status es lo que
+    ve la persona, pero la cola del supervisor se arma leyendo Aprobaciones
+    con accion pendiente: sin el segundo UPDATE la solicitud le seguiria
+    apareciendo para aprobar. Se actualiza la fila que ya existe en vez de
+    insertar una nueva, porque supervisorId es NOT NULL y el sistema no es un
+    supervisor: la fila pendiente ya trae el suyo.
+    """
+    db.execute(text("""
+        UPDATE License
+        SET status = 'Rechazada', updatedAt = GETDATE()
+        WHERE employeeId = :id
+          AND status IN ('Pendiente', 'Pendiente Siguiente Aprobación')
+    """), {"id": employee_id})
+
+    db.execute(text("""
+        UPDATE Aprobaciones
+        SET accion = 'Rechazada',
+            observacion = 'Cancelada automáticamente por la baja del empleado',
+            fecha = GETDATE(), updatedAt = GETDATE()
+        WHERE accion IN ('Pendiente', 'Pendiente Siguiente Aprobación')
+          AND licenseId IN (SELECT id FROM License WHERE employeeId = :id)
+    """), {"id": employee_id})
+
+    _marcar_estado(db, employee_id, ESTADO_BAJA)
+
+
+def registrar_baja(db: Session, employee_id: int, motivo: str, fecha: date,
+                   observaciones: Optional[str], registrada_por: Optional[int],
+                   hoy: date) -> dict:
+    """
+    Inserta la baja y, si ya tiene efecto, aplica sus consecuencias.
+
+    Una fecha futura se guarda sin aplicar nada: el tick diario la aplica
+    cuando llegue el dia. El recorte de accesos no depende de ese tick, porque
+    se calcula con la fecha en cada request.
+
+    Todo va en una transaccion: una baja registrada sin sus efectos dejaria
+    solicitudes pendientes de alguien que ya no trabaja.
+    """
+    fila = db.execute(text("""
+        INSERT INTO EmployeeBaja
+            (employeeId, motivo, fechaBaja, observaciones, registradaPor, createdAt)
+        OUTPUT INSERTED.id
+        VALUES (:id, :motivo, :fecha, :obs, :por, GETDATE())
+    """), {"id": employee_id, "motivo": motivo, "fecha": fecha,
+           "obs": observaciones, "por": registrada_por}).fetchone()
+
+    vigente = fecha <= hoy
+    if vigente:
+        aplicar_efectos(db, employee_id)
+
+    db.commit()
+    return {"id": int(fila[0]) if fila else None, "vigente": vigente}
+
+
+def borrar_baja(db: Session, employee_id: int) -> bool:
+    """
+    Corrige un error de carga: borra la baja abierta como si nunca existiera.
+
+    Devuelve False si no habia ninguna abierta. Las solicitudes canceladas no
+    se resucitan -ver el spec-: volver a la cola una licencia rechazada
+    semanas antes confundiria mas que pedirla de nuevo.
+    """
+    res = db.execute(text("""
+        DELETE FROM EmployeeBaja
+        WHERE employeeId = :id AND fechaReingreso IS NULL
+    """), {"id": employee_id})
+
+    if res.rowcount == 0:
+        return False
+
+    _marcar_estado(db, employee_id, ESTADO_ACTIVO)
+    db.commit()
+    return True
+
+
+def reincorporar(db: Session, employee_id: int, fecha_reingreso: date) -> bool:
+    """
+    Cierra la baja abierta dejandola en el historial.
+
+    Devuelve False si no habia ninguna abierta.
+    """
+    res = db.execute(text("""
+        UPDATE EmployeeBaja
+        SET fechaReingreso = :fecha
+        WHERE employeeId = :id AND fechaReingreso IS NULL
+    """), {"fecha": fecha_reingreso, "id": employee_id})
+
+    if res.rowcount == 0:
+        return False
+
+    _marcar_estado(db, employee_id, ESTADO_ACTIVO)
+    db.commit()
+    return True
+
+
+def baja_vigente_de(db: Session, employee_id: int, hoy: date) -> Optional[dict]:
+    """La baja con efecto hoy para esta persona, o None."""
+    return baja_vigente(bajas_de_empleado(db, employee_id), hoy)
+
+
+def fecha_de_corte(db: Session, employee_id: int, hoy: date) -> Optional[date]:
+    """
+    Hasta cuando computarle a esta persona, o None si sigue trabajando.
+
+    Es la fecha de la baja vigente, sea cual sea el motivo: quien se fue deja
+    de acumular vacaciones y de generar jornadas. Lo consumen
+    calcular_dias_vacaciones y rango_de_calculo.
+    """
+    baja = baja_vigente_de(db, employee_id, hoy)
+    return a_date(baja["fechaBaja"]) if baja else None
+
+
+def bajas_para_tablero(db: Session, hoy: date) -> list[dict]:
+    """
+    Todas las bajas registradas, con los datos del empleado para el tablero.
+
+    Trae las tres clases -vigente, reincorporada y programada- porque las
+    programadas son el unico lugar donde RRHH puede ver y corregir una baja
+    cargada con preaviso antes de que llegue el dia.
+
+    El saldo de asistencia no es una columna: es la suma de los dias. Mismo
+    calculo que saldo_acumulado() en app/database/asistencia.py.
+    """
+    filas = db.execute(text("""
+        SELECT b.id, b.employeeId, b.motivo, b.fechaBaja, b.fechaReingreso,
+               b.observaciones,
+               e.name, e.dni, e.email, e.photo,
+               d.nombre AS departamento, o.nombre AS oficina,
+               c.tipoContrato, c.fechaIngreso,
+               (SELECT COALESCE(SUM(j.saldoDia), 0) FROM JornadaDiaria j
+                WHERE j.employeeId = e.id) AS saldoFinal
+        FROM EmployeeBaja b
+        JOIN Employee e ON e.id = b.employeeId
+        LEFT JOIN Department d ON e.departmentId = d.id
+        LEFT JOIN Office o ON e.officeId = o.id
+        LEFT JOIN (
+            SELECT employeeId, MIN(fechaIngreso) AS fechaIngreso,
+                   MAX(tipoContrato) AS tipoContrato
+            FROM CondicionLaboral GROUP BY employeeId
+        ) c ON c.employeeId = e.id
+        ORDER BY b.fechaBaja DESC, e.name ASC
+    """)).mappings().all()
+
+    resultado = []
+    for f in filas:
+        fecha_baja = a_date(f["fechaBaja"])
+        reingreso = a_date(f["fechaReingreso"])
+        if reingreso is not None:
+            estado = "reincorporada"
+        elif fecha_baja is not None and fecha_baja > hoy:
+            estado = "programada"
+        else:
+            estado = "vigente"
+
+        resultado.append({
+            "id": int(f["id"]),
+            "employeeId": int(f["employeeId"]),
+            "name": f["name"],
+            "dni": f["dni"],
+            "email": f["email"],
+            "photo": f["photo"],
+            "departamento": f["departamento"],
+            "oficina": f["oficina"],
+            "tipoContrato": f["tipoContrato"],
+            "motivo": f["motivo"],
+            "observaciones": f["observaciones"],
+            "fechaIngreso": a_date(f["fechaIngreso"]).isoformat()
+                            if f["fechaIngreso"] else None,
+            "fechaBaja": fecha_baja.isoformat() if fecha_baja else None,
+            "fechaReingreso": reingreso.isoformat() if reingreso else None,
+            "antiguedadAnios": antiguedad_en_anios(f["fechaIngreso"], fecha_baja),
+            "saldoFinal": float(f["saldoFinal"]) if f["saldoFinal"] is not None else 0.0,
+            "estado": estado,
+        })
+    return resultado
+
+
+def pendientes_de_aplicar(db: Session, hoy: date) -> list[int]:
+    """
+    Empleados con baja ya cumplida que todavia figuran activos en el cache.
+
+    Es lo que consume el tick diario para aplicar los efectos colaterales de
+    las bajas programadas. El corte de accesos no lo necesita: se calcula.
+    """
+    filas = db.execute(text("""
+        SELECT DISTINCT b.employeeId
+        FROM EmployeeBaja b
+        JOIN Employee e ON e.id = b.employeeId
+        WHERE b.fechaReingreso IS NULL
+          AND b.fechaBaja <= :hoy
+          AND e.status <> :baja
+    """), {"hoy": hoy, "baja": ESTADO_BAJA}).mappings().all()
+    return [int(f["employeeId"]) for f in filas]
