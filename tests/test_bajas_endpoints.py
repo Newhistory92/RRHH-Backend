@@ -71,13 +71,26 @@ def test_rechaza_si_el_empleado_no_existe():
 
 def test_rechaza_una_segunda_baja_abierta():
     db = _db({"FROM EmployeeBaja": [
-        {"fechaBaja": date(2026, 1, 1), "fechaReingreso": None},
+        {"motivo": "Renuncia", "fechaBaja": date(2026, 1, 1), "fechaReingreso": None},
     ]})
     with pytest.raises(HTTPException) as e:
         post_baja(8, {"motivo": "Renuncia", "fechaBaja": "2026-09-01"},
                   db=db, user=USUARIO_RRHH)
     assert e.value.status_code == 400
-    assert "ya" in str(e.value.detail).lower()
+    assert "vigente" in str(e.value.detail)
+
+
+def test_rechaza_otra_baja_si_hay_una_programada_abierta():
+    """Una sola baja abierta por persona: la programada tambien cuenta."""
+    db = _db({"FROM EmployeeBaja": [
+        {"motivo": "Renuncia", "fechaBaja": date(2999, 1, 1), "fechaReingreso": None},
+    ]})
+    with pytest.raises(HTTPException) as e:
+        post_baja(8, {"motivo": "Despido", "fechaBaja": "2026-09-01"},
+                  db=db, user=USUARIO_RRHH)
+    assert e.value.status_code == 400
+    assert "programada" in str(e.value.detail)
+    assert "INSERT INTO EmployeeBaja" not in db.sql_ejecutado()
 
 
 def test_rechaza_la_baja_del_ultimo_admin():

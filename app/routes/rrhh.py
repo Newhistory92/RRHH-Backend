@@ -18,10 +18,10 @@ from app.auth_middleware import get_current_user, require_permission
 from app.routes.departments import ensure_capacity_columns
 from datetime import datetime, date
 from app.database.bajas import (
-    baja_para_respuesta, baja_vigente_de, bajas_bulk, bajas_para_tablero,
-    borrar_baja, registrar_baja, reincorporar,
+    baja_para_respuesta, baja_vigente_de, bajas_bulk, bajas_de_empleado,
+    bajas_para_tablero, borrar_baja, registrar_baja, reincorporar,
 )
-from app.services.bajas import MOTIVOS_DE_BAJA, a_date
+from app.services.bajas import MOTIVOS_DE_BAJA, a_date, baja_abierta, baja_vigente
 from collections import defaultdict
 from app.database.employee_documents import (
     ensure_table as ensure_employee_document_table,
@@ -981,11 +981,19 @@ def post_baja(employee_id: int, data: dict = Body(...),
 
     fecha = _fecha_del_payload(data, "fechaBaja")
 
-    if baja_vigente_de(db, employee_id, hoy) is not None:
-        raise HTTPException(
-            status_code=400,
-            detail="Esta persona ya tiene una baja vigente. Corregila o "
-                   "reincorporala antes de registrar otra.")
+    # Una sola baja abierta por persona: la programada tambien la ocupa.
+    abierta = baja_abierta(bajas_de_empleado(db, employee_id))
+    if abierta is not None:
+        desde = a_date(abierta["fechaBaja"])
+        if baja_vigente([abierta], hoy) is not None:
+            detalle = (f"Esta persona ya tiene una baja vigente "
+                       f"({abierta['motivo']}, desde el {desde.isoformat()}). "
+                       "Corregila o reincorporala antes de registrar otra.")
+        else:
+            detalle = (f"Esta persona ya tiene una baja programada "
+                       f"({abierta['motivo']}, para el {desde.isoformat()}). "
+                       "Cancelala antes de registrar otra.")
+        raise HTTPException(status_code=400, detail=detalle)
 
     if _es_admin(db, employee_id) and not _quedan_otros_admin(db, employee_id, hoy):
         raise HTTPException(

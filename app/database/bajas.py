@@ -18,7 +18,7 @@ from typing import Optional
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.services.bajas import a_date, antiguedad_en_anios, baja_vigente
+from app.services.bajas import a_date, antiguedad_en_anios, baja_abierta, baja_vigente
 
 ESTADO_BAJA = "Baja"
 ESTADO_ACTIVO = "Activo"
@@ -132,7 +132,8 @@ def registrar_baja(db: Session, employee_id: int, motivo: str, fecha: date,
     """), {"id": employee_id, "motivo": motivo, "fecha": fecha,
            "obs": observaciones, "por": registrada_por}).fetchone()
 
-    vigente = fecha <= hoy
+    vigente = baja_vigente([{"fechaBaja": fecha, "fechaReingreso": None}],
+                           hoy) is not None
     if vigente:
         aplicar_efectos(db, employee_id)
 
@@ -212,16 +213,20 @@ def bajas_bulk(db: Session, employee_ids: list[int]) -> dict[int, list[dict]]:
 def baja_para_respuesta(bajas_by_emp: dict[int, list[dict]], employee_id: int,
                         hoy: date) -> Optional[dict]:
     """
-    El valor de "baja" para el payload de un empleado: {motivo, fechaBaja} o
-    None si sigue trabajando.
+    El valor de "baja" para el payload de un empleado: {motivo, fechaBaja,
+    vigente} de su baja abierta, o None si no tiene ninguna.
 
-    Separa el formato (isoformat) de baja_vigente para que el listado y
-    cualquier otro lugar que arme este payload no repitan el mismo lambda.
+    Informa tambien la programada (vigente False): el perfil tiene que poder
+    ofrecer cancelarla, y sin esto mostraria "Dar de baja" y dejaria apilar
+    otra. vigente sale de baja_vigente, la definicion unica de "esta de baja".
     """
-    b = baja_vigente(bajas_by_emp.get(employee_id, []), hoy)
+    bajas = bajas_by_emp.get(employee_id, [])
+    b = baja_abierta(bajas)
     if b is None:
         return None
-    return {"motivo": b["motivo"], "fechaBaja": a_date(b["fechaBaja"]).isoformat()}
+    return {"motivo": b["motivo"],
+            "fechaBaja": a_date(b["fechaBaja"]).isoformat(),
+            "vigente": baja_vigente([b], hoy) is not None}
 
 
 def fecha_de_corte(db: Session, employee_id: int, hoy: date) -> Optional[date]:

@@ -6,8 +6,8 @@ app/routes/rrhh.py arma el listado con 1 query principal + N queries bulk
 la query principal completa (36 columnas por fila): bajas_bulk trae todas las
 bajas de los empleados pedidos en UNA sola consulta y las agrupa por
 employeeId, y baja_para_respuesta arma el valor {motivo, fechaBaja} o None a
-partir de ese agrupado, reusando baja_vigente como unica definicion de
-"esta de baja".
+partir de ese agrupado: informa la baja abierta (programada o vigente) y
+usa baja_vigente como unica definicion de "esta de baja".
 """
 
 from datetime import date
@@ -47,7 +47,7 @@ def test_baja_para_respuesta_devuelve_motivo_y_fecha_para_una_baja_vigente():
     grupo = {8: [{"motivo": "Renuncia", "fechaBaja": date(2026, 9, 1),
                    "fechaReingreso": None}]}
     assert baja_para_respuesta(grupo, 8, HOY) == {
-        "motivo": "Renuncia", "fechaBaja": "2026-09-01",
+        "motivo": "Renuncia", "fechaBaja": "2026-09-01", "vigente": True,
     }
 
 
@@ -56,10 +56,14 @@ def test_baja_para_respuesta_devuelve_none_sin_baja():
     assert baja_para_respuesta(grupo, 8, HOY) is None
 
 
-def test_baja_para_respuesta_devuelve_none_con_baja_futura():
+def test_baja_para_respuesta_informa_la_programada_como_no_vigente():
+    """La programada tambien viaja: es la que RRHH puede cancelar desde el
+    perfil antes de que llegue el dia."""
     grupo = {8: [{"motivo": "Renuncia", "fechaBaja": date(2026, 12, 1),
                    "fechaReingreso": None}]}
-    assert baja_para_respuesta(grupo, 8, HOY) is None
+    assert baja_para_respuesta(grupo, 8, HOY) == {
+        "motivo": "Renuncia", "fechaBaja": "2026-12-01", "vigente": False,
+    }
 
 
 def test_baja_para_respuesta_devuelve_none_con_baja_reincorporada():

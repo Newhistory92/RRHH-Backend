@@ -63,6 +63,20 @@ def baja_vigente(bajas: list[dict], hoy: date) -> Optional[dict]:
     return max(vigentes, key=lambda par: par[0])[1]
 
 
+def baja_abierta(bajas: list[dict]) -> Optional[dict]:
+    """
+    La baja sin reingreso, tenga efecto o no, o None.
+
+    Es la que cuenta para "una sola baja abierta por persona": una programada
+    tambien la ocupa, y es la que RRHH puede cancelar antes de que llegue el
+    dia. Si hubiera mas de una gana la mas reciente, como en baja_vigente.
+    """
+    abiertas = [b for b in bajas if b.get("fechaReingreso") is None]
+    if not abiertas:
+        return None
+    return max(abiertas, key=lambda b: a_date(b.get("fechaBaja")) or date.min)
+
+
 def antiguedad_en_anios(fecha_ingreso, fecha_hasta) -> Optional[float]:
     """
     Anios trabajados entre las dos fechas, con un decimal.

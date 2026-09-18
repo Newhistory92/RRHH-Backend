@@ -9,7 +9,7 @@ una sola regla para todos los caminos.
 from datetime import date, datetime
 
 from app.services.bajas import (
-    MOTIVOS_DE_BAJA, a_date, antiguedad_en_anios, baja_vigente,
+    MOTIVOS_DE_BAJA, a_date, antiguedad_en_anios, baja_abierta, baja_vigente,
 )
 
 HOY = date(2026, 9, 17)
@@ -98,3 +98,16 @@ def test_antiguedad_sin_ingreso_es_none():
 
 def test_antiguedad_con_baja_anterior_al_ingreso_es_none():
     assert antiguedad_en_anios(date(2026, 9, 1), date(2020, 1, 1)) is None
+
+
+def test_baja_abierta_incluye_la_programada():
+    """Abierta es "sin reingreso", tenga efecto o no: una sola por persona."""
+    programada = _baja(date(2026, 12, 1))
+    assert baja_abierta([programada]) is programada
+
+
+def test_baja_abierta_ignora_las_cerradas():
+    abierta = _baja(date(2026, 9, 1))
+    cerrada = _baja(date(2020, 1, 1), date(2020, 6, 1))
+    assert baja_abierta([cerrada, abierta]) is abierta
+    assert baja_abierta([cerrada]) is None
