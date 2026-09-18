@@ -15,7 +15,7 @@ from app.database.token_blacklist import (
 )
 from app.services.auth_providers import get_provider, nombre_proveedor
 from app.auth_middleware import require_auth
-from app.database.permissions import permisos_de_rol
+from app.database.permissions import permisos_efectivos
 
 load_dotenv()
 
@@ -81,7 +81,7 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
 
     print(f"✅ Usuario {resultado.usuario} autenticado correctamente con rol: {role_name}")
 
-    permisos = permisos_de_rol(db, resultado.roleId)
+    permisos = permisos_efectivos(db, resultado.roleId, resultado.employeeId)
 
     return {
         "access_token": token,

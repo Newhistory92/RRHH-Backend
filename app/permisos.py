@@ -131,3 +131,22 @@ def tiene_permiso(permisos: set[str], requerido: str) -> bool:
     if COMODIN in permisos:
         return True
     return requerido in permisos
+
+
+# Lo unico que conserva un empleado dado de baja: su legajo a la vista.
+PERMISO_DE_BAJA = "documentos.propios"
+
+
+def recortar_por_baja(permisos: set[str], de_baja: bool) -> set[str]:
+    """
+    Los permisos que quedan cuando alguien esta dado de baja.
+
+    Devuelve el permiso del legajo y nada mas, sin mirar lo que traia el rol.
+    Ignora el comodin de ADMIN a proposito: la baja la decide RRHH sobre una
+    persona, y no tendria sentido que el rol que tenia al irse le devolviera
+    accesos. Tampoco exige que el rol tuviera el permiso: el legajo es de la
+    persona, no del rol.
+    """
+    if not de_baja:
+        return permisos
+    return {PERMISO_DE_BAJA}

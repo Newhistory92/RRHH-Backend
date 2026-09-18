@@ -24,7 +24,7 @@ import os
 from dotenv import load_dotenv
 from app.database.database import SessionLocal
 from app.database.token_blacklist import is_blacklisted
-from app.database.permissions import permisos_de_rol
+from app.database.permissions import permisos_efectivos
 from app.permisos import tiene_permiso
 
 load_dotenv()
@@ -112,7 +112,7 @@ def get_current_user(
         "usuario":    usuario,
         "roleId":     role_id,
         "employeeId": employee_id,
-        "permisos":   permisos_de_rol(db, role_id),
+        "permisos":   permisos_efectivos(db, role_id, employee_id),
     }
 
 
