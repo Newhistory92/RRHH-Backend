@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from app.database.database import SessionLocal
-from app.auth_middleware import require_auth, require_permission, get_current_user
+from app.auth_middleware import require_auth, require_permission, get_current_user, exigir_propio_o_permiso
 from app.permisos import tiene_permiso
 from datetime import datetime
 from app.database.employee_documents import get_documents as get_employee_documents_data, get_document as get_employee_document_data
@@ -27,9 +27,12 @@ router = APIRouter(prefix="/employee", tags=["Employee"])
 # GET: Obtener información completa de un empleado
 # ===============================================
 @router.get("/{employee_id}", dependencies=[Depends(require_auth)])
-def get_employee_details(employee_id: int, db: Session = Depends(get_db)):
-    print(employee_id)
-    
+def get_employee_details(employee_id: int, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
+    # El legajo propio lo carga el shell; el ajeno, RRHH desde la tabla de
+    # legajos y el panel de Estadisticas desde su modal de detalle.
+    exigir_propio_o_permiso(current_user, employee_id,
+                            "rrhh.gestionar", "estadisticas.ver")
+
     # Consulta principal del empleado
     query = text("""
         SELECT

@@ -61,7 +61,7 @@ RUTAS_DE_BAJA: dict[tuple[str, str], bool] = {
     ("GET", "/auth/permisos"): False,
     # El shell carga su propio empleado; sin esto la pantalla de Documentos
     # se queda en "Cargando informacion del empleado...". Solo el propio: el
-    # endpoint no chequea duenio y cualquier logueado podria leer otro legajo.
+    # permiso que abre legajos ajenos (rrhh.gestionar) ya no lo tiene.
     ("GET", "/employee/{employee_id}"): True,
     # La pantalla de Documentos: listar y abrir los suyos, que es todo lo que
     # la baja le deja.
@@ -187,6 +187,29 @@ def _autorizar(user: dict, requerido: str) -> dict:
             detail=f"Acceso denegado. Se requiere el permiso: {requerido}",
         )
     return user
+
+
+def exigir_propio_o_permiso(user: dict, employee_id, *permisos: str) -> dict:
+    """
+    Chequeo de duenio para recursos de un empleado: pasa si el recurso es del
+    que llama, o si tiene alguno de los permisos que gobiernan ese dato.
+
+    Es para los endpoints con require_auth que reciben el employeeId por URL o
+    query: sin esto cualquier logueado lee lo de otro cambiando el numero. Se
+    compara como texto, igual que ruta_permitida_de_baja, porque el id del
+    path llega como int o str segun la ruta; un usuario sin empleado (None)
+    nunca es duenio.
+    """
+    propio = user.get("employeeId")
+    if propio is not None and str(propio) == str(employee_id):
+        return user
+    tiene = user.get("permisos") or set()
+    if any(tiene_permiso(tiene, p) for p in permisos):
+        return user
+    raise HTTPException(
+        status_code=403,
+        detail="No tenés permiso para acceder a datos de otro empleado.",
+    )
 
 
 def require_permission(code: str):
