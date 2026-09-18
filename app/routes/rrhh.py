@@ -17,9 +17,6 @@ from app.database.database import SessionLocal
 from app.auth_middleware import get_current_user, require_permission
 from app.routes.departments import ensure_capacity_columns
 from datetime import datetime, date
-from app.database.jubilacion import (
-    ESTADO_JUBILADO, aplicar_jubilacion, ensure_columna_jubilacion, jubilados,
-)
 from app.database.bajas import (
     baja_para_respuesta, baja_vigente_de, bajas_bulk, bajas_para_tablero,
     borrar_baja, registrar_baja, reincorporar,
@@ -162,7 +159,7 @@ def get_all_employees(db: Session = Depends(get_db)):
         LEFT JOIN CondicionLaboral c ON e.id = c.employeeId
         LEFT JOIN Horario h ON e.cronogramaId = h.id
         LEFT JOIN SatisfaccionMetrica sm ON e.id = sm.employeeId
-        WHERE e.status <> 'Jubilado'
+        WHERE e.status <> 'Baja'
         ORDER BY e.name ASC
     """)).mappings().all()
 
@@ -911,63 +908,6 @@ def delete_employee_document_endpoint(employee_id: int, document_id: int, db: Se
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Error al eliminar documento: {str(e)}")
-
-
-# ---------------------------------------------------------------------------
-# PUT /rrhh/employee/{id}/jubilacion
-# ---------------------------------------------------------------------------
-@router.put("/employee/{employee_id}/jubilacion",
-            dependencies=[Depends(require_permission("rrhh.gestionar"))])
-def put_jubilacion(employee_id: int, data: dict = Body(...),
-                   db: Session = Depends(get_db)):
-    """
-    Carga o borra la fecha de jubilacion.
-
-    Endpoint propio y no un campo mas de condicion-laboral: aquel actualiza
-    datos descriptivos, este le corta el acceso al sistema a una persona.
-
-    Enviar fechaJubilacion en null revierte: el empleado vuelve a Activo y
-    recupera el acceso. Es el caso del error de carga.
-    """
-    ensure_columna_jubilacion(db)
-
-    if db.execute(text("SELECT id FROM Employee WHERE id = :id"),
-                  {"id": employee_id}).first() is None:
-        raise HTTPException(status_code=404, detail="Empleado no encontrado")
-
-    crudo = data.get("fechaJubilacion")
-    fecha = None
-    if crudo:
-        try:
-            fecha = date.fromisoformat(str(crudo).split("T")[0])
-        except ValueError:
-            raise HTTPException(
-                status_code=400,
-                detail="La fecha de jubilacion debe ser YYYY-MM-DD")
-
-    jubilado = aplicar_jubilacion(db, employee_id, fecha, date.today())
-    return {
-        "employeeId": employee_id,
-        "fechaJubilacion": fecha.isoformat() if fecha else None,
-        "jubilado": jubilado,
-        "status": ESTADO_JUBILADO if jubilado else "Activo",
-    }
-
-
-# ---------------------------------------------------------------------------
-# GET /rrhh/jubilados
-# ---------------------------------------------------------------------------
-@router.get("/jubilados",
-            dependencies=[Depends(require_permission("rrhh.gestionar"))])
-def get_jubilados(db: Session = Depends(get_db)):
-    """
-    El tablero de jubilados: los que ya tienen la jubilacion efectiva.
-
-    Los que tienen fecha futura cargada no aparecen aca todavia, siguen en el
-    tablero normal porque siguen trabajando.
-    """
-    ensure_columna_jubilacion(db)
-    return {"jubilados": jubilados(db)}
 
 
 # ---------------------------------------------------------------------------

@@ -175,8 +175,7 @@ def rango_de_calculo(anio: int, inicio_modulo: date,
 
     La baja es el espejo exacto del ingreso: por eso el saldo de quien se fue
     se congela sin ningun caso especial, simplemente deja de haber dias que
-    calcular despues de su fecha. Aplica a cualquier motivo, no solo a la
-    jubilacion.
+    calcular despues de su fecha. Aplica a cualquier motivo de baja.
     """
     desde = max(date(anio, 1, 1), inicio_modulo)
     ingreso = _a_date(fecha_ingreso)

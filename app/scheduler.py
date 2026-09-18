@@ -11,11 +11,7 @@ from datetime import date, datetime, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.database.database import SessionLocal, SessionLocalObraSocial
-from app.database.jubilacion import (
-    aplicar_jubilacion, ensure_columna_jubilacion, fecha_jubilacion_de,
-    pendientes_de_jubilar,
-)
-from app.services.jubilacion import jubilacion_cumplida
+from app.database.bajas import aplicar_efectos, pendientes_de_aplicar
 from app.services.isapi_client import relojes_configurados
 from app.routes.stats import sync_productivity_scores
 from app.services.reloj_sync import sincronizar_todos
@@ -28,7 +24,7 @@ from app.services.asistencia_recalc import (
 log = logging.getLogger(__name__)
 
 INTERVALO_MINUTOS = 5
-HORA_JUBILACIONES = 2  # 2 AM, antes del recalculo de asistencia de las 3
+HORA_BAJAS = 2  # 2 AM, antes del recalculo de asistencia de las 3
 HORA_RECALCULO_ASISTENCIA = 3  # 3 AM, fuera del horario de uso
 HORA_SCORE = 4  # 4 AM, despues del recalculo de asistencia del que depende
 SEGUNDOS_AUTOREPARACION = 30  # margen para que el arranque termine primero
@@ -161,49 +157,47 @@ def _tick_autoreparacion():
         db.close()
 
 
-def _tick_jubilaciones():
+def _tick_bajas():
     """
-    Aplica las jubilaciones cuya fecha ya llego.
+    Aplica los efectos de las bajas cuya fecha ya llego.
 
-    Es la pieza que hace util cargar una fecha futura: RRHH la carga cuando la
-    sabe y la persona sigue trabajando hasta ese dia.
+    Es la pieza que hace util cargar una baja con fecha futura: RRHH la carga
+    cuando la sabe y la persona sigue trabajando hasta ese dia.
 
-    Solo avanza. Nunca reactiva a nadie, ni siquiera si alguien edito la fecha
-    hacia adelante: volver a activar es siempre un acto explicito de RRHH desde
-    la interfaz.
+    Ojo con lo que este job NO hace: el recorte de accesos no pasa por aca. Se
+    calcula con la fecha en cada request, asi que si este tick se cae, el dado
+    de baja igual queda recortado. Lo que se aplica aca son los efectos
+    colaterales -cancelar solicitudes sin resolver y marcar el estado-, que si
+    necesitan un actuador.
+
+    Solo avanza: nunca reactiva a nadie. Reincorporar es siempre un acto
+    explicito de RRHH desde la interfaz.
 
     Corre antes del recalculo de asistencia para que el rango del dia ya tenga
     la cota superior puesta cuando aquel arranque.
     """
     db = SessionLocal()
     try:
-        ensure_columna_jubilacion(db)
         hoy = date.today()
-        ids = pendientes_de_jubilar(db, hoy)
+        ids = pendientes_de_aplicar(db, hoy)
         if not ids:
-            log.info("Jubilaciones: no hay ninguna para aplicar hoy")
+            log.info("Bajas: no hay ninguna para aplicar hoy")
             return
         for eid in ids:
-            fecha = fecha_jubilacion_de(db, eid)
-            if not fecha or not jubilacion_cumplida(fecha, hoy):
-                log.warning(
-                    "Jubilaciones: empleado %s no cumple la condicion al re-leer, "
-                    "probablemente la fecha fue editada entre queries. Se omite.",
-                    eid,
-                )
-                continue
-            aplicar_jubilacion(db, eid, fecha, hoy)
-            log.info("Jubilacion aplicada: empleado %s, fecha %s", eid, fecha)
-        log.info("Jubilaciones: %s empleados pasaron a Jubilado", len(ids))
+            aplicar_efectos(db, eid)
+            log.info("Baja aplicada: empleado %s", eid)
+        db.commit()
+        log.info("Bajas: %s empleados pasaron a Baja", len(ids))
     except Exception as e:
-        log.exception("Fallo inesperado en el tick de jubilaciones: %s", e)
+        db.rollback()
+        log.exception("Fallo inesperado en el tick de bajas: %s", e)
     finally:
         db.close()
 
 
 def iniciar_scheduler():
     """
-    Arranca el scheduler. Los jobs de asistencia y jubilacion arrancan siempre;
+    Arranca el scheduler. Los jobs de asistencia y bajas arrancan siempre;
     el sync de relojes solo arranca si RELOJ_IPS esta configurado.
     """
     global _scheduler
@@ -212,13 +206,13 @@ def iniciar_scheduler():
 
     _scheduler = BackgroundScheduler(timezone="America/Argentina/Buenos_Aires")
 
-    # ── Jobs de asistencia y jubilacion: siempre activos ───────────────────
+    # ── Jobs de asistencia y bajas: siempre activos ────────────────────────
     _scheduler.add_job(
-        _tick_jubilaciones,
+        _tick_bajas,
         "cron",
-        hour=HORA_JUBILACIONES,
+        hour=HORA_BAJAS,
         minute=0,
-        id="jubilaciones",
+        id="bajas",
         max_instances=1,
         coalesce=True,
         replace_existing=True,
@@ -279,9 +273,9 @@ def iniciar_scheduler():
 
     _scheduler.start()
     log.info(
-        "Scheduler iniciado: jubilaciones a las %s:00, "
+        "Scheduler iniciado: bajas a las %s:00, "
         "recalculo historia a las %s:00, autoreparacion en %s s",
-        HORA_JUBILACIONES, HORA_RECALCULO_ASISTENCIA, SEGUNDOS_AUTOREPARACION,
+        HORA_BAJAS, HORA_RECALCULO_ASISTENCIA, SEGUNDOS_AUTOREPARACION,
     )
     return _scheduler
 

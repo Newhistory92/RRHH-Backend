@@ -102,6 +102,12 @@ def startup():
         print("[OK] columnas scoreExento verificadas")
         ensure_tabla_bajas(db)
         print("[OK] tabla EmployeeBaja verificada")
+        db.execute(_text(
+            "IF COL_LENGTH('CondicionLaboral','fechaJubilacion') IS NOT NULL "
+            "ALTER TABLE CondicionLaboral DROP COLUMN fechaJubilacion"
+        ))
+        db.commit()
+        print("[OK] columna fechaJubilacion retirada")
     finally:
         db.close()
     iniciar_scheduler()

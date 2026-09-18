@@ -1,57 +1,43 @@
+"""
+El rango de dias que se le calcula a un empleado en un anio.
+
+Acotado por abajo por el inicio del modulo y el ingreso, y por arriba por el
+fin del anio, hoy y la fecha de baja. Es lo que congela el saldo de quien se
+fue, sin ningun caso especial.
+"""
+
 from datetime import date, datetime
 
 from app.services.asistencia_recalc import rango_de_calculo
-from app.services.jubilacion import jubilacion_cumplida
 
 HOY = date(2026, 8, 7)
 
 
-def test_sin_fecha_no_esta_jubilado():
-    assert jubilacion_cumplida(None, HOY) is False
-
-
-def test_una_fecha_futura_todavia_no_jubila():
-    # RRHH puede cargar la fecha con anticipacion: la persona sigue trabajando.
-    assert jubilacion_cumplida(date(2026, 12, 1), HOY) is False
-
-
-def test_manana_todavia_no_jubila():
-    assert jubilacion_cumplida(date(2026, 8, 8), HOY) is False
-
-
-def test_la_fecha_de_hoy_ya_jubila():
-    assert jubilacion_cumplida(HOY, HOY) is True
-
-
-def test_una_fecha_pasada_jubila():
-    assert jubilacion_cumplida(date(2026, 1, 15), HOY) is True
-
-
-# -- Rango de calculo con la jubilacion como cota superior ---------------------
+# -- Rango de calculo con la baja como cota superior ---------------------------
 
 INICIO_MODULO = date(2026, 1, 1)
 
 
-def test_sin_jubilacion_el_rango_llega_hasta_hoy():
+def test_sin_baja_el_rango_llega_hasta_hoy():
     r = rango_de_calculo(2026, INICIO_MODULO, date(2020, 3, 1), None, HOY)
     assert r == (date(2026, 1, 1), HOY)
 
 
-def test_la_jubilacion_corta_el_rango():
-    # Jubilado el 30/06: no se calculan dias posteriores.
+def test_la_baja_corta_el_rango():
+    # Dado de baja el 30/06: no se calculan dias posteriores.
     r = rango_de_calculo(2026, INICIO_MODULO, date(2020, 3, 1),
                          date(2026, 6, 30), HOY)
     assert r == (date(2026, 1, 1), date(2026, 6, 30))
 
 
-def test_una_jubilacion_futura_no_recorta_nada():
+def test_una_baja_futura_no_recorta_nada():
     # La fecha esta cargada pero todavia no llego: se calcula hasta hoy igual.
     r = rango_de_calculo(2026, INICIO_MODULO, date(2020, 3, 1),
                          date(2026, 12, 1), HOY)
     assert r == (date(2026, 1, 1), HOY)
 
 
-def test_una_jubilacion_anterior_al_inicio_del_modulo_no_da_rango():
+def test_una_baja_anterior_al_inicio_del_modulo_no_da_rango():
     r = rango_de_calculo(2026, INICIO_MODULO, date(2020, 3, 1),
                          date(2025, 5, 1), HOY)
     assert r is None
@@ -62,14 +48,14 @@ def test_el_ingreso_sigue_siendo_la_cota_inferior():
     assert r == (date(2026, 4, 10), HOY)
 
 
-def test_ingreso_y_jubilacion_en_el_mismo_anio():
-    # hoy despues de jubilacion para que sea ella la cota, no hoy.
+def test_ingreso_y_baja_en_el_mismo_anio():
+    # hoy despues de la baja para que sea ella la cota, no hoy.
     r = rango_de_calculo(2026, INICIO_MODULO, date(2026, 3, 1),
                          date(2026, 9, 15), date(2026, 12, 31))
     assert r == (date(2026, 3, 1), date(2026, 9, 15))
 
 
-def test_jubilarse_el_mismo_dia_del_ingreso_da_un_solo_dia():
+def test_irse_el_mismo_dia_del_ingreso_da_un_solo_dia():
     r = rango_de_calculo(2026, INICIO_MODULO, date(2026, 5, 20),
                          date(2026, 5, 20), HOY)
     assert r == (date(2026, 5, 20), date(2026, 5, 20))

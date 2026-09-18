@@ -317,8 +317,8 @@ def calcular_dias_vacaciones(tipo_contrato: str, fecha_ingreso,
     """
     Dias de vacaciones por antiguedad y tipo de contrato.
 
-    fecha_corte congela la antiguedad en un dia concreto: es la fecha de
-    jubilacion, para que a alguien que ya se jubilo no le siga creciendo el
+    fecha_corte congela la antiguedad en un dia concreto: es la fecha de la
+    baja, para que a alguien que ya dejo de trabajar no le siga creciendo el
     derecho con el paso del tiempo. En None cuenta hasta hoy.
     """
     if not fecha_ingreso:
@@ -1019,8 +1019,7 @@ def _sync_employee_status(db: Session, employee_id: int):
 
     No toca los estados terminales. Sin este guard, aprobar una licencia le
     devolvia el estado 'Activo' a alguien dado de baja, porque el UPDATE se
-    escribia sin mirar lo que habia: el mismo bug que ya le pisaba el
-    'Jubilado' al jubilado.
+    escribia sin mirar lo que habia.
     """
     actual = db.execute(text("SELECT status FROM Employee WHERE id = :empId"),
                         {"empId": employee_id}).mappings().first()
