@@ -11,6 +11,7 @@ bloqueo de cuenta del panel de ADMIN, que es un caso distinto: el dado de baja
 conserva el acceso, recortado a su legajo.
 """
 
+from collections import defaultdict
 from datetime import date
 from typing import Optional
 
@@ -183,6 +184,44 @@ def reincorporar(db: Session, employee_id: int, fecha_reingreso: date) -> bool:
 def baja_vigente_de(db: Session, employee_id: int, hoy: date) -> Optional[dict]:
     """La baja con efecto hoy para esta persona, o None."""
     return baja_vigente(bajas_de_empleado(db, employee_id), hoy)
+
+
+def bajas_bulk(db: Session, employee_ids: list[int]) -> dict[int, list[dict]]:
+    """
+    Todas las bajas de un lote de empleados, en UNA sola consulta.
+
+    Es la version bulk de bajas_de_empleado, para listados: sigue el mismo
+    patron "WHERE employeeId IN (...) + agrupar en Python" que ya usa
+    app/routes/rrhh.py para subordinados, licencias, permisos, etc. Sin esto,
+    exponer la baja en el listado costaria una consulta por empleado.
+    """
+    if not employee_ids:
+        return {}
+    ids_param = ",".join(str(i) for i in employee_ids)
+    filas = db.execute(text(f"""
+        SELECT employeeId, motivo, fechaBaja, fechaReingreso
+        FROM EmployeeBaja
+        WHERE employeeId IN ({ids_param})
+    """)).mappings().all()
+    agrupado: dict[int, list[dict]] = defaultdict(list)
+    for f in filas:
+        agrupado[f["employeeId"]].append(dict(f))
+    return agrupado
+
+
+def baja_para_respuesta(bajas_by_emp: dict[int, list[dict]], employee_id: int,
+                        hoy: date) -> Optional[dict]:
+    """
+    El valor de "baja" para el payload de un empleado: {motivo, fechaBaja} o
+    None si sigue trabajando.
+
+    Separa el formato (isoformat) de baja_vigente para que el listado y
+    cualquier otro lugar que arme este payload no repitan el mismo lambda.
+    """
+    b = baja_vigente(bajas_by_emp.get(employee_id, []), hoy)
+    if b is None:
+        return None
+    return {"motivo": b["motivo"], "fechaBaja": a_date(b["fechaBaja"]).isoformat()}
 
 
 def fecha_de_corte(db: Session, employee_id: int, hoy: date) -> Optional[date]:

@@ -21,8 +21,8 @@ from app.database.jubilacion import (
     ESTADO_JUBILADO, aplicar_jubilacion, ensure_columna_jubilacion, jubilados,
 )
 from app.database.bajas import (
-    baja_vigente_de, bajas_para_tablero, borrar_baja, registrar_baja,
-    reincorporar,
+    baja_para_respuesta, baja_vigente_de, bajas_bulk, bajas_para_tablero,
+    borrar_baja, registrar_baja, reincorporar,
 )
 from app.services.bajas import MOTIVOS_DE_BAJA, a_date
 from collections import defaultdict
@@ -141,7 +141,6 @@ def get_all_employees(db: Session = Depends(get_db)):
             c.categoria AS condicion_categoria,
             c.position AS condicion_position,
             c.fechaCategoria AS condicion_fechaCategoria,
-            c.fechaJubilacion AS condicion_fechaJubilacion,
 
             -- Horario
             h.horaInicio AS horario_horaInicio,
@@ -296,6 +295,10 @@ def get_all_employees(db: Session = Depends(get_db)):
     """)).mappings().all()
     events_by_emp = _group_by(events_bulk, "employeeId")
 
+    # ── 11. Bajas bulk ──────────────────────────────────────────────────────
+    bajas_by_emp = bajas_bulk(db, employee_ids)
+    hoy = date.today()
+
     # ── Ensamblar respuesta final ───────────────────────────────────────────
     NULL_SUBORDINATE = _null_entry(id=None, name=None, email=None, status=None)
     NULL_MESSAGE     = _null_entry(id=None, text=None, days=None, startDate=None, endDate=None, status=None, createdAt=None)
@@ -411,7 +414,6 @@ def get_all_employees(db: Session = Depends(get_db)):
                 "categoria":       emp["condicion_categoria"],
                 "position":        emp["condicion_position"],
                 "fechaCategoria":  emp["condicion_fechaCategoria"],
-                "fechaJubilacion": emp["condicion_fechaJubilacion"],
             },
             "horario": {
                 "id":           emp["cronogramaId"],
@@ -437,6 +439,7 @@ def get_all_employees(db: Session = Depends(get_db)):
             "ausencias":          ausencias_by_emp.get(emp_id) or [NULL_AUSENCIA],
             "resenasDeRendimiento": resenas_by_emp.get(emp_id) or [NULL_RESENA],
             "criticalEvents":     events_by_emp.get(emp_id) or [NULL_EVENT],
+            "baja":               baja_para_respuesta(bajas_by_emp, emp_id, hoy),
         }
         employees.append(employee)
 
