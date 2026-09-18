@@ -21,14 +21,18 @@ from typing import Optional
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.database.asistencia import get_config, reemplazar_jornadas, saldo_acumulado
+from app.database.asistencia import (
+    borrar_jornadas, get_config, reemplazar_jornadas, saldo_acumulado,
+)
 from app.database.asistencia_auditoria import (
     abrir_recalculo, cerrar_recalculo, correcciones_por_dia,
 )
 from app.database.asistencia_justificaciones import dias_justificados
+from app.database.bajas import bajas_de_empleado
 from app.services.asistencia_calc import (
     EntradaDia, Permiso, ResultadoDia, Tolerancias, calcular_anio,
 )
+from app.services.bajas import baja_vigente, dia_excluido, intervalos_de_baja
 from app.services.marcaciones_norm import Correccion, HorarioDia, normalizar
 
 log = logging.getLogger(__name__)
@@ -45,10 +49,7 @@ def _datos_empleado(db: Session, employee_id: int) -> Optional[dict]:
     fila = db.execute(text("""
         SELECT e.id, e.biometricoId,
                h.horaInicio, h.horaFin, h.horasTrabajo,
-               c.fechaIngreso,
-               (SELECT MAX(b.fechaBaja) FROM EmployeeBaja b
-                WHERE b.employeeId = e.id AND b.fechaReingreso IS NULL
-                  AND b.fechaBaja <= CAST(GETDATE() AS DATE)) AS fechaBaja
+               c.fechaIngreso
         FROM Employee e
         LEFT JOIN Horario h ON e.cronogramaId = h.id
         LEFT JOIN (
@@ -192,18 +193,68 @@ def rango_de_calculo(anio: int, inicio_modulo: date,
     return desde, hasta
 
 
-def recalcular_anio(db: Session, employee_id: int, anio: int) -> int:
-    """Recomputa el anio completo de un empleado. Idempotente."""
+def _sincronizar_horas(db: Session, employee_id: int) -> None:
+    """
+    Sincroniza Employee.horas con el saldo acumulado real para que el modal
+    de estadisticas muestre el valor correcto sin consulta extra.
+    """
+    nuevo_saldo = saldo_acumulado(db, employee_id)
+    db.execute(text(
+        "UPDATE Employee SET horas = :s WHERE id = :id"
+    ), {"s": round(nuevo_saldo, 2), "id": employee_id})
+
+
+def _borrar_dias_de_baja(db: Session, employee_id: int, anio: int,
+                         intervalos: list[tuple[date, Optional[date]]]) -> bool:
+    """
+    Borra lo ya calculado para los dias de baja del anio. Devuelve si habia
+    alguno.
+
+    Hace falta aparte de reemplazar_jornadas porque aquella solo borra dentro
+    del rango que se recalcula, y una baja retroactiva deja jornadas viejas
+    despues de su fecha -fuera del rango- que seguirian sumando al saldo.
+    """
+    inicio, fin = date(anio, 1, 1), date(anio, 12, 31)
+    hubo = False
+    for desde, hasta in intervalos:
+        desde = max(desde, inicio)
+        hasta = fin if hasta is None else min(hasta, fin)
+        if desde > hasta:
+            continue
+        borrar_jornadas(db, employee_id, desde, hasta)
+        hubo = True
+    return hubo
+
+
+def recalcular_anio(db: Session, employee_id: int, anio: int,
+                    hoy: Optional[date] = None) -> int:
+    """
+    Recomputa el anio completo de un empleado. Idempotente.
+
+    Los dias en que estuvo de baja se excluyen: ni suman ni restan, como si
+    no hubiera estado en planta. Se borra lo que hubiera calculado para esos
+    dias y no se generan jornadas nuevas, tambien cuando el anio no tiene
+    ningun dia que calcular.
+    """
+    hoy = hoy or date.today()
     emp = _datos_empleado(db, employee_id)
     if emp is None or not emp["biometricoId"]:
         return 0
 
+    bajas = bajas_de_empleado(db, employee_id)
+    excluidos = intervalos_de_baja(bajas, hoy)
+    vigente = baja_vigente(bajas, hoy)
+
     cfg = get_config(db)
     rango = rango_de_calculo(
-        anio, _a_date(cfg["fechaInicioModulo"]),
-        emp.get("fechaIngreso"), emp.get("fechaBaja"), date.today(),
+        anio, _a_date(cfg["fechaInicioModulo"]), emp.get("fechaIngreso"),
+        _a_date(vigente["fechaBaja"]) if vigente else None, hoy,
     )
+    hubo_borrados = _borrar_dias_de_baja(db, employee_id, anio, excluidos)
     if rango is None:
+        if hubo_borrados:
+            _sincronizar_horas(db, employee_id)
+            db.commit()
         return 0
     desde, hasta = rango
 
@@ -224,6 +275,8 @@ def recalcular_anio(db: Session, employee_id: int, anio: int) -> int:
 
     entradas = []
     for d in _rango_dias(desde, hasta):
+        if dia_excluido(d, excluidos):
+            continue
         entradas.append(EntradaDia(
             fecha=d,
             extremos=normalizar(
@@ -246,12 +299,7 @@ def recalcular_anio(db: Session, employee_id: int, anio: int) -> int:
         db, employee_id, desde, hasta,
         [_a_fila(r) for r in resultados], _a_incidencias(resultados),
     )
-    # Sincroniza Employee.horas con el saldo acumulado real para que el
-    # modal de estadisticas muestre el valor correcto sin consulta extra.
-    nuevo_saldo = saldo_acumulado(db, employee_id)
-    db.execute(text(
-        "UPDATE Employee SET horas = :s WHERE id = :id"
-    ), {"s": round(nuevo_saldo, 2), "id": employee_id})
+    _sincronizar_horas(db, employee_id)
     db.commit()
     return filas_count
 

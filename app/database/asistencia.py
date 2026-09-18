@@ -225,6 +225,19 @@ def update_config(db: Session, tol_entrada: int, tol_salida: int,
     return get_config(db)
 
 
+def borrar_jornadas(db: Session, employee_id: int, desde: date,
+                    hasta: date) -> None:
+    """
+    Borra las jornadas e incidencias de un rango sin reinsertar nada. Es lo
+    que usa el recalculo para los dias de baja. No hace commit.
+    """
+    db.execute(text("""
+        DELETE FROM JornadaDiaria
+        WHERE employeeId = :emp AND fecha >= :desde AND fecha <= :hasta
+    """), {"emp": employee_id, "desde": desde, "hasta": hasta})
+    reemplazar_incidencias(db, employee_id, desde, hasta, [])
+
+
 def reemplazar_jornadas(db: Session, employee_id: int, desde: date, hasta: date,
                         filas: list[dict], incidencias: list[dict]) -> int:
     """

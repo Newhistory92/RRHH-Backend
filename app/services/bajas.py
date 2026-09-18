@@ -7,7 +7,7 @@ comparten el recorte de permisos, el job diario y los dos cortes de computo
 (vacaciones y asistencia): una sola regla para todos los caminos.
 """
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 # Cerrado a proposito. Las estadisticas del tablero se leen sobre estas
@@ -75,6 +75,42 @@ def baja_abierta(bajas: list[dict]) -> Optional[dict]:
     if not abiertas:
         return None
     return max(abiertas, key=lambda b: a_date(b.get("fechaBaja")) or date.min)
+
+
+def intervalos_de_baja(bajas: list[dict],
+                       hoy: date) -> list[tuple[date, Optional[date]]]:
+    """
+    Los dias en que la persona estuvo de baja, como intervalos cerrados
+    (desde, hasta), ordenados. hasta None es "sin fin": sigue de baja.
+
+    La fechaBaja es el ultimo dia computado, igual que en rango_de_calculo, y
+    el dia de reingreso se trabaja. Por eso una baja cerrada excluye lo que
+    queda estrictamente en el medio, y una abierta con efecto todo lo
+    posterior a su fecha. Una programada todavia no excluye nada.
+
+    Es lo que usa el recalculo de asistencia: esos dias ni suman ni restan,
+    como si la persona no hubiera estado en planta.
+    """
+    intervalos: list[tuple[date, Optional[date]]] = []
+    for b in bajas:
+        fecha = a_date(b.get("fechaBaja"))
+        if fecha is None:
+            continue
+        reingreso = a_date(b.get("fechaReingreso"))
+        if reingreso is None:
+            if fecha <= hoy:
+                intervalos.append((fecha + timedelta(days=1), None))
+        elif reingreso - fecha > timedelta(days=1):
+            intervalos.append((fecha + timedelta(days=1),
+                               reingreso - timedelta(days=1)))
+    return sorted(intervalos, key=lambda i: i[0])
+
+
+def dia_excluido(dia: date,
+                 intervalos: list[tuple[date, Optional[date]]]) -> bool:
+    """Si el dia cae en alguno de los intervalos de intervalos_de_baja."""
+    return any(desde <= dia and (hasta is None or dia <= hasta)
+               for desde, hasta in intervalos)
 
 
 def antiguedad_en_anios(fecha_ingreso, fecha_hasta) -> Optional[float]:

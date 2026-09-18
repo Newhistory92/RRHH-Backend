@@ -13,7 +13,7 @@ from app.routes.licenses import (
     calcular_dias_vacaciones,
     tipos_disponibles_de,
 )
-from app.services.asistencia_recalc import _datos_empleado, rango_de_calculo
+from app.services.asistencia_recalc import rango_de_calculo
 from tests.fakes import FakeSession
 
 HOY = date(2026, 9, 17)
@@ -69,27 +69,6 @@ def test_la_baja_vigente_reduce_los_dias_de_vacaciones_del_catalogo():
     assert vac_sin_baja["diasTotales"] == 30
     assert vac_con_baja["diasTotales"] == 10
     assert vac_con_baja["diasTotales"] < vac_sin_baja["diasTotales"]
-
-
-def test_datos_empleado_de_asistencia_usa_la_misma_nocion_de_baja_vigente():
-    """
-    _datos_empleado trae fechaBaja con un subquery propio en SQL (no pasa por
-    baja_vigente en Python), asi que tiene que codificar a mano el mismo
-    criterio: ignorar reingresados y bajas todavia no cumplidas. Se verifica
-    inspeccionando el SQL ejecutado, sin asumir formato mas alla de esos dos
-    filtros.
-    """
-    db = FakeSession({
-        "FROM Employee e": [{
-            "id": 8, "biometricoId": "123",
-            "horaInicio": None, "horaFin": None, "horasTrabajo": None,
-            "fechaIngreso": date(2005, 1, 1), "fechaBaja": None,
-        }],
-    })
-    _datos_empleado(db, 8)
-    sql = db.sql_ejecutado()
-    assert "fechaReingreso IS NULL" in sql
-    assert "fechaBaja <= CAST(GETDATE() AS DATE)" in sql
 
 
 def test_sin_baja_las_vacaciones_cuentan_hasta_hoy():
