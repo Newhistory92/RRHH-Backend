@@ -78,9 +78,6 @@ def _marcar_estado(db: Session, employee_id: int, estado: str) -> None:
                     "WHERE id = :id"), {"e": estado, "id": employee_id})
 
 
-ACCIONES_PENDIENTES = "('Pendiente', 'Pendiente Siguiente Aprobación')"
-
-
 def _reasignar_aprobaciones(db: Session, employee_id: int, hoy: date) -> dict:
     """
     Pasa las aprobaciones que el dado de baja tenia pendientes como
