@@ -112,7 +112,8 @@ hizo. Admite `NULL` porque una cuenta puede no tener empleado asociado (el caso
 del ADMIN de sistema), no porque el dato sea opcional.
 
 Se **elimina** `CondicionLaboral.fechaJubilacion`. Todo lo que hoy la lee pasa a
-leer la fecha de baja vigente.
+leer la fecha de baja vigente. El borrado físico de la columna se posterga a una
+release posterior: por ahora queda en la base sin que nadie la lea.
 
 ### "Está de baja" se calcula, no se almacena
 
