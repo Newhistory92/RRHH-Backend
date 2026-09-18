@@ -14,12 +14,17 @@ from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from app.database.database import SessionLocal
-from app.auth_middleware import require_permission
+from app.auth_middleware import get_current_user, require_permission
 from app.routes.departments import ensure_capacity_columns
 from datetime import datetime, date
 from app.database.jubilacion import (
     ESTADO_JUBILADO, aplicar_jubilacion, ensure_columna_jubilacion, jubilados,
 )
+from app.database.bajas import (
+    baja_vigente_de, bajas_para_tablero, borrar_baja, registrar_baja,
+    reincorporar,
+)
+from app.services.bajas import MOTIVOS_DE_BAJA, a_date
 from collections import defaultdict
 from app.database.employee_documents import (
     ensure_table as ensure_employee_document_table,
@@ -960,3 +965,169 @@ def get_jubilados(db: Session = Depends(get_db)):
     """
     ensure_columna_jubilacion(db)
     return {"jubilados": jubilados(db)}
+
+
+# ---------------------------------------------------------------------------
+# Bajas de empleados
+# ---------------------------------------------------------------------------
+def _es_admin(db: Session, employee_id: int) -> bool:
+    fila = db.execute(text("""
+        SELECT COUNT(*) AS n
+        FROM [User] u JOIN Role r ON r.id = u.roleId
+        WHERE r.name = 'ADMIN' AND u.employeeId = :id
+    """), {"id": employee_id}).mappings().first()
+    return bool(fila and fila["n"])
+
+
+def _quedan_otros_admin(db: Session, employee_id: int, hoy: date) -> bool:
+    """
+    Si hay algun otro ADMIN operativo aparte de este empleado.
+
+    Una cuenta ADMIN sin empleado asociado -el admin de sistema- cuenta como
+    otro: no se le puede dar de baja, asi que siempre queda disponible.
+    """
+    fila = db.execute(text("""
+        SELECT COUNT(*) AS n
+        FROM [User] u JOIN Role r ON r.id = u.roleId
+        WHERE r.name = 'ADMIN'
+          AND (u.employeeId IS NULL OR u.employeeId <> :id)
+          AND (u.employeeId IS NULL OR u.employeeId NOT IN (
+                SELECT employeeId FROM EmployeeBaja
+                WHERE fechaReingreso IS NULL AND fechaBaja <= :hoy))
+    """), {"id": employee_id, "hoy": hoy}).mappings().first()
+    return bool(fila and fila["n"])
+
+
+def _fecha_del_payload(data: dict, clave: str) -> date:
+    crudo = data.get(clave)
+    if not crudo:
+        raise HTTPException(status_code=400, detail=f"Falta {clave}")
+    try:
+        return date.fromisoformat(str(crudo).split("T")[0])
+    except ValueError:
+        raise HTTPException(status_code=400,
+                            detail=f"{clave} debe ser YYYY-MM-DD")
+
+
+@router.post("/employee/{employee_id}/baja",
+             dependencies=[Depends(require_permission("rrhh.gestionar"))])
+def post_baja(employee_id: int, data: dict = Body(...),
+              db: Session = Depends(get_db),
+              user: dict = Depends(get_current_user)):
+    """
+    Da de baja a un empleado.
+
+    Endpoint propio y no un campo mas de condicion-laboral: aquel actualiza
+    datos descriptivos, este le recorta a una persona todo el sistema menos su
+    legajo y le cancela las solicitudes pendientes.
+
+    La cuenta NO se bloquea: el dado de baja sigue entrando y viendo sus
+    documentos. Bloquear el acceso es otra cosa y vive en el panel de ADMIN.
+    """
+    hoy = date.today()
+
+    if db.execute(text("SELECT id FROM Employee WHERE id = :id"),
+                  {"id": employee_id}).first() is None:
+        raise HTTPException(status_code=404, detail="Empleado no encontrado")
+
+    motivo = data.get("motivo")
+    if motivo not in MOTIVOS_DE_BAJA:
+        raise HTTPException(
+            status_code=400,
+            detail=f"El motivo de baja debe ser uno de: {', '.join(MOTIVOS_DE_BAJA)}")
+
+    fecha = _fecha_del_payload(data, "fechaBaja")
+
+    if baja_vigente_de(db, employee_id, hoy) is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="Esta persona ya tiene una baja vigente. Corregila o "
+                   "reincorporala antes de registrar otra.")
+
+    if _es_admin(db, employee_id) and not _quedan_otros_admin(db, employee_id, hoy):
+        raise HTTPException(
+            status_code=400,
+            detail="Es el último usuario ADMIN activo: si se da de baja nadie "
+                   "podría administrar el sistema ni revertir esta baja. "
+                   "Cambiale el rol desde el panel de administración primero.")
+
+    # registradaPor sale del token y no del payload: esto mueve accesos, asi
+    # que la firma tiene que ser de quien efectivamente lo hizo.
+    resultado = registrar_baja(
+        db, employee_id, motivo, fecha, data.get("observaciones"),
+        user.get("employeeId"), hoy,
+    )
+    return {
+        "employeeId": employee_id,
+        "motivo": motivo,
+        "fechaBaja": fecha.isoformat(),
+        "vigente": resultado["vigente"],
+    }
+
+
+@router.delete("/employee/{employee_id}/baja",
+               dependencies=[Depends(require_permission("rrhh.gestionar"))])
+def delete_baja(employee_id: int, db: Session = Depends(get_db)):
+    """
+    Corrige un error de carga: borra la baja como si nunca hubiera existido.
+
+    Es distinto de reincorporar. Aca no queda rastro, justamente para que un
+    error de tipeo no ensucie las estadisticas del tablero.
+    """
+    if not borrar_baja(db, employee_id):
+        raise HTTPException(status_code=404,
+                            detail="Esta persona no tiene una baja abierta")
+    return {"employeeId": employee_id, "baja": None}
+
+
+@router.put("/employee/{employee_id}/reincorporacion",
+            dependencies=[Depends(require_permission("rrhh.gestionar"))])
+def put_reincorporacion(employee_id: int, data: dict = Body(...),
+                        db: Session = Depends(get_db)):
+    """
+    Cierra la baja: la persona volvio a trabajar y recupera sus permisos.
+
+    La baja queda en el historial con su fecha de reingreso, porque paso de
+    verdad y el tablero la tiene que poder mostrar.
+    """
+    fecha = _fecha_del_payload(data, "fechaReingreso")
+
+    baja = baja_vigente_de(db, employee_id, date.today())
+    if baja is None:
+        raise HTTPException(status_code=404,
+                            detail="Esta persona no tiene una baja vigente")
+
+    fecha_baja = a_date(baja["fechaBaja"])
+    if fecha_baja is not None and fecha < fecha_baja:
+        raise HTTPException(
+            status_code=400,
+            detail=f"El reingreso no puede ser anterior a la baja "
+                   f"({fecha_baja.isoformat()})")
+
+    reincorporar(db, employee_id, fecha)
+    return {"employeeId": employee_id, "fechaReingreso": fecha.isoformat()}
+
+
+@router.get("/bajas", dependencies=[Depends(require_permission("rrhh.gestionar"))])
+def get_bajas(db: Session = Depends(get_db)):
+    """
+    El tablero de bajas: todas las registradas y el desglose por motivo.
+
+    Incluye las programadas -fecha futura, sin efecto todavia- porque es el
+    unico lugar donde RRHH puede verlas y corregirlas antes de que lleguen. El
+    conteo por motivo las excluye: todavia pueden cancelarse y contarlas
+    inflaria la estadistica.
+
+    El conteo arranca en cero para los siete motivos, asi el frontend no tiene
+    que saber el catalogo para dibujar el desglose.
+    """
+    hoy = date.today()
+    filas = bajas_para_tablero(db, hoy)
+
+    por_motivo = {motivo: 0 for motivo in MOTIVOS_DE_BAJA}
+    for f in filas:
+        if f["estado"] != "programada" and f["motivo"] in por_motivo:
+            por_motivo[f["motivo"]] += 1
+
+    return {"bajas": filas, "porMotivo": por_motivo,
+            "motivos": list(MOTIVOS_DE_BAJA)}
