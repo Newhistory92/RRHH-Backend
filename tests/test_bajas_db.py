@@ -202,3 +202,21 @@ def test_pendientes_de_aplicar_no_saltea_a_quien_tiene_status_null():
     db = FakeSession({"FROM EmployeeBaja b": []})
     pendientes_de_aplicar(db, HOY)
     assert "e.status IS NULL OR e.status <> :baja" in db.sql_ejecutado()
+
+
+def test_reasignar_aprobaciones_solo_filtra_pendiente_no_derivadas():
+    """Las filas 'Pendiente Siguiente Aprobación' ya fueron aprobadas por el
+    supervisor y derivadas al siguiente: no son trabajo pendiente para el
+    supervisor dado de baja. Solo se reasignan las 'Pendiente'."""
+    db = FakeSession({
+        "SELECT managerId FROM Employee": [{"managerId": 5}],
+        "SET supervisorId = :jefe": [{"id": 1}],
+    })
+    aplicar_efectos(db, 8, HOY)
+
+    # Buscar el UPDATE que reasigna supervisores
+    reasignacion_sql = next(sql for sql, _ in db.ejecutadas
+                            if "SET supervisorId = :jefe" in sql)
+    # Debe filtrar solo por 'Pendiente', no por ambos valores
+    assert "accion = 'Pendiente'" in reasignacion_sql
+    assert "'Pendiente Siguiente Aprobación'" not in reasignacion_sql

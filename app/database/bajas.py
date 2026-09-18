@@ -90,6 +90,9 @@ def _reasignar_aprobaciones(db: Session, employee_id: int, hoy: date) -> dict:
     lo escribe create_license_request. Si no tiene superior cargado, o el
     superior tambien esta de baja, no se toca nada: se cuentan para que RRHH
     sepa cuantas quedaron sin nadie que las resuelva.
+
+    Las filas con accion='Pendiente Siguiente Aprobación' son decisiones ya
+    tomadas (aprobada y derivada al siguiente supervisor) y no se reasignan.
     """
     fila = db.execute(text("SELECT managerId FROM Employee WHERE id = :id"),
                       {"id": employee_id}).mappings().first()
@@ -97,18 +100,18 @@ def _reasignar_aprobaciones(db: Session, employee_id: int, hoy: date) -> dict:
 
     if (jefe is not None and jefe != employee_id
             and baja_vigente_de(db, jefe, hoy) is None):
-        res = db.execute(text(f"""
+        res = db.execute(text("""
             UPDATE Aprobaciones
             SET supervisorId = :jefe, updatedAt = GETDATE()
             WHERE supervisorId = :id
-              AND accion IN {ACCIONES_PENDIENTES}
+              AND accion = 'Pendiente'
         """), {"jefe": jefe, "id": employee_id})
         return {"reasignadas": res.rowcount, "sinReasignar": 0}
 
-    pendientes = db.execute(text(f"""
+    pendientes = db.execute(text("""
         SELECT COUNT(*) AS n FROM Aprobaciones
         WHERE supervisorId = :id
-          AND accion IN {ACCIONES_PENDIENTES}
+          AND accion = 'Pendiente'
     """), {"id": employee_id}).mappings().first()
     return {"reasignadas": 0,
             "sinReasignar": int(pendientes["n"]) if pendientes else 0}
