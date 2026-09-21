@@ -99,7 +99,9 @@ def _group_by(rows, key: str) -> dict:
 def get_all_employees(db: Session = Depends(get_db)):
     # ── 1. Query principal: empleados con datos de departamento, oficina,
     #       manager, condición laboral, horario y satisfacción ──────────────
-    # Los dados de baja siguen en la lista: desde su perfil RRHH corrige o reincorpora la baja.
+    # Devuelve tambien a los dados de baja: el frontend los saca de la lista
+    # principal, pero resuelve su perfil desde este mismo arreglo al abrirlo
+    # desde "Ver bajas", y es desde el perfil que se corrige o reincorpora.
     employees_result = db.execute(text("""
         SELECT
             e.id,
