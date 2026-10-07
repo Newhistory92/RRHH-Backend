@@ -101,6 +101,15 @@ IF COL_LENGTH('AsistenciaConfig','diasRachaAlerta') IS NULL
 ALTER TABLE AsistenciaConfig ADD diasRachaAlerta INT NOT NULL DEFAULT 3;
 """
 
+# JornadaLaboral es preexistente: este repo no la crea, solo le suma la
+# columna. El DEFAULT 12 es lo que hace que la migracion no le cambie el cupo
+# a nadie: las jornadas que ya existen arrancan con el valor que regia cuando
+# el numero estaba fijo en el codigo.
+ALTER_JORNADA_CUPO_PERMISO_SQL = """
+IF COL_LENGTH('JornadaLaboral','horasPermisoAnual') IS NULL
+ALTER TABLE JornadaLaboral ADD horasPermisoAnual DECIMAL(6,2) NOT NULL DEFAULT 12;
+"""
+
 # Columnas que dejaron de ser derivadas: se mudaron a JornadaCorreccion.
 # entradaManual y salidaManual se conservan porque si son derivadas -se
 # reconstruyen leyendo JornadaCorreccion- y evitan un join en cada lectura.
@@ -171,6 +180,8 @@ def ensure_tables(db: Session) -> None:
     db.execute(text(ALTER_CONFIG_ESTRICTA_SALIDA_SQL))
     db.commit()
     db.execute(text(ALTER_CONFIG_DIAS_RACHA_SQL))
+    db.commit()
+    db.execute(text(ALTER_JORNADA_CUPO_PERMISO_SQL))
     db.commit()
     for columna in COLUMNAS_A_ELIMINAR:
         _drop_columna(db, "JornadaDiaria", columna)

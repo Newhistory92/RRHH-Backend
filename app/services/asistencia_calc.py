@@ -7,7 +7,9 @@ Recibe los extremos del dia ya interpretados por marcaciones_norm: aca no se
 decide cual marca es la entrada, solo cuanto vale la jornada.
 
 La unidad de calculo es el dia. El arrastre del banco anual de permisos es
-responsabilidad de calcular_anio, que recorre los dias en orden cronologico.
+responsabilidad de calcular_anio, que recorre los dias en orden cronologico
+con el cupo que le pasan: el numero no vive aca, sale de la jornada laboral
+del empleado.
 """
 
 from dataclasses import dataclass
@@ -15,8 +17,6 @@ from datetime import date, datetime
 from typing import Optional
 
 from app.services.marcaciones_norm import ExtremosDia, HorarioDia
-
-BANCO_PERMISO_ANUAL_HORAS = 12.0
 
 # weekday(): lunes=0 ... domingo=6
 DIAS_HABILES = frozenset({0, 1, 2, 3, 4})
@@ -31,7 +31,7 @@ ESTADO_SIN_HORARIO = "sin_horario"
 
 # Re-export: los consumidores historicos importan HorarioDia desde aca.
 __all__ = [
-    "BANCO_PERMISO_ANUAL_HORAS", "DIAS_HABILES", "ESTADO_OK",
+    "DIAS_HABILES", "ESTADO_OK",
     "ESTADO_INCOMPLETA", "ESTADO_AUSENTE", "ESTADO_FERIADO", "ESTADO_LICENCIA",
     "ESTADO_JUSTIFICADA", "ESTADO_SIN_HORARIO", "HorarioDia", "Permiso",
     "EntradaDia", "ResultadoDia", "Tolerancias", "AjusteTolerancia",
@@ -245,16 +245,21 @@ def calcular_dia(entrada_dia: EntradaDia, tolerancias: Tolerancias,
     )
 
 
-def calcular_anio(dias: list[EntradaDia],
-                  tolerancias: Tolerancias) -> list[ResultadoDia]:
+def calcular_anio(dias: list[EntradaDia], tolerancias: Tolerancias,
+                  banco_anual: float) -> list[ResultadoDia]:
     """
     Recorre los dias en orden cronologico arrastrando el consumo del banco de
     permisos. Es el unico lugar donde el banco cambia de valor.
+
+    El cupo entra por parametro y no como constante: cada jornada laboral
+    tiene el suyo, y un empleado sin jornada asignada recibe 0.0. Quien lo
+    resuelve es asistencia_recalc, que es el que habla con la base; aca se
+    recibe ya decidido para que esta funcion siga siendo pura.
     """
     consumido = 0.0
     resultados: list[ResultadoDia] = []
     for d in sorted(dias, key=lambda x: x.fecha):
-        r = calcular_dia(d, tolerancias, BANCO_PERMISO_ANUAL_HORAS - consumido)
+        r = calcular_dia(d, tolerancias, banco_anual - consumido)
         if r is None:
             continue
         consumido += r.permisoBanco

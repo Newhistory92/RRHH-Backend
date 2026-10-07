@@ -278,7 +278,7 @@ def test_el_banco_se_arrastra_cronologicamente_en_el_anio():
         _dia(fecha=date(2026, 2, 4), marcaciones=_marcas((8, 0), (16, 0)),
              permisos=[c.Permiso(8.0, False)]),
     ]
-    enero, febrero = c.calcular_anio(dias, TOL)
+    enero, febrero = c.calcular_anio(dias, TOL, 12.0)
     assert enero.permisoBanco == 8.0
     assert enero.permisoDeuda == 0.0
     assert enero.saldoDia == 0.0
@@ -286,6 +286,29 @@ def test_el_banco_se_arrastra_cronologicamente_en_el_anio():
     assert febrero.permisoBanco == 4.0
     assert febrero.permisoDeuda == 4.0
     assert febrero.saldoDia == -4.0
+
+
+def test_cupo_cero_convierte_todo_permiso_regular_en_deuda():
+    """Es el caso del empleado sin jornada asignada: no tiene horas libres."""
+    dias = [
+        _dia(fecha=date(2026, 1, 7), marcaciones=_marcas((8, 0), (16, 0)),
+             permisos=[c.Permiso(2.0, False)]),
+    ]
+    enero, = c.calcular_anio(dias, TOL, 0.0)
+    assert enero.permisoBanco == 0.0
+    assert enero.permisoDeuda == 2.0
+    assert enero.saldoDia == -2.0
+
+
+def test_cupo_cero_no_afecta_al_permiso_oficial():
+    """El oficial es la unica valvula que le queda a quien no tiene jornada."""
+    dias = [
+        _dia(fecha=date(2026, 1, 7), marcaciones=_marcas((8, 0), (16, 0)),
+             permisos=[c.Permiso(2.0, True)]),
+    ]
+    enero, = c.calcular_anio(dias, TOL, 0.0)
+    assert enero.permisoDeuda == 0.0
+    assert enero.saldoDia == 0.0
 
 
 # -- Estados especiales -------------------------------------------------------

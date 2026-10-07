@@ -49,9 +49,11 @@ def _datos_empleado(db: Session, employee_id: int) -> Optional[dict]:
     fila = db.execute(text("""
         SELECT e.id, e.biometricoId,
                h.horaInicio, h.horaFin, h.horasTrabajo,
-               c.fechaIngreso
+               c.fechaIngreso,
+               j.horasPermisoAnual
         FROM Employee e
         LEFT JOIN Horario h ON e.cronogramaId = h.id
+        LEFT JOIN JornadaLaboral j ON e.jornadaId = j.id
         LEFT JOIN (
             SELECT employeeId, MIN(fechaIngreso) AS fechaIngreso
             FROM CondicionLaboral
@@ -289,12 +291,17 @@ def recalcular_anio(db: Session, employee_id: int, anio: int,
             justificada=d in justificados,
         ))
 
+    # Sin jornada asignada el LEFT JOIN devuelve None y el cupo queda en 0:
+    # es deliberado. A esa persona todo permiso regular le genera horas a
+    # recuperar, para que el legajo incompleto se note en vez de quedar
+    # tapado por un valor por omision.
+    banco_anual = float(emp.get("horasPermisoAnual") or 0)
     resultados = calcular_anio(entradas, Tolerancias(
         entradaMin=cfg["toleranciaEntradaMin"],
         salidaMin=cfg["toleranciaSalidaMin"],
         estrictaEntradaMin=cfg["toleranciaEstrictaEntradaMin"],
         estrictaSalidaMin=cfg["toleranciaEstrictaSalidaMin"],
-    ))
+    ), banco_anual)
     filas_count = reemplazar_jornadas(
         db, employee_id, desde, hasta,
         [_a_fila(r) for r in resultados], _a_incidencias(resultados),

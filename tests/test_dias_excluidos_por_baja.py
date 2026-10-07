@@ -73,6 +73,7 @@ def _db(bajas):
             "id": 8, "biometricoId": "123",
             "horaInicio": 8.0, "horaFin": 16.0, "horasTrabajo": 8.0,
             "fechaIngreso": date(2020, 1, 1),
+            "horasPermisoAnual": 12.0,
         }],
         "FROM AsistenciaConfig": [{
             "toleranciaEntradaMin": 15, "toleranciaSalidaMin": 15,
