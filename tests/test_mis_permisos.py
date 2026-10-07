@@ -82,3 +82,23 @@ def test_tiene_jornada_distingue_sin_jornada_de_cupo_cero_a_proposito():
     r2 = mis_permisos(_db(cupo=None, consumido=0.0, deuda=0.0), 8, 2026)
     assert r2["tieneJornada"] is False
     assert r2["cupoAnual"] == 0.0
+
+
+def test_cupo_y_restante_son_null_para_un_anio_que_no_es_el_actual():
+    """
+    El cupo guardado es el vigente, no uno por anio: para un anio pasado no se
+    sabe cual regia entonces. consumido y deuda si son datos historicos reales
+    y se siguen mostrando.
+    """
+    anio_pasado = date.today().year - 1
+    r = mis_permisos(_db(cupo=20.0, consumido=12.0, deuda=4.0), 8, anio_pasado)
+    assert r["cupoAnual"] is None
+    assert r["restante"] is None
+    assert r["consumido"] == 12.0
+    assert r["deuda"] == 4.0
+
+
+def test_cupo_y_restante_se_muestran_para_el_anio_actual():
+    r = mis_permisos(_db(cupo=20.0, consumido=12.0), 8, date.today().year)
+    assert r["cupoAnual"] == 20.0
+    assert r["restante"] == 8.0

@@ -532,18 +532,25 @@ def mis_permisos(db: Session, employee_id: int, anio: int) -> dict:
         WHERE employeeId = :emp
     """), {"emp": employee_id}).mappings().all()
 
+    # El cupo que se guarda es el VIGENTE de la jornada, no uno por anio: para
+    # un anio pasado no se sabe cual regia entonces, y mostrarlo como si fuera
+    # el de ese anio puede contradecir a consumido/deuda (que si son datos
+    # historicos reales, de JornadaDiaria). Se muestra solo para el anio en
+    # curso.
+    es_anio_actual = anio == date.today().year
+
     return {
         "anio": anio,
         # Distingue "no tiene jornada" (cupo 0 implicito) de "tiene una
         # jornada con el cupo configurado en 0 a proposito" -- las dos dan
         # cupoAnual 0.0, pero son estados distintos para la persona.
         "tieneJornada": tiene_jornada,
-        "cupoAnual": round(cupo, 2),
+        "cupoAnual": round(cupo, 2) if es_anio_actual else None,
         "consumido": round(consumido, 2),
         # Nunca negativo: si RRHH bajo el cupo despues de que la persona ya
         # habia pedido permisos, el excedente se cuenta como deuda, no como
         # un restante en rojo que se leeria dos veces.
-        "restante": round(max(cupo - consumido, 0.0), 2),
+        "restante": round(max(cupo - consumido, 0.0), 2) if es_anio_actual else None,
         "deuda": round(deuda, 2),
         "permisos": [{
             "id": int(f["id"]),
