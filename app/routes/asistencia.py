@@ -18,8 +18,8 @@ from app.permisos import tiene_permiso
 from app.database.asistencia import (
     biometricos_huerfanos, dias_abuso_de, dias_abuso_todos, ensure_tables,
     get_config, get_jornada, jornadas_abuso_todos, jornadas_de,
-    jornadas_incompletas, reset_inicio_modulo, saldo_acumulado, tablero,
-    update_config,
+    jornadas_incompletas, mis_permisos, reset_inicio_modulo, saldo_acumulado,
+    tablero, update_config,
 )
 from app.services.asistencia_alertas import resumir, validar_umbrales
 from app.database.asistencia_auditoria import (
@@ -245,6 +245,27 @@ def get_mi_asistencia(desde: str | None = None, hasta: str | None = None,
         "jornadas": jornadas_de(db, employee_id, d, h),
         "abuso": _resumen_abuso(db, employee_id, d, h),
     }
+
+
+@router.get("/mis-permisos", dependencies=[Depends(require_auth)])
+def get_mis_permisos(anio: int | None = None,
+                     usuario: dict = Depends(get_current_user),
+                     db: Session = Depends(get_db)):
+    """
+    Los permisos propios de un anio y el estado del cupo anual.
+
+    Mismo contrato que GET /asistencia/mi: el empleado sale del token y no se
+    acepta employeeId por parametro, asi que nadie puede leer permisos ajenos.
+
+    Un anio sin permisos responde 200 con la lista vacia y el cupo completo,
+    no 404: la pantalla tiene que poder decir "no pediste permisos ese anio".
+    """
+    ensure_tables(db)
+    employee_id = usuario.get("employeeId")
+    if employee_id is None:
+        raise HTTPException(status_code=403,
+                            detail="Tu usuario no esta vinculado a un legajo")
+    return mis_permisos(db, int(employee_id), anio or date.today().year)
 
 
 @router.get("/config", dependencies=[GESTIONAR_ASISTENCIA])

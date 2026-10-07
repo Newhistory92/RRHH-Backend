@@ -490,3 +490,69 @@ def jornadas_abuso_todos(db: Session, desde: date,
             "abusoSalida": bool(f["abusoSalida"]),
         })
     return por_empleado
+
+
+def mis_permisos(db: Session, employee_id: int, anio: int) -> dict:
+    """
+    Los permisos de un empleado en un anio, y como quedo su cupo.
+
+    Los totales se leen de JornadaDiaria: ahi el motor ya dejo resuelto el
+    reparto entre lo que cubrio el cupo (permisoBanco) y lo que paso a horas a
+    recuperar (permisoDeuda). Aca NO se vuelve a aplicar la regla cronologica
+    -eso vive solo en asistencia_calc.calcular_anio-, porque una segunda
+    implementacion de la misma regla se desincroniza sin que nadie lo note.
+    """
+    cupo_fila = db.execute(text("""
+        SELECT j.horasPermisoAnual AS cupo
+        FROM Employee e
+        LEFT JOIN JornadaLaboral j ON e.jornadaId = j.id
+        WHERE e.id = :emp
+    """), {"emp": employee_id}).mappings().first()
+    cupo = float(cupo_fila["cupo"] or 0) if cupo_fila else 0.0
+
+    totales = db.execute(text("""
+        SELECT COALESCE(SUM(permisoBanco), 0) AS consumido,
+               COALESCE(SUM(permisoDeuda), 0) AS deuda
+        FROM JornadaDiaria
+        WHERE employeeId = :emp AND YEAR(fecha) = :anio
+    """), {"emp": employee_id, "anio": anio}).mappings().first()
+    consumido = float(totales["consumido"] or 0) if totales else 0.0
+    deuda = float(totales["deuda"] or 0) if totales else 0.0
+
+    filas = db.execute(text("""
+        SELECT id, date, exitTime, returnTime, hours, oficial
+        FROM Permission
+        WHERE employeeId = :emp AND YEAR(date) = :anio
+        ORDER BY date DESC, exitTime DESC
+    """), {"emp": employee_id, "anio": anio}).mappings().all()
+
+    anios_con_permisos = db.execute(text("""
+        SELECT DISTINCT YEAR(date) AS anio FROM Permission
+        WHERE employeeId = :emp
+    """), {"emp": employee_id}).mappings().all()
+
+    return {
+        "anio": anio,
+        "cupoAnual": round(cupo, 2),
+        "consumido": round(consumido, 2),
+        # Nunca negativo: si RRHH bajo el cupo despues de que la persona ya
+        # habia pedido permisos, el excedente se cuenta como deuda, no como
+        # un restante en rojo que se leeria dos veces.
+        "restante": round(max(cupo - consumido, 0.0), 2),
+        "deuda": round(deuda, 2),
+        "permisos": [{
+            "id": int(f["id"]),
+            "fecha": (f["date"].date() if isinstance(f["date"], datetime)
+                      else f["date"]).isoformat(),
+            "exitTime": float(f["exitTime"] or 0),
+            "returnTime": float(f["returnTime"] or 0),
+            "horas": float(f["hours"] or 0),
+            "oficial": bool(f["oficial"]),
+        } for f in filas],
+        # El anio en curso siempre entra, tenga permisos o no: es el que la
+        # pantalla abre por defecto.
+        "aniosConDatos": sorted(
+            {int(a["anio"]) for a in anios_con_permisos} | {date.today().year},
+            reverse=True,
+        ),
+    }
