@@ -503,11 +503,12 @@ def mis_permisos(db: Session, employee_id: int, anio: int) -> dict:
     implementacion de la misma regla se desincroniza sin que nadie lo note.
     """
     cupo_fila = db.execute(text("""
-        SELECT j.horasPermisoAnual AS cupo
+        SELECT j.id AS jornada_id, j.horasPermisoAnual AS cupo
         FROM Employee e
         LEFT JOIN JornadaLaboral j ON e.jornadaId = j.id
         WHERE e.id = :emp
     """), {"emp": employee_id}).mappings().first()
+    tiene_jornada = bool(cupo_fila and cupo_fila["jornada_id"] is not None)
     cupo = float(cupo_fila["cupo"] or 0) if cupo_fila else 0.0
 
     totales = db.execute(text("""
@@ -533,6 +534,10 @@ def mis_permisos(db: Session, employee_id: int, anio: int) -> dict:
 
     return {
         "anio": anio,
+        # Distingue "no tiene jornada" (cupo 0 implicito) de "tiene una
+        # jornada con el cupo configurado en 0 a proposito" -- las dos dan
+        # cupoAnual 0.0, pero son estados distintos para la persona.
+        "tieneJornada": tiene_jornada,
         "cupoAnual": round(cupo, 2),
         "consumido": round(consumido, 2),
         # Nunca negativo: si RRHH bajo el cupo despues de que la persona ya

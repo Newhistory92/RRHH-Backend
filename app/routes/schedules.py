@@ -84,7 +84,11 @@ def save_jornada(background_tasks: BackgroundTasks, data: dict = Body(...),
     if not nombre or horas_dia is None:
         raise HTTPException(status_code=400, detail="Nombre y horas al día son requeridos")
 
-    cupo = _validar_cupo(data.get("horasPermisoAnual"))
+    # "in data" y no "data.get(...)": un payload viejo (bundle de PWA cacheado
+    # de antes de este campo) no manda horasPermisoAnual, y eso NO puede
+    # interpretarse como "poné el cupo en 0" -- pisaria el cupo real de la
+    # jornada y dispararia un recalculo masivo con todo el mundo en deuda.
+    cupo_en_payload = "horasPermisoAnual" in data
 
     try:
         if jornada_id:
@@ -96,6 +100,10 @@ def save_jornada(background_tasks: BackgroundTasks, data: dict = Body(...),
             ), {"id": jornada_id}).mappings().first()
             cupo_previo = float(previo["horasPermisoAnual"] or 0) if previo else None
 
+            # Si el campo no vino, se conserva el cupo que ya tenia: un
+            # payload viejo no puede borrarlo.
+            cupo = _validar_cupo(data.get("horasPermisoAnual")) if cupo_en_payload else cupo_previo
+
             db.execute(text("""
                 UPDATE JornadaLaboral
                 SET nombre = :nombre, horasDia = :horasDia,
@@ -105,7 +113,7 @@ def save_jornada(background_tasks: BackgroundTasks, data: dict = Body(...),
                    "cupo": cupo, "id": jornada_id})
             db.commit()
 
-            if cupo_previo is not None and cupo_previo != cupo:
+            if cupo_previo is not None and cupo is not None and cupo_previo != cupo:
                 # El background task necesita su propia sesion porque la del
                 # request se cierra cuando el handler retorna.
                 def _recalcular(jornada_: int, anio_: int):
@@ -123,7 +131,9 @@ def save_jornada(background_tasks: BackgroundTasks, data: dict = Body(...),
                 return {"success": True, "recalculo": "en_proceso"}
         else:
             # Una jornada nueva todavia no tiene empleados asignados: no hay
-            # nada que recalcular.
+            # nada que recalcular. Si no mandan el cupo, se usa el mismo
+            # default que tiene la columna en la base (12), no 0.
+            cupo = _validar_cupo(data.get("horasPermisoAnual")) if cupo_en_payload else 12.0
             db.execute(text("""
                 INSERT INTO JornadaLaboral (nombre, horasDia, horasPermisoAnual)
                 VALUES (:nombre, :horasDia, :cupo)

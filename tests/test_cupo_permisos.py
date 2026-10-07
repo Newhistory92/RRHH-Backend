@@ -135,3 +135,50 @@ def test_el_cupo_ausente_vale_cero():
     Un POST viejo sin el campo no puede explotar; se interpreta como sin cupo.
     """
     assert _validar_cupo(None) == 0.0
+
+
+# -- El payload sin el campo no pisa el cupo existente --------------------------
+
+from fastapi.testclient import TestClient
+
+
+def test_actualizar_sin_el_campo_no_pisa_el_cupo_existente(monkeypatch):
+    """
+    Un bundle de PWA cacheado de antes de este campo no puede, al guardar una
+    jornada, pisarle el cupo real con 0 y disparar un recalculo masivo.
+    """
+    from app.routes import schedules as s
+
+    recalculos = []
+    monkeypatch.setattr(s, "recalcular_jornada",
+                        lambda db, jid, anio: recalculos.append((jid, anio)))
+
+    db = FakeSession({
+        "SELECT horasPermisoAnual FROM JornadaLaboral": [{"horasPermisoAnual": 12.0}],
+    })
+    resultado = s.save_jornada.__wrapped__ if hasattr(s.save_jornada, "__wrapped__") else None
+    # save_jornada es un endpoint FastAPI con BackgroundTasks inyectado; se
+    # invoca la funcion directamente pasando un BackgroundTasks real.
+    from fastapi import BackgroundTasks
+    bg = BackgroundTasks()
+    resp = s.save_jornada(bg, {"id": 2, "nombre": "Full", "horasDia": 8}, db)
+
+    assert resp == {"success": True}
+    # No se disparo recalculo: el cupo no cambio.
+    assert recalculos == []
+    # El UPDATE tiene que haber mandado el cupo previo (12.0), no 0.
+    updates = [p for sql, p in db.ejecutadas if "UPDATE JornadaLaboral" in sql]
+    assert updates and updates[0]["cupo"] == 12.0
+
+
+def test_crear_jornada_sin_el_campo_usa_el_default_de_la_columna():
+    """Una jornada nueva sin el campo arranca en 12, igual que el DEFAULT de la base."""
+    from app.routes import schedules as s
+    from fastapi import BackgroundTasks
+
+    db = FakeSession({})
+    bg = BackgroundTasks()
+    s.save_jornada(bg, {"nombre": "Media Jornada", "horasDia": 4}, db)
+
+    inserts = [p for sql, p in db.ejecutadas if "INSERT INTO JornadaLaboral" in sql]
+    assert inserts and inserts[0]["cupo"] == 12.0

@@ -13,8 +13,12 @@ from tests.fakes import FakeSession
 
 
 def _db(cupo=12.0, consumido=8.5, deuda=2.0, permisos=None, anios=None):
+    # jornada_id refleja lo que el LEFT JOIN real devolveria: None solo
+    # cuando no hay jornada (que es como estos tests simulan "sin jornada",
+    # pasando cupo=None); en cualquier otro caso, un id real.
+    jornada_id = None if cupo is None else 1
     return FakeSession({
-        "FROM Employee e": [{"cupo": cupo}],
+        "FROM Employee e": [{"cupo": cupo, "jornada_id": jornada_id}],
         "FROM JornadaDiaria": [{"consumido": consumido, "deuda": deuda}],
         "ORDER BY date DESC": permisos if permisos is not None else [],
         "SELECT DISTINCT YEAR(date)": anios if anios is not None else [],
@@ -66,3 +70,15 @@ def test_el_anio_en_curso_esta_siempre_en_el_selector():
     assert 2024 in r["aniosConDatos"]
     # Mas nuevo primero: es el orden en que se quieren leer.
     assert r["aniosConDatos"] == sorted(r["aniosConDatos"], reverse=True)
+
+
+def test_tiene_jornada_distingue_sin_jornada_de_cupo_cero_a_proposito():
+    # Con jornada, cupo configurado en 0 a proposito.
+    r = mis_permisos(_db(cupo=0.0, consumido=0.0, deuda=0.0), 8, 2026)
+    assert r["tieneJornada"] is True
+    assert r["cupoAnual"] == 0.0
+
+    # Sin jornada: cupo None viene del LEFT JOIN sin fila.
+    r2 = mis_permisos(_db(cupo=None, consumido=0.0, deuda=0.0), 8, 2026)
+    assert r2["tieneJornada"] is False
+    assert r2["cupoAnual"] == 0.0
