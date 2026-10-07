@@ -9,9 +9,10 @@ calculo completo.
 
 Lo que si varia es a quien se recalcula. recalcular_todos barre la nomina
 entera para el job nocturno; recalcular_marcados elige solo a los que acaban de
-fichar, que es lo que hace viable correrlo cada pocos minutos. Los dos terminan
-llamando a recalcular_anio, asi que el invariante de arriba se mantiene: la
-seleccion cambia, el calculo no.
+fichar, que es lo que hace viable correrlo cada pocos minutos; recalcular_jornada
+toma a los de una jornada, que es lo que hace falta cuando cambia su cupo de
+permisos. Los tres terminan llamando a recalcular_anio, asi que el invariante de
+arriba se mantiene: la seleccion cambia, el calculo no.
 """
 
 import logging
@@ -348,6 +349,41 @@ def recalcular_todos(db: Session, anio: int, origen: str = "nocturno",
         except Exception as e:
             db.rollback()
             log.warning("Recalculo fallido para empleado %s: %s", eid, e)
+            errores.append({"employeeId": eid, "error": str(e)})
+
+    cerrar_recalculo(db, log_id, ok, filas, errores)
+    return {"procesados": ok, "filas": filas, "errores": errores}
+
+
+def recalcular_jornada(db: Session, jornada_id: int, anio: int) -> dict:
+    """
+    Recalcula el anio de los empleados de una jornada. Es lo que se dispara al
+    cambiarle el cupo de permisos: el banco se consume en orden cronologico,
+    asi que mover el cupo cambia retroactivamente que horas fueron libres y
+    cuales quedaron como deuda, para todo el anio.
+
+    Hermana de recalcular_todos: misma auditoria y misma garantia de que un
+    empleado que falla se registra y no aborta el resto. Lo unico que cambia
+    es a quien se le aplica.
+    """
+    log_id = abrir_recalculo(db, "cupo_permiso", None, None,
+                             date(anio, 1, 1), date(anio, 12, 31))
+    ids = [r["id"] for r in db.execute(text("""
+        SELECT id FROM Employee
+        WHERE jornadaId = :jornada AND biometricoId IS NOT NULL
+        ORDER BY id
+    """), {"jornada": jornada_id}).mappings().all()]
+
+    filas = 0
+    ok = 0
+    errores = []
+    for eid in ids:
+        try:
+            filas += recalcular_anio(db, eid, anio)
+            ok += 1
+        except Exception as e:
+            db.rollback()
+            log.warning("Recalculo por cupo fallido para empleado %s: %s", eid, e)
             errores.append({"employeeId": eid, "error": str(e)})
 
     cerrar_recalculo(db, log_id, ok, filas, errores)
