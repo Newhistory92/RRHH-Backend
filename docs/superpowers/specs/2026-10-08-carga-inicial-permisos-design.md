@@ -67,6 +67,8 @@ achica el banco, no una fila de `Permission`.
 | Qué carga RRHH | Las horas **ya consumidas** | Son un hecho histórico que no se mueve; el cupo es configuración que RRHH puede editar |
 | Años cargables | Solo el año calendario en curso | El banco no se arrastra, y los años cerrados no se recalculan nunca |
 | Almacenamiento | Tabla propia, con el año estampado | Sin el año, el 1 de enero la carga vieja seguiría descontando contra el cupo nuevo |
+| Cargas sucesivas | **Se suman**: cada carga es un asiento | Cargar 5 y después 10 son dos cargas reales que dan 15, no una corrección de la otra |
+| Corregir un error | Borrando el asiento | Es la contrapartida de que se sumen: sin borrado, un 50 mal tipeado queda para siempre |
 | Cómo entra al cálculo | Achica el banco antes de llamar al motor | El motor no cambia y descuenta siempre, haya marcaciones o no |
 | Dónde carga RRHH | Botón en la pestaña "Historial de Permisos" | Es donde la persona ya está mirando; menos superficie que una pestaña nueva |
 | Permiso | Uno nuevo, dedicado | Se apaga al terminar la migración sin tocar código ni sacar la pestaña |
@@ -102,49 +104,72 @@ cupo completo.
 
 ### Unidad 1 — Persistencia
 
-Tabla nueva en la base de RRHH, espejando `SaldoInicialLicencia`:
+> **Revisión 2026-10-08.** Esta unidad cambió después de la primera
+> implementación. El diseño original guardaba **una sola fila** por empleado y
+> año, y cada carga **reemplazaba** la anterior (upsert con `MERGE`). Probándolo,
+> el usuario señaló que cargar 5 y después 10 tiene que dar **15**, no 10, y que
+> el panel tiene que mostrar el historial de cada carga. Lo que sigue es el
+> diseño vigente: **cada carga es un asiento**, el total es la suma, y un asiento
+> equivocado se corrige borrándolo.
+
+Tabla nueva en la base de RRHH:
 
 ```
 ConsumoInicialPermiso
   id               INT IDENTITY(1,1) PRIMARY KEY
   employeeId       INT           NOT NULL
   anio             INT           NOT NULL
-  horasConsumidas  DECIMAL(6,2)  NOT NULL
+  horasConsumidas  DECIMAL(6,2)  NOT NULL   -- de ESTE asiento, no el total
   cargadoPor       INT           NULL       -- employeeId de quien cargó
   cargadoEn        DATETIME2     NOT NULL
-  UNIQUE (employeeId, anio)
 ```
 
-Módulo propio `app/database/consumo_inicial_permisos.py`, con el mismo patrón
-que `saldo_inicial_licencias.py`: `ensure_table`, una lectura por
-`(employeeId, anio)` y un upsert con `MERGE ... WITH (HOLDLOCK)`.
+**Sin clave única sobre `(employeeId, anio)`**: varios asientos del mismo
+empleado y año es justamente el caso normal. El par sigue siendo el criterio de
+agrupación para sumar, pero no de unicidad.
 
-La lectura devuelve **`float | None`**, con `None` para "no hay fila". Es
-deliberado que no coalesca a 0 adentro: sus dos consumidores necesitan cosas
-opuestas. El recálculo (Unidad 3) hace la aritmética y coalesce con `or 0.0`,
-porque sin carga el banco es el cupo completo. El `GET` (Unidad 4) necesita
-conservar la distinción, porque el panel de RRHH muestra vacío o cero según
-corresponda. Si la lectura devolviera 0 para el caso sin fila, esa distinción
-—el punto de los tres estados de arriba— se perdería en la capa de datos y no
-habría forma de recuperarla.
+Módulo propio `app/database/consumo_inicial_permisos.py` con `ensure_table`, un
+`INSERT` por asiento, un `DELETE` por `id` de asiento, una lectura del total
+(suma de los asientos de ese empleado y año) y una lectura del listado de
+asientos para el panel.
 
-El MERGE
-—y no un INSERT— porque corregir una carga equivocada es el caso normal, y la
-clave única haría fallar el segundo intento; el `HOLDLOCK` evita la carrera
-clásica del MERGE en T-SQL, con dos cargas simultáneas de la misma clave
-entrando las dos por `NOT MATCHED`.
+El `INSERT` reemplaza al `MERGE ... WITH (HOLDLOCK)` del diseño original. Ya no
+hace falta: el `MERGE` existía para que la segunda carga de la misma clave
+corrigiera a la primera en vez de fallar contra la clave única, y ahora la
+segunda carga es un asiento más, legítimo. De paso desaparece la carrera que el
+`HOLDLOCK` protegía: dos cargas simultáneas insertan dos asientos, que es el
+resultado correcto.
 
-`cargadoPor` y `cargadoEn` existen porque esto mueve horas que se convierten en
-tiempo libre: tiene que ser trazable quién las puso.
+La lectura del total devuelve **`float | None`**, con `None` para "no hay ningún
+asiento". Es deliberado que no coalesca a 0 adentro: sus dos consumidores
+necesitan cosas opuestas. El recálculo (Unidad 3) hace la aritmética y coalesce
+con `or 0.0`, porque sin carga el banco es el cupo completo. El `GET` (Unidad 4)
+necesita conservar la distinción, porque el panel de RRHH muestra el estado real
+según corresponda. Si la lectura devolviera 0 para el caso sin asientos, esa
+distinción se perdería en la capa de datos y no habría forma de recuperarla.
+
+`cargadoPor` y `cargadoEn` son por asiento, y existen porque esto mueve horas
+que se convierten en tiempo libre: tiene que ser trazable quién puso cada una.
 
 Tres estados, no dos:
 
-- **Sin fila** → no se cargó nada; rige el cupo completo.
-- **Fila en 0** → se determinó que no usó ninguna.
-- **Fila > 0** → ya usó esas horas.
+- **Sin asientos** → no se cargó nada; rige el cupo completo.
+- **Asientos que suman 0** → se determinó que no usó ninguna.
+- **Asientos que suman > 0** → ya usó esas horas.
 
-La distinción entre "sin fila" y "cero" es deliberada: no haber mirado a un
-empleado y haber determinado que no usó nada son cosas distintas.
+La distinción entre "sin asientos" y "suma cero" es deliberada: no haber mirado
+a un empleado y haber determinado que no usó nada son cosas distintas.
+
+### Cómo se corrige una carga equivocada
+
+Borrando el asiento. Es la contrapartida necesaria de que las cargas se sumen:
+con reemplazo, un 50 mal tipeado se arreglaba escribiendo 5 encima; sumando, ese
+50 quedaría para siempre si no hubiera forma de quitarlo.
+
+Se descartó la alternativa de cargar asientos negativos para compensar: no
+requiere endpoint de borrado y deja un log inmutable, pero obliga a RRHH a
+razonar en negativos y llena el historial de líneas que son correcciones y no
+cargas reales.
 
 ### Unidad 2 — El permiso
 
@@ -196,28 +221,39 @@ cómo ya trabaja el módulo.
 
 ### Unidad 4 — Endpoints
 
-Dos, ambos bajo `require_permission("asistencia.cargaInicialPermisos")`, en
-`app/routes/asistencia.py`.
+Tres, todos bajo `require_permission("asistencia.cargaInicialPermisos")`, en
+`app/routes/carga_inicial_permisos.py`.
 
 **`GET /asistencia/carga-inicial-permisos/{employee_id}`** — devuelve el año en
-curso, `horasConsumidas` (o `null` si no hay fila, que es distinto de 0), el
-cupo de la jornada del empleado como contexto, y `cargadoPor`/`cargadoEn` si hay
-carga previa.
+curso, el cupo de la jornada como contexto, el **total** (`null` si no hay
+ningún asiento, que es distinto de 0), y la **lista de asientos**, cada uno con
+su `id`, `horasConsumidas`, `cargadoPor` y `cargadoEn`. El `id` es lo que el
+panel necesita para poder borrar un asiento puntual.
 
-**`PUT /asistencia/carga-inicial-permisos/{employee_id}`** — guarda el valor del
-año en curso con upsert, registrando quién y cuándo, y dispara
-`recalcular_anio(db, employee_id, anio)` sincrónico. Es un solo empleado: no
-hace falta segundo plano, a diferencia del cambio de cupo de una jornada, que
-toca a toda la nómina de esa jornada.
+**`POST /asistencia/carga-inicial-permisos/{employee_id}`** — agrega un asiento
+al año en curso, registrando quién y cuándo, y dispara
+`recalcular_anio(db, employee_id, anio)` sincrónico. Reemplaza al `PUT` del
+diseño original: ya no se guarda "el valor", se agrega una carga.
 
-Validación: `horasConsumidas` no negativo, y tope de 2000 horas, el mismo atajo
-contra el error de tipeo que ya usa el cupo. **Sin tope contra el cupo del
-empleado**: alguien puede haber usado más horas de las que su cupo cubre, y eso
-tiene que poder cargarse.
+**`DELETE /asistencia/carga-inicial-permisos/{employee_id}/{asiento_id}`** —
+borra un asiento y dispara el mismo recálculo. Es la única forma de corregir una
+carga equivocada. Valida que el asiento pertenezca a ese empleado antes de
+borrarlo: sin eso, el `id` de la URL alcanzaría para borrar el asiento de
+cualquier otro.
 
-El año no se recibe por parámetro: siempre es el año calendario en curso. Es el
-único cargable, y aceptarlo del cliente solo abriría la puerta a escribir años
-que después nadie recalcula.
+Las tres recalculan sincrónico porque son un solo empleado, a diferencia del
+cambio de cupo de una jornada, que toca a toda su nómina y va en segundo plano.
+
+Validación del `POST`: `horasConsumidas` no negativo, y tope de 2000 horas, el
+mismo atajo contra el error de tipeo que ya usa el cupo. El tope aplica **por
+asiento**, no al total: un total alto puede ser legítimamente la suma de varias
+cargas reales, mientras que un solo asiento de más de 2000 horas solo puede ser
+un error de tipeo. **Sin tope contra el cupo del empleado**: alguien puede haber
+usado más horas de las que su cupo cubre, y eso tiene que poder cargarse.
+
+El año no se recibe por parámetro en ningún endpoint: siempre es el año
+calendario en curso. Es el único cargable, y aceptarlo del cliente solo abriría
+la puerta a escribir años que después nadie recalcula.
 
 ### Unidad 5 — La pantalla de RRHH
 
@@ -227,13 +263,19 @@ solo con `asistencia.cargaInicialPermisos`.
 
 Al tocarlo abre un panel con:
 
-- El año en curso.
-- El cupo de la jornada del empleado, como contexto de contra qué se descuenta.
-- Un campo numérico para las horas ya consumidas, que **distingue vacío de
-  cero**, según los tres estados de la Unidad 1.
-- Quién cargó y cuándo, si ya hay una carga previa.
+- El año en curso y el cupo de la jornada, como contexto de contra qué se
+  descuenta.
+- El **total acumulado** de los asientos, que es la cifra que efectivamente
+  descuenta del cupo.
+- La **lista de asientos**: cada línea con su fecha, quién lo cargó, las horas
+  de ese asiento, y un botón para borrarlo. Es lo que hacía falta y no estaba:
+  el panel anterior mostraba un número sin decir de dónde salía.
+- Un campo para agregar un asiento nuevo, que **distingue vacío de cero**, según
+  los tres estados de la Unidad 1.
 
-Guardar llama al `PUT`, que recalcula, y el panel se cierra.
+Agregar llama al `POST` y borrar al `DELETE`; las dos cosas recalculan y
+refrescan la lista sin cerrar el panel, para que RRHH pueda cargar varios
+asientos de una pasada y ver el total actualizándose.
 
 Cableado: hoy `PermissionHistoryTab` solo recibe `permisos`. Necesita también el
 empleado (o su id) para saber de quién carga y guarda.
@@ -267,12 +309,15 @@ la misma regla: se muestra solo para el año en curso.
 
 - La carga valida antes de escribir y devuelve el motivo: horas negativas o por
   encima del tope.
-- Guardar dos veces el mismo `(empleado, año)` corrige el valor en lugar de
-  duplicarlo.
-- Si el recálculo posterior al `PUT` falla, el valor ya quedó guardado: el error
-  se registra y el job nocturno lo corrige. Es el mismo contrato que ya tiene
-  `create_permission`, que recalcula igual y no deja que una falla del recálculo
-  tumbe el alta del permiso.
+- Cargar dos veces el mismo `(empleado, año)` agrega dos asientos y el total es
+  la suma. Es el comportamiento buscado, no un duplicado a evitar.
+- Borrar un asiento que no existe, o que pertenece a otro empleado, responde 404
+  sin borrar nada. El chequeo de pertenencia importa: sin él, el `id` de la URL
+  alcanzaría para borrarle un asiento a cualquier otra persona.
+- Si el recálculo posterior al `POST` o al `DELETE` falla, el asiento ya quedó
+  escrito (o borrado): el error se registra y el job nocturno lo corrige. Es el
+  mismo contrato que ya tiene `create_permission`, que recalcula igual y no deja
+  que una falla del recálculo tumbe el alta del permiso.
 - Un empleado sin jornada asignada tiene cupo 0: la carga inicial se puede
   guardar igual (el banco ya arranca en 0 y queda en 0), y el panel muestra el
   cupo 0 como contexto para que RRHH vea que falta asignarle la jornada.
@@ -284,8 +329,11 @@ la misma regla: se muestra solo para el año en curso.
 - Agregarle fecha al modal de permiso de salida. Se evaluó y se descartó como
   solución a este problema (ver arriba); si alguna vez se quiere por otro
   motivo, es un trabajo aparte.
-- Reconstruir el detalle de los permisos viejos. Se carga el total de horas
-  consumidas, no una fila por salida.
+- Reconstruir el detalle de los permisos viejos. Cada asiento son horas
+  agregadas, no una fila por salida con su horario.
+- Editar un asiento ya cargado. Se borra y se carga de nuevo: un asiento es un
+  hecho registrado, y permitir editarlo en el lugar perdería la trazabilidad de
+  quién cargó qué sin dejar rastro.
 - Tocar `asistencia_calc.calcular_anio`. El motor no se entera de esta feature.
 - Prorratear el cupo para quien ingresa a mitad de año. Sigue fuera de alcance,
   como en el trabajo del cupo.
@@ -300,13 +348,20 @@ la misma regla: se muestra solo para el año en curso.
 - La carga inicial descuenta **aunque el día no tenga marcaciones**: es el caso
   que motiva toda la feature y el que distingue este camino del backdateo de
   permisos.
-- El upsert corrige en vez de duplicar para el mismo `(empleado, año)`.
-- La fila de un año no afecta el cálculo de otro año.
-- Vacío y cero dan resultados distintos en el `GET`.
-- Validación: negativo y por encima de 2000 responden 400.
-- Los dos endpoints exigen `asistencia.cargaInicialPermisos`.
+- **Dos asientos se suman**: cargar 5 y después 10 da un total de 15, no 10.
+- Borrar un asiento baja el total en exactamente las horas de ese asiento, y
+  deja los demás intactos.
+- Borrar un asiento de otro empleado responde 404 y no borra nada.
+- Los asientos de un año no afectan el cálculo de otro año.
+- Sin asientos y con asientos que suman cero dan resultados distintos en el
+  `GET` (`null` contra `0`).
+- Validación: negativo y por encima de 2000 responden 400, **por asiento**.
+- Los tres endpoints exigen `asistencia.cargaInicialPermisos`.
 - `GET /asistencia/mis-permisos` devuelve `consumoInicial` y descuenta el
   `restante` con él.
+- El excedente sobre el cupo cuenta como deuda y descuenta del saldo general
+  (`saldo_acumulado`), y los tableros leen ese mismo saldo en vez de volver a
+  sumar los días.
 
 **Frontend** (no tiene runner de tests):
 
