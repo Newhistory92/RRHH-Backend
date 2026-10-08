@@ -21,7 +21,7 @@ from tests.fakes import FakeSession
 def _db(saldo_dias=0.0, excedente=0.0):
     return FakeSession({
         "SUM(saldoDia)": [{"s": saldo_dias}],
-        "FROM ConsumoInicialPermiso ci": [{"excedente": excedente}],
+        "AS excedente": [{"excedente": excedente}],
     })
 
 
@@ -58,6 +58,21 @@ def test_un_empleado_sin_jornada_cuenta_todo_como_excedente():
     db = _db(excedente=0.0)
     excedente_carga_inicial(db, 8)
     assert "COALESCE(j.horasPermisoAnual, 0)" in db.sql_ejecutado()
+
+
+def test_el_excedente_se_mide_sobre_el_total_y_no_por_asiento():
+    """
+    Con asientos, comparar cada fila contra el cupo da mal: dos asientos de
+    10 contra un cupo de 12 son 20 en total y 8 de excedente, pero ninguna
+    fila sola supera 12. El SUM tiene que estar adentro de la resta.
+    """
+    db = _db(excedente=0.0)
+    excedente_carga_inicial(db, 8)
+    sql = db.sql_ejecutado()
+    # La resta opera sobre la suma de los asientos, no sobre cada fila.
+    assert "SUM(ci.horasConsumidas)" in sql
+    # Y ya no hay un CASE por fila comparando cada asiento contra el cupo.
+    assert "CASE WHEN ci.horasConsumidas >" not in sql
 
 
 # -- Una sola definicion del saldo ---------------------------------------------

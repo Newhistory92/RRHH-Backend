@@ -307,18 +307,25 @@ def excedente_carga_inicial(db: Session, employee_id: int) -> float:
 
     Se mide contra el cupo VIGENTE de la jornada, que es la misma suposicion
     que ya hace recalcular_anio para cualquier anio que recomputa.
+
+    El excedente se mide sobre el TOTAL de los asientos de cada anio, no
+    asiento por asiento: dos cargas de 10 contra un cupo de 12 son 20 en
+    total y 8 de excedente, aunque ninguna de las dos sola lo supere. Por eso
+    el GROUP BY por anio y la suma de los excedentes de cada anio en Python:
+    cada anio tiene su propio cupo que agotar.
     """
     fila = db.execute(text("""
-        SELECT COALESCE(SUM(
-                   CASE WHEN ci.horasConsumidas > COALESCE(j.horasPermisoAnual, 0)
-                        THEN ci.horasConsumidas - COALESCE(j.horasPermisoAnual, 0)
-                        ELSE 0 END), 0) AS excedente
+        SELECT COALESCE(
+                   CASE WHEN SUM(ci.horasConsumidas) > COALESCE(j.horasPermisoAnual, 0)
+                        THEN SUM(ci.horasConsumidas) - COALESCE(j.horasPermisoAnual, 0)
+                        ELSE 0 END, 0) AS excedente
         FROM ConsumoInicialPermiso ci
         JOIN Employee e ON e.id = ci.employeeId
         LEFT JOIN JornadaLaboral j ON e.jornadaId = j.id
         WHERE ci.employeeId = :emp
-    """), {"emp": employee_id}).mappings().first()
-    return float(fila["excedente"] or 0) if fila else 0.0
+        GROUP BY ci.anio, j.horasPermisoAnual
+    """), {"emp": employee_id}).mappings().all()
+    return float(sum(f["excedente"] or 0 for f in fila))
 
 
 def saldo_acumulado(db: Session, employee_id: int) -> float:

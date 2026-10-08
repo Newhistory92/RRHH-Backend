@@ -7,7 +7,7 @@ determinado que no uso ninguna hora- y confundirlos regala el cupo entero.
 """
 
 from app.database.consumo_inicial_permisos import (
-    carga_de_empleado, consumo_de_empleado, upsert_consumo,
+    agregar_asiento, asientos_de_empleado, borrar_asiento, total_de_empleado,
 )
 from app.permisos import DESCRIPCIONES, PERMISOS, PERMISOS_POR_ROL
 from tests.fakes import FakeSession
@@ -17,52 +17,74 @@ def _db(filas):
     return FakeSession({"FROM ConsumoInicialPermiso": filas})
 
 
-def test_sin_fila_el_consumo_es_none_y_no_cero():
+def test_sin_asientos_el_total_es_none_y_no_cero():
     """None deja que rija el cupo completo; 0 afirma que no uso ninguna."""
-    assert consumo_de_empleado(_db([]), 8, 2026) is None
+    assert total_de_empleado(_db([{"total": None}]), 8, 2026) is None
 
 
-def test_una_fila_en_cero_devuelve_cero_y_no_none():
-    db = _db([{"horasConsumidas": 0, "cargadoPor": 3, "cargadoEn": None}])
-    assert consumo_de_empleado(db, 8, 2026) == 0.0
+def test_asientos_que_suman_cero_devuelven_cero_y_no_none():
+    assert total_de_empleado(_db([{"total": 0}]), 8, 2026) == 0.0
 
 
-def test_devuelve_las_horas_cargadas():
-    db = _db([{"horasConsumidas": 5.5, "cargadoPor": 3, "cargadoEn": None}])
-    assert consumo_de_empleado(db, 8, 2026) == 5.5
+def test_el_total_es_la_suma_de_los_asientos():
+    """Es el cambio que motiva esta tarea: 5 y despues 10 dan 15, no 10."""
+    assert total_de_empleado(_db([{"total": 15.0}]), 8, 2026) == 15.0
 
 
-def test_la_lectura_filtra_por_empleado_y_anio():
-    """Sin el filtro por anio, la carga de un anio descontaria en el otro."""
-    db = _db([{"horasConsumidas": 5.0, "cargadoPor": None, "cargadoEn": None}])
-    consumo_de_empleado(db, 8, 2026)
-    sql, params = db.ejecutadas[0]
+def test_el_total_suma_en_sql_y_no_en_python():
+    """
+    Si sumara en Python, traeria todas las filas para descartarlas: el SUM
+    tiene que estar en la consulta.
+    """
+    db = _db([{"total": 15.0}])
+    total_de_empleado(db, 8, 2026)
+    sql = db.sql_ejecutado()
+    assert "SUM(horasConsumidas)" in sql
     assert "employeeId = :empId" in sql
     assert "anio = :anio" in sql
-    assert params == {"empId": 8, "anio": 2026}
 
 
-def test_carga_de_empleado_trae_la_trazabilidad():
-    """El panel de RRHH muestra quien cargo y cuando."""
-    db = _db([{"horasConsumidas": 5.0, "cargadoPor": 3, "cargadoEn": None}])
-    fila = carga_de_empleado(db, 8, 2026)
-    assert fila["horasConsumidas"] == 5.0
-    assert fila["cargadoPor"] == 3
+def test_los_asientos_se_listan_con_su_id_y_trazabilidad():
+    """El id es lo que el panel necesita para poder borrar uno puntual."""
+    filas = [
+        {"id": 2, "horasConsumidas": 10.0, "cargadoPor": 3, "cargadoEn": None},
+        {"id": 1, "horasConsumidas": 5.0, "cargadoPor": 3, "cargadoEn": None},
+    ]
+    asientos = asientos_de_empleado(_db(filas), 8, 2026)
+    assert [a["id"] for a in asientos] == [2, 1]
+    assert asientos[0]["horasConsumidas"] == 10.0
+    assert asientos[0]["cargadoPor"] == 3
 
 
-def test_el_upsert_corrige_en_vez_de_duplicar():
+def test_agregar_un_asiento_inserta_y_no_pisa():
     """
-    Corregir una carga equivocada es el caso normal, y la clave
-    (employeeId, anio) es unica: un INSERT fallaria en el segundo intento.
+    INSERT y no MERGE: la segunda carga del mismo (empleado, anio) es un
+    asiento mas, legitimo, no una correccion de la primera.
     """
     db = FakeSession({})
-    upsert_consumo(db, 8, 2026, 5.0, cargado_por=3)
+    agregar_asiento(db, 8, 2026, 5.0, cargado_por=3)
     sql = db.sql_ejecutado()
-    assert "MERGE ConsumoInicialPermiso" in sql
-    # HOLDLOCK evita la carrera clasica del MERGE en T-SQL: dos cargas
-    # simultaneas de la misma clave entrando las dos por NOT MATCHED.
-    assert "HOLDLOCK" in sql
+    assert "INSERT INTO ConsumoInicialPermiso" in sql
+    assert "MERGE" not in sql
     assert db.commits >= 1
+
+
+def test_borrar_un_asiento_exige_que_sea_del_empleado():
+    """
+    Sin el filtro por employeeId, el id de la URL alcanzaria para borrarle
+    un asiento a cualquier otra persona.
+    """
+    db = FakeSession({"DELETE FROM ConsumoInicialPermiso": [{"id": 1}]})
+    assert borrar_asiento(db, 8, 1) is True
+    sql, params = db.ejecutadas[0]
+    assert "employeeId = :empId" in sql
+    assert params == {"empId": 8, "asientoId": 1}
+
+
+def test_borrar_un_asiento_que_no_es_del_empleado_devuelve_false():
+    """rowcount 0: el DELETE no encontro nada que borrar."""
+    db = FakeSession({"DELETE FROM ConsumoInicialPermiso": []})
+    assert borrar_asiento(db, 8, 1) is False
 
 
 # -- El permiso ----------------------------------------------------------------
