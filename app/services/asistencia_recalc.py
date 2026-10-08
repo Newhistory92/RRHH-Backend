@@ -30,6 +30,7 @@ from app.database.asistencia_auditoria import (
 )
 from app.database.asistencia_justificaciones import dias_justificados
 from app.database.bajas import bajas_de_empleado
+from app.database.consumo_inicial_permisos import consumo_de_empleado
 from app.services.asistencia_calc import (
     EntradaDia, Permiso, ResultadoDia, Tolerancias, calcular_anio,
 )
@@ -297,6 +298,18 @@ def recalcular_anio(db: Session, employee_id: int, anio: int,
     # recuperar, para que el legajo incompleto se note en vez de quedar
     # tapado por un valor por omision.
     banco_anual = float(emp.get("horasPermisoAnual") or 0)
+    # Las horas que la persona ya uso antes de que el sistema las registrara
+    # achican el banco con el que arranca el anio. Se resta aca y no dentro
+    # del motor a proposito: calcular_anio sigue recibiendo un numero y no se
+    # entera de que esto existe, y por eso el descuento vale aunque el dia no
+    # tenga marcaciones. Un permiso backdateado no lograria lo mismo, porque
+    # calcular_dia ignora los permisos de un dia sin fichadas.
+    #
+    # El `or 0.0` coalesce el None de "no hay fila": aca la distincion entre
+    # "sin carga" y "carga en cero" no cambia nada, las dos dejan el cupo
+    # entero.
+    consumo_inicial = consumo_de_empleado(db, employee_id, anio) or 0.0
+    banco_anual = max(banco_anual - consumo_inicial, 0.0)
     resultados = calcular_anio(entradas, Tolerancias(
         entradaMin=cfg["toleranciaEntradaMin"],
         salidaMin=cfg["toleranciaSalidaMin"],
