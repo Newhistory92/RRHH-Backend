@@ -556,6 +556,13 @@ def mis_permisos(db: Session, employee_id: int, anio: int) -> dict:
     consumo_inicial = (consumo_de_empleado(db, employee_id, anio) or 0.0
                        if es_anio_actual else 0.0)
 
+    # Si la carga inicial por si sola ya supera el cupo, el excedente es
+    # deuda desde el momento en que se cargo -no hay que esperar a que
+    # aparezca un permiso nuevo que lo revele. Sin esto, alguien que cargo
+    # mas horas de las que su cupo cubre y no pide nada mas en el anio ve
+    # "A recuperar: 0", como si estuviera al dia, cuando ya se paso.
+    deuda += max(consumo_inicial - cupo, 0.0) if es_anio_actual else 0.0
+
     return {
         "anio": anio,
         # Distingue "no tiene jornada" (cupo 0 implicito) de "tiene una
