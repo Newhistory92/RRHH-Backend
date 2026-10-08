@@ -295,11 +295,47 @@ def reemplazar_jornadas(db: Session, employee_id: int, desde: date, hasta: date,
     return len(filas)
 
 
+def excedente_carga_inicial(db: Session, employee_id: int) -> float:
+    """
+    Horas de carga inicial de permisos que exceden el cupo de la jornada.
+
+    Son deuda real: la persona ya uso mas horas de las que su cupo cubre,
+    antes de que el sistema las registrara. No pueden vivir en JornadaDiaria
+    -esa tabla es derivada y el recalculo la borra y regenera entera, y
+    ademas no habria dia al que atribuirlas sin inventarlo-, asi que se
+    descuentan al calcular el saldo.
+
+    Se mide contra el cupo VIGENTE de la jornada, que es la misma suposicion
+    que ya hace recalcular_anio para cualquier anio que recomputa.
+    """
+    fila = db.execute(text("""
+        SELECT COALESCE(SUM(
+                   CASE WHEN ci.horasConsumidas > COALESCE(j.horasPermisoAnual, 0)
+                        THEN ci.horasConsumidas - COALESCE(j.horasPermisoAnual, 0)
+                        ELSE 0 END), 0) AS excedente
+        FROM ConsumoInicialPermiso ci
+        JOIN Employee e ON e.id = ci.employeeId
+        LEFT JOIN JornadaLaboral j ON e.jornadaId = j.id
+        WHERE ci.employeeId = :emp
+    """), {"emp": employee_id}).mappings().first()
+    return float(fila["excedente"] or 0) if fila else 0.0
+
+
 def saldo_acumulado(db: Session, employee_id: int) -> float:
+    """
+    El saldo de horas del empleado: lo que sumaron sus dias, menos el
+    excedente de la carga inicial de permisos.
+
+    Es la UNICA definicion del saldo. _sincronizar_horas la escribe en
+    Employee.horas en cada recalculo, y de ahi la leen los tableros: si
+    alguno volviera a sumar saldoDia por su cuenta, se desincronizaria del
+    excedente que esta funcion descuenta.
+    """
     fila = db.execute(text(
         "SELECT COALESCE(SUM(saldoDia), 0) AS s FROM JornadaDiaria WHERE employeeId = :emp"
     ), {"emp": employee_id}).mappings().first()
-    return float(fila["s"]) if fila else 0.0
+    saldo = float(fila["s"]) if fila else 0.0
+    return saldo - excedente_carga_inicial(db, employee_id)
 
 
 def jornadas_de(db: Session, employee_id: int, desde: date, hasta: date) -> list[dict]:
@@ -359,14 +395,14 @@ def tablero(db: Session, desde: date, hasta: date) -> list[dict]:
             e.id                AS employeeId,
             e.name              AS employeeName,
             e.biometricoId,
-            COALESCE(hist.saldo, 0)        AS saldoAcumulado,
+            -- Employee.horas y no SUM(saldoDia): es el saldo que
+            -- _sincronizar_horas deja escrito en cada recalculo, con el
+            -- excedente de carga inicial ya descontado. Sumar los dias de
+            -- nuevo aca se saltearia ese descuento.
+            COALESCE(e.horas, 0)           AS saldoAcumulado,
             COALESCE(rango.ausencias, 0)   AS ausencias,
             COALESCE(rango.incompletas, 0) AS incompletas
         FROM Employee e
-        LEFT JOIN (
-            SELECT employeeId, SUM(saldoDia) AS saldo
-            FROM JornadaDiaria GROUP BY employeeId
-        ) hist ON hist.employeeId = e.id
         LEFT JOIN (
             SELECT employeeId,
                    SUM(CASE WHEN estado = 'ausente'    THEN 1 ELSE 0 END) AS ausencias,

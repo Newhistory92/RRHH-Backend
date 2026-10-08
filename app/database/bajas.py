@@ -294,8 +294,11 @@ def bajas_para_tablero(db: Session, hoy: date) -> list[dict]:
     programadas son el unico lugar donde RRHH puede ver y corregir una baja
     cargada con preaviso antes de que llegue el dia.
 
-    El saldo de asistencia no es una columna: es la suma de los dias. Mismo
-    calculo que saldo_acumulado() en app/database/asistencia.py.
+    El saldo de asistencia sale de Employee.horas, que es donde
+    _sincronizar_horas deja el resultado de saldo_acumulado() en cada
+    recalculo. Antes se sumaba saldoDia aca, pero eso duplicaba la formula:
+    cuando el saldo paso a descontar el excedente de la carga inicial de
+    permisos, esta copia se habria quedado sin ese descuento.
     """
     filas = db.execute(text("""
         SELECT b.id, b.employeeId, b.motivo, b.fechaBaja, b.fechaReingreso,
@@ -303,8 +306,7 @@ def bajas_para_tablero(db: Session, hoy: date) -> list[dict]:
                e.name, e.dni, e.email, e.photo,
                d.nombre AS departamento, o.nombre AS oficina,
                c.tipoContrato, c.fechaIngreso,
-               (SELECT COALESCE(SUM(j.saldoDia), 0) FROM JornadaDiaria j
-                WHERE j.employeeId = e.id) AS saldoFinal
+               COALESCE(e.horas, 0) AS saldoFinal
         FROM EmployeeBaja b
         JOIN Employee e ON e.id = b.employeeId
         LEFT JOIN Department d ON e.departmentId = d.id
