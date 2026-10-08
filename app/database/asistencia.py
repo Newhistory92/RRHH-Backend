@@ -17,6 +17,7 @@ from app.database.asistencia_auditoria import (
     ensure_tables as auditoria_ensure_tables,
     reemplazar_incidencias,
 )
+from app.database.consumo_inicial_permisos import consumo_de_empleado
 
 _tablas_listas = False
 
@@ -539,6 +540,11 @@ def mis_permisos(db: Session, employee_id: int, anio: int) -> dict:
     # curso.
     es_anio_actual = anio == date.today().year
 
+    # Horas que la persona ya uso antes de que el sistema las registrara. No
+    # dejan filas en Permission ni en JornadaDiaria, asi que si no se
+    # devolvieran el restante quedaria inflado.
+    consumo_inicial = consumo_de_empleado(db, employee_id, anio) or 0.0
+
     return {
         "anio": anio,
         # Distingue "no tiene jornada" (cupo 0 implicito) de "tiene una
@@ -546,11 +552,13 @@ def mis_permisos(db: Session, employee_id: int, anio: int) -> dict:
         # cupoAnual 0.0, pero son estados distintos para la persona.
         "tieneJornada": tiene_jornada,
         "cupoAnual": round(cupo, 2) if es_anio_actual else None,
+        "consumoInicial": round(consumo_inicial, 2) if es_anio_actual else None,
         "consumido": round(consumido, 2),
-        # Nunca negativo: si RRHH bajo el cupo despues de que la persona ya
-        # habia pedido permisos, el excedente se cuenta como deuda, no como
-        # un restante en rojo que se leeria dos veces.
-        "restante": round(max(cupo - consumido, 0.0), 2) if es_anio_actual else None,
+        # Descuenta las dos cosas: lo cargado a mano y lo que registro el
+        # sistema. Nunca negativo, por el mismo motivo de siempre -un
+        # negativo aca se leeria como una deuda duplicada.
+        "restante": (round(max(cupo - consumo_inicial - consumido, 0.0), 2)
+                     if es_anio_actual else None),
         "deuda": round(deuda, 2),
         "permisos": [{
             "id": int(f["id"]),

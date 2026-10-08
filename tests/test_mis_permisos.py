@@ -102,3 +102,42 @@ def test_cupo_y_restante_se_muestran_para_el_anio_actual():
     r = mis_permisos(_db(cupo=20.0, consumido=12.0), 8, date.today().year)
     assert r["cupoAnual"] == 20.0
     assert r["restante"] == 8.0
+
+
+def test_el_consumo_inicial_se_devuelve_y_descuenta_del_restante():
+    """
+    Las horas cargadas a mano no dejan filas en Permission ni en
+    JornadaDiaria: si no se devolvieran, el restante quedaria inflado.
+    """
+    db = _db(cupo=12.0, consumido=2.0, deuda=0.0)
+    db.respuestas["FROM ConsumoInicialPermiso"] = [
+        {"horasConsumidas": 5.0, "cargadoPor": None, "cargadoEn": None}
+    ]
+    r = mis_permisos(db, 8, date.today().year)
+    assert r["consumoInicial"] == 5.0
+    # 12 de cupo, 5 cargadas a mano y 2 del sistema: quedan 5.
+    assert r["restante"] == 5.0
+    # consumido sigue siendo solo lo que registro el sistema: la pantalla las
+    # muestra en lineas separadas para que el total cierre contra la lista.
+    assert r["consumido"] == 2.0
+
+
+def test_sin_carga_inicial_el_consumo_inicial_es_cero():
+    r = mis_permisos(_db(cupo=12.0, consumido=2.0), 8, date.today().year)
+    assert r["consumoInicial"] == 0.0
+    assert r["restante"] == 10.0
+
+
+def test_el_restante_no_baja_de_cero_con_la_carga_inicial():
+    db = _db(cupo=12.0, consumido=2.0)
+    db.respuestas["FROM ConsumoInicialPermiso"] = [
+        {"horasConsumidas": 20.0, "cargadoPor": None, "cargadoEn": None}
+    ]
+    r = mis_permisos(db, 8, date.today().year)
+    assert r["restante"] == 0.0
+
+
+def test_el_consumo_inicial_es_null_para_un_anio_que_no_es_el_actual():
+    """Misma regla que cupoAnual y restante: solo se muestra el anio en curso."""
+    r = mis_permisos(_db(cupo=12.0), 8, date.today().year - 1)
+    assert r["consumoInicial"] is None
