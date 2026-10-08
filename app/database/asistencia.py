@@ -17,7 +17,10 @@ from app.database.asistencia_auditoria import (
     ensure_tables as auditoria_ensure_tables,
     reemplazar_incidencias,
 )
-from app.database.consumo_inicial_permisos import consumo_de_empleado
+from app.database.consumo_inicial_permisos import (
+    consumo_de_empleado,
+    ensure_table as consumo_inicial_ensure_table,
+)
 
 _tablas_listas = False
 
@@ -189,6 +192,11 @@ def ensure_tables(db: Session) -> None:
     db.execute(text(SEED_CONFIG_SQL))
     db.commit()
     auditoria_ensure_tables(db)
+    # recalcular_anio y mis_permisos leen ConsumoInicialPermiso siempre -no
+    # solo cuando alguien pasa por el panel de carga-, asi que la tabla tiene
+    # que existir antes de ese primer SELECT y no depender de que alguien con
+    # el permiso transitorio haya abierto el panel.
+    consumo_inicial_ensure_table(db)
     _tablas_listas = True
 
 

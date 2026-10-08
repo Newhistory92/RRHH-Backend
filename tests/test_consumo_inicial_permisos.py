@@ -79,3 +79,20 @@ def test_el_permiso_no_se_siembra_en_ningun_rol():
     """
     for codigos in PERMISOS_POR_ROL.values():
         assert "asistencia.cargaInicialPermisos" not in codigos
+
+
+# -- La tabla se crea sin depender del panel -----------------------------------
+
+def test_asistencia_ensure_tables_crea_tambien_consumo_inicial_permiso():
+    """
+    recalcular_anio y mis_permisos leen ConsumoInicialPermiso siempre, no solo
+    cuando alguien con el permiso transitorio abrio el panel de carga. Si
+    ensure_tables del modulo de asistencia no la crea, el primer SELECT de
+    esos dos caminos falla contra una base recien migrada.
+    """
+    import app.database.asistencia as asistencia_module
+
+    asistencia_module._tablas_listas = False
+    db = FakeSession({})
+    asistencia_module.ensure_tables(db)
+    assert "ConsumoInicialPermiso" in db.sql_ejecutado()
