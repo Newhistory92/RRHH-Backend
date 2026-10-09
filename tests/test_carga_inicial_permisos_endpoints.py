@@ -159,3 +159,35 @@ def test_el_delete_recalcula_el_anio_del_asiento_y_no_el_actual(monkeypatch):
 
     assert r["anio"] == 2024
     assert recalculos == [(8, 2024)]
+
+
+# -- El recalculo fallido no tumba la request -----------------------------------
+
+def test_el_post_responde_ok_aunque_el_recalculo_falle(monkeypatch):
+    """
+    El asiento ya quedo escrito en su propia transaccion antes de intentar
+    recalcular: un 500 aca le haria creer a RRHH que la carga no se guardo
+    cuando si se guardo. Mismo contrato que create_permission en rrhh.py.
+    """
+    def recalculo_roto(db, eid, anio):
+        raise RuntimeError("la base no responde")
+
+    monkeypatch.setattr(m, "recalcular_anio", recalculo_roto)
+
+    r = m.post_carga_inicial_permisos(
+        8, {"horasConsumidas": 5}, user={"employeeId": 3}, db=_db(),
+    )
+
+    assert r["ok"] is True
+    assert r["horasConsumidas"] == 5.0
+
+
+def test_el_delete_responde_ok_aunque_el_recalculo_falle(monkeypatch):
+    def recalculo_roto(db, eid, anio):
+        raise RuntimeError("la base no responde")
+
+    monkeypatch.setattr(m, "recalcular_anio", recalculo_roto)
+
+    r = m.delete_carga_inicial_permisos(8, 1, _user={}, db=_db(borrado=True))
+
+    assert r["ok"] is True

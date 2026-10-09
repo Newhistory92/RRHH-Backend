@@ -5,6 +5,7 @@ Transitorio: existe para la migracion. Cuando termine, se le quita el permiso
 al rol y los tres endpoints quedan inalcanzables sin tocar codigo.
 """
 
+import logging
 from datetime import date
 
 from fastapi import APIRouter, Body, Depends, HTTPException
@@ -19,8 +20,28 @@ from app.database.consumo_inicial_permisos import (
 from app.database.database import SessionLocal
 from app.services.asistencia_recalc import recalcular_anio
 
+log = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/asistencia/carga-inicial-permisos",
                    tags=["Carga inicial permisos"])
+
+
+def _recalcular_sin_tumbar_la_request(db: Session, employee_id: int,
+                                      anio: int) -> None:
+    """
+    El asiento (agregado o borrado) ya quedo escrito en su propia
+    transaccion antes de llegar aca: si el recalculo falla, no hay nada
+    que deshacer, y devolver 500 le haria creer a RRHH que la carga no se
+    guardo cuando si se guardo. Se registra el error y el job nocturno lo
+    corrige -mismo contrato que ya tiene create_permission en rrhh.py.
+    """
+    try:
+        recalcular_anio(db, employee_id, anio)
+    except Exception as e:
+        log.warning(
+            "Recalculo fallido tras carga inicial de permisos para empleado %s: %s",
+            employee_id, e,
+        )
 
 # Mismo atajo contra el error de tipeo que usa el cupo de la jornada: 2000 h es
 # mas que un anio laboral completo. No hay tope contra el cupo del empleado a
@@ -114,7 +135,7 @@ def post_carga_inicial_permisos(employee_id: int, data: dict = Body(...),
     horas = _validar_horas(data.get("horasConsumidas"))
     anio = date.today().year
     agregar_asiento(db, employee_id, anio, horas, user.get("employeeId"))
-    recalcular_anio(db, employee_id, anio)
+    _recalcular_sin_tumbar_la_request(db, employee_id, anio)
     return {"ok": True, "anio": anio, "horasConsumidas": horas}
 
 
@@ -140,5 +161,5 @@ def delete_carga_inicial_permisos(employee_id: int, asiento_id: int,
     if anio is None:
         raise HTTPException(status_code=404,
                             detail="El asiento no existe o no es de este agente")
-    recalcular_anio(db, employee_id, anio)
+    _recalcular_sin_tumbar_la_request(db, employee_id, anio)
     return {"ok": True, "anio": anio}
