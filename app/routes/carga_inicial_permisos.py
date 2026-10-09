@@ -13,7 +13,8 @@ from sqlalchemy.orm import Session
 
 from app.auth_middleware import require_permission
 from app.database.consumo_inicial_permisos import (
-    carga_de_empleado, ensure_table, upsert_consumo,
+    agregar_asiento, asientos_de_empleado, borrar_asiento, ensure_table,
+    total_de_empleado,
 )
 from app.database.database import SessionLocal
 from app.services.asistencia_recalc import recalcular_anio
@@ -70,43 +71,69 @@ def _cupo_de_empleado(db: Session, employee_id: int) -> float:
 def get_carga_inicial_permisos(employee_id: int, _user: dict = PERMISO,
                                db: Session = Depends(get_db)):
     """
-    Lo cargado para el anio en curso, con el cupo como contexto.
+    Los asientos del anio en curso y su total, con el cupo como contexto.
 
-    horasConsumidas null significa "no se cargo nada" y 0 significa "se
-    determino que no uso ninguna". Son estados distintos y el panel los
-    muestra distinto.
+    total null significa "no hay ningun asiento" y 0 significa "los asientos
+    suman cero". Son estados distintos y el panel los muestra distinto.
     """
     ensure_table(db)
     anio = date.today().year
-    fila = carga_de_empleado(db, employee_id, anio)
-    cargado_en = fila["cargadoEn"] if fila else None
+    asientos = asientos_de_empleado(db, employee_id, anio)
     return {
         "anio": anio,
         "cupoAnual": _cupo_de_empleado(db, employee_id),
-        "horasConsumidas": float(fila["horasConsumidas"]) if fila else None,
-        "cargadoPor": fila["cargadoPor"] if fila else None,
-        "cargadoEn": cargado_en.isoformat() if cargado_en else None,
+        "total": total_de_empleado(db, employee_id, anio),
+        "asientos": [{
+            "id": int(a["id"]),
+            "horasConsumidas": float(a["horasConsumidas"]),
+            "cargadoPor": a["cargadoPor"],
+            "cargadoEn": a["cargadoEn"].isoformat() if a["cargadoEn"] else None,
+        } for a in asientos],
     }
 
 
-@router.put("/{employee_id}")
-def put_carga_inicial_permisos(employee_id: int, data: dict = Body(...),
-                               user: dict = PERMISO,
-                               db: Session = Depends(get_db)):
+@router.post("/{employee_id}")
+def post_carga_inicial_permisos(employee_id: int, data: dict = Body(...),
+                                user: dict = PERMISO,
+                                db: Session = Depends(get_db)):
     """
-    Guarda las horas del anio en curso y recalcula ese anio del empleado.
+    Agrega un asiento al anio en curso y recalcula ese anio del empleado.
+
+    Es POST y no PUT porque no se guarda "el valor": se agrega una carga. Dos
+    cargas del mismo anio se suman, que es el comportamiento buscado.
 
     El anio no se recibe por parametro: siempre es el calendario en curso, que
     es el unico cargable. Aceptarlo del cliente abriria la puerta a escribir
     anios que despues nadie recalcula.
 
     El recalculo va sincrono porque es un solo empleado, a diferencia del
-    cambio de cupo de una jornada, que toca a toda su nomina y por eso va en
-    segundo plano.
+    cambio de cupo de una jornada, que toca a toda su nomina y va en segundo
+    plano.
     """
     ensure_table(db)
     horas = _validar_horas(data.get("horasConsumidas"))
     anio = date.today().year
-    upsert_consumo(db, employee_id, anio, horas, user.get("employeeId"))
+    agregar_asiento(db, employee_id, anio, horas, user.get("employeeId"))
     recalcular_anio(db, employee_id, anio)
     return {"ok": True, "anio": anio, "horasConsumidas": horas}
+
+
+@router.delete("/{employee_id}/{asiento_id}")
+def delete_carga_inicial_permisos(employee_id: int, asiento_id: int,
+                                  _user: dict = PERMISO,
+                                  db: Session = Depends(get_db)):
+    """
+    Borra un asiento y recalcula. Es la unica forma de corregir una carga
+    equivocada: los asientos no se editan en el lugar.
+
+    404 cuando el asiento no existe o no es de ese empleado -borrar_asiento
+    filtra por employeeId, asi que el id de la URL no alcanza para borrarle
+    uno a otra persona. Sin cambio no se recalcula nada.
+    """
+    ensure_table(db)
+    if not borrar_asiento(db, employee_id, asiento_id):
+        raise HTTPException(status_code=404,
+                            detail="El asiento no existe o no es de este agente")
+    anio = date.today().year
+    recalcular_anio(db, employee_id, anio)
+    return {"ok": True, "anio": anio}
