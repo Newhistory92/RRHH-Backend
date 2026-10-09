@@ -2,7 +2,7 @@
 Carga inicial de horas de permiso ya consumidas.
 
 Transitorio: existe para la migracion. Cuando termine, se le quita el permiso
-al rol y los dos endpoints quedan inalcanzables sin tocar codigo.
+al rol y los tres endpoints quedan inalcanzables sin tocar codigo.
 """
 
 from datetime import date
