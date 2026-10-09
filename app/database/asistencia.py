@@ -114,6 +114,14 @@ IF COL_LENGTH('JornadaLaboral','horasPermisoAnual') IS NULL
 ALTER TABLE JornadaLaboral ADD horasPermisoAnual DECIMAL(6,2) NOT NULL DEFAULT 12;
 """
 
+# Marca a quien vive fuera del anillo de Circunvalacion. De este flag depende
+# a quien le aplican las extensiones de tolerancia que RRHH otorga para un dia
+# puntual; quien no lo tiene mantiene siempre los 15 minutos.
+ALTER_EMPLOYEE_FUERA_ANILLO_SQL = """
+IF COL_LENGTH('Employee','fueraAnilloCircunvalacion') IS NULL
+ALTER TABLE Employee ADD fueraAnilloCircunvalacion BIT NOT NULL DEFAULT 0;
+"""
+
 # Columnas que dejaron de ser derivadas: se mudaron a JornadaCorreccion.
 # entradaManual y salidaManual se conservan porque si son derivadas -se
 # reconstruyen leyendo JornadaCorreccion- y evitan un join en cada lectura.
@@ -190,6 +198,8 @@ def ensure_tables(db: Session) -> None:
     for columna in COLUMNAS_A_ELIMINAR:
         _drop_columna(db, "JornadaDiaria", columna)
     db.execute(text(SEED_CONFIG_SQL))
+    db.commit()
+    db.execute(text(ALTER_EMPLOYEE_FUERA_ANILLO_SQL))
     db.commit()
     auditoria_ensure_tables(db)
     # recalcular_anio y mis_permisos leen ConsumoInicialPermiso siempre -no

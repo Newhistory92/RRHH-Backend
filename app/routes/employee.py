@@ -4,9 +4,9 @@ from sqlalchemy.orm import Session
 from app.database.database import SessionLocal
 from app.auth_middleware import require_auth, require_permission, get_current_user, exigir_propio_o_permiso
 from app.permisos import tiene_permiso
-from datetime import datetime
+from datetime import datetime, date
 from app.database.employee_documents import get_documents as get_employee_documents_data, get_document as get_employee_document_data
-from app.services.asistencia_recalc import recalcular_historia
+from app.services.asistencia_recalc import recalcular_historia, recalcular_anio
 import logging
 
 log = logging.getLogger(__name__)
@@ -572,6 +572,17 @@ def update_employee(employee_id: int, data: dict = Body(...), db: Session = Depe
     if current_user["employeeId"] != employee_id and not tiene_permiso(current_user["permisos"], "rrhh.gestionar"):
         raise HTTPException(status_code=403, detail="No tenés permiso para editar este empleado")
 
+    # Este campo otorga un beneficio -las extensiones de tolerancia que RRHH
+    # da para un dia puntual-, asi que no puede viajar por el permiso general
+    # del legajo, que deja al propio empleado editarse. Se rechaza explicito
+    # y no en silencio: ignorarlo dejaria a RRHH viendo la tilde en pantalla
+    # sin que se hubiera guardado nada.
+    if ("fueraAnilloCircunvalacion" in data
+            and not tiene_permiso(current_user["permisos"], "rrhh.gestionar")):
+        raise HTTPException(
+            status_code=403,
+            detail="Solo RRHH puede cambiar si el agente vive fuera del anillo")
+
     print("🟢 Datos recibidos para actualizar empleado:", {k: v for k, v in data.items() if k != "photo"})
 
     # Verificar existencia del empleado
@@ -583,7 +594,9 @@ def update_employee(employee_id: int, data: dict = Body(...), db: Session = Depe
         raise HTTPException(status_code=404, detail="Empleado no encontrado")
 
     # 🔹 1️⃣ Actualizar datos básicos del empleado
-    employee_fields = ["name", "email", "birthDate", "address", "phone", "photo", "horas", "departmentId", "officeId"]
+    employee_fields = ["name", "email", "birthDate", "address", "phone", "photo",
+                       "horas", "departmentId", "officeId",
+                       "fueraAnilloCircunvalacion"]
     set_clauses = []
     params = {"id": employee_id}
 
@@ -780,6 +793,18 @@ def update_employee(employee_id: int, data: dict = Body(...), db: Session = Depe
             # El vinculo ya quedo guardado. Si el recalculo falla, el job
             # nocturno lo corrige: no se revierte el PUT por esto.
             log.warning("Recalculo de asistencia fallido para empleado %s: %s", employee_id, e)
+
+    # El flag decide que tolerancia rigio en los dias con extension: cambiarlo
+    # cambia retroactivamente el calculo de esos dias. Es un solo empleado, asi
+    # que va sincrono. Si el recalculo falla, el campo ya quedo guardado: se
+    # registra y el job nocturno lo corrige -un 500 aca haria creer que no se
+    # guardo cuando si se guardo.
+    if "fueraAnilloCircunvalacion" in data:
+        try:
+            recalcular_anio(db, employee_id, date.today().year)
+        except Exception as e:
+            log.warning("Recalculo fallido tras cambiar el flag de anillo "
+                        "para el empleado %s: %s", employee_id, e)
 
     return {"message": "Empleado y formaciones actualizados correctamente"}
 
