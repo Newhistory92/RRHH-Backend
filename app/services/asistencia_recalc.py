@@ -429,6 +429,43 @@ def recalcular_jornada(db: Session, jornada_id: int, anio: int) -> dict:
     return {"procesados": ok, "filas": filas, "errores": errores}
 
 
+def recalcular_marcados_fuera_del_anillo(db: Session, anio: int) -> dict:
+    """
+    Recalcula el anio de los empleados que viven fuera del anillo. Es lo que
+    se dispara al dar de alta o de baja una extension de tolerancia: cambia
+    que tolerancia rigio ese dia, y con ella el saldo.
+
+    Solo los marcados: al resto la extension no le aplica por definicion, asi
+    que barrer la nomina entera seria trabajo puro al vacio.
+
+    Hermana de recalcular_todos y recalcular_jornada: misma auditoria y misma
+    garantia de que un empleado que falla se registra y no aborta el resto.
+    """
+    log_id = abrir_recalculo(db, "extension_tolerancia", None, None,
+                             date(anio, 1, 1), date(anio, 12, 31))
+    ids = [r["id"] for r in db.execute(text("""
+        SELECT id FROM Employee
+        WHERE fueraAnilloCircunvalacion = 1 AND biometricoId IS NOT NULL
+        ORDER BY id
+    """)).mappings().all()]
+
+    filas = 0
+    ok = 0
+    errores = []
+    for eid in ids:
+        try:
+            filas += recalcular_anio(db, eid, anio)
+            ok += 1
+        except Exception as e:
+            db.rollback()
+            log.warning("Recalculo por extension fallido para empleado %s: %s",
+                        eid, e)
+            errores.append({"employeeId": eid, "error": str(e)})
+
+    cerrar_recalculo(db, log_id, ok, filas, errores)
+    return {"procesados": ok, "filas": filas, "errores": errores}
+
+
 VENTANA_TIEMPO_REAL_MIN = 10
 
 
