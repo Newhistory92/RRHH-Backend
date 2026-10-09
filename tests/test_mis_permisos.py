@@ -110,9 +110,7 @@ def test_el_consumo_inicial_se_devuelve_y_descuenta_del_restante():
     JornadaDiaria: si no se devolvieran, el restante quedaria inflado.
     """
     db = _db(cupo=12.0, consumido=2.0, deuda=0.0)
-    db.respuestas["FROM ConsumoInicialPermiso"] = [
-        {"horasConsumidas": 5.0, "cargadoPor": None, "cargadoEn": None}
-    ]
+    db.respuestas["SUM(horasConsumidas)"] = [{"total": 5.0}]
     r = mis_permisos(db, 8, date.today().year)
     assert r["consumoInicial"] == 5.0
     # 12 de cupo, 5 cargadas a mano y 2 del sistema: quedan 5.
@@ -130,9 +128,7 @@ def test_sin_carga_inicial_el_consumo_inicial_es_cero():
 
 def test_el_restante_no_baja_de_cero_con_la_carga_inicial():
     db = _db(cupo=12.0, consumido=2.0)
-    db.respuestas["FROM ConsumoInicialPermiso"] = [
-        {"horasConsumidas": 20.0, "cargadoPor": None, "cargadoEn": None}
-    ]
+    db.respuestas["SUM(horasConsumidas)"] = [{"total": 20.0}]
     r = mis_permisos(db, 8, date.today().year)
     assert r["restante"] == 0.0
 
@@ -151,9 +147,7 @@ def test_la_carga_inicial_que_supera_el_cupo_es_deuda_desde_que_se_carga():
     al dia.
     """
     db = _db(cupo=12.0, consumido=0.0, deuda=0.0)
-    db.respuestas["FROM ConsumoInicialPermiso"] = [
-        {"horasConsumidas": 25.0, "cargadoPor": None, "cargadoEn": None}
-    ]
+    db.respuestas["SUM(horasConsumidas)"] = [{"total": 25.0}]
     r = mis_permisos(db, 8, date.today().year)
     assert r["restante"] == 0.0
     # 25 cargadas contra 12 de cupo: 13 de excedente, nadie mas debe nada.
@@ -163,9 +157,7 @@ def test_la_carga_inicial_que_supera_el_cupo_es_deuda_desde_que_se_carga():
 def test_el_excedente_de_la_carga_inicial_se_suma_a_la_deuda_del_sistema():
     """La deuda que ya traia el sistema y la del excedente no se pisan."""
     db = _db(cupo=12.0, consumido=0.0, deuda=3.0)
-    db.respuestas["FROM ConsumoInicialPermiso"] = [
-        {"horasConsumidas": 20.0, "cargadoPor": None, "cargadoEn": None}
-    ]
+    db.respuestas["SUM(horasConsumidas)"] = [{"total": 20.0}]
     r = mis_permisos(db, 8, date.today().year)
     # 3 de deuda del sistema + 8 de excedente (20 - 12).
     assert r["deuda"] == 11.0
@@ -173,9 +165,7 @@ def test_el_excedente_de_la_carga_inicial_se_suma_a_la_deuda_del_sistema():
 
 def test_una_carga_dentro_del_cupo_no_agrega_deuda():
     db = _db(cupo=12.0, consumido=0.0, deuda=0.0)
-    db.respuestas["FROM ConsumoInicialPermiso"] = [
-        {"horasConsumidas": 5.0, "cargadoPor": None, "cargadoEn": None}
-    ]
+    db.respuestas["SUM(horasConsumidas)"] = [{"total": 5.0}]
     r = mis_permisos(db, 8, date.today().year)
     assert r["deuda"] == 0.0
 
@@ -184,8 +174,6 @@ def test_el_excedente_no_se_agrega_para_un_anio_que_no_es_el_actual():
     """El consumo inicial de un anio pasado no existe para mis_permisos: sin
     el, no hay excedente que calcular."""
     db = _db(cupo=12.0, consumido=0.0, deuda=0.0)
-    db.respuestas["FROM ConsumoInicialPermiso"] = [
-        {"horasConsumidas": 25.0, "cargadoPor": None, "cargadoEn": None}
-    ]
+    db.respuestas["SUM(horasConsumidas)"] = [{"total": 25.0}]
     r = mis_permisos(db, 8, date.today().year - 1)
     assert r["deuda"] == 0.0

@@ -34,17 +34,13 @@ def _db(cupo, carga_inicial):
             "diasRachaAlerta": 3,
         }],
         "FROM EmployeeBaja": [],
-        # "SELECT horasConsumidas" y no "FROM ConsumoInicialPermiso": esa
-        # tabla la leen DOS consultas distintas (la de carga_de_empleado y la
-        # del excedente que descuenta saldo_acumulado), y FakeSession matchea
-        # por el primer fragmento que encuentra. Con el nombre de la tabla a
+        # "SUM(horasConsumidas)" y no "FROM ConsumoInicialPermiso": esa tabla
+        # la leen DOS consultas distintas (el total de total_de_empleado y el
+        # excedente que descuenta saldo_acumulado), y FakeSession matchea por
+        # el primer fragmento que encuentra. Con el nombre de la tabla a
         # secas, la fila de una le llegaba a la otra.
         "AS excedente": [{"excedente": 0.0}],
-        "SELECT horasConsumidas": (
-            [] if carga_inicial is None
-            else [{"horasConsumidas": carga_inicial,
-                   "cargadoPor": None, "cargadoEn": None}]
-        ),
+        "SUM(horasConsumidas)": [{"total": carga_inicial}],
     })
 
 

@@ -18,8 +18,8 @@ from app.database.asistencia_auditoria import (
     reemplazar_incidencias,
 )
 from app.database.consumo_inicial_permisos import (
-    consumo_de_empleado,
     ensure_table as consumo_inicial_ensure_table,
+    total_de_empleado,
 )
 
 _tablas_listas = False
@@ -596,7 +596,7 @@ def mis_permisos(db: Session, employee_id: int, anio: int) -> dict:
     # devolvieran el restante quedaria inflado. Solo se consulta para el anio
     # en curso: en anios pasados el valor se descarta igual (se devuelve None),
     # asi que consultarlo seria una vuelta a la base de mas.
-    consumo_inicial = (consumo_de_empleado(db, employee_id, anio) or 0.0
+    consumo_inicial = (total_de_empleado(db, employee_id, anio) or 0.0
                        if es_anio_actual else 0.0)
 
     # Si la carga inicial por si sola ya supera el cupo, el excedente es

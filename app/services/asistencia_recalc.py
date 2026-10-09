@@ -30,7 +30,7 @@ from app.database.asistencia_auditoria import (
 )
 from app.database.asistencia_justificaciones import dias_justificados
 from app.database.bajas import bajas_de_empleado
-from app.database.consumo_inicial_permisos import consumo_de_empleado
+from app.database.consumo_inicial_permisos import total_de_empleado
 from app.services.asistencia_calc import (
     EntradaDia, Permiso, ResultadoDia, Tolerancias, calcular_anio,
 )
@@ -308,7 +308,7 @@ def recalcular_anio(db: Session, employee_id: int, anio: int,
     # El `or 0.0` coalesce el None de "no hay fila": aca la distincion entre
     # "sin carga" y "carga en cero" no cambia nada, las dos dejan el cupo
     # entero.
-    consumo_inicial = consumo_de_empleado(db, employee_id, anio) or 0.0
+    consumo_inicial = total_de_empleado(db, employee_id, anio) or 0.0
     banco_anual = max(banco_anual - consumo_inicial, 0.0)
     resultados = calcular_anio(entradas, Tolerancias(
         entradaMin=cfg["toleranciaEntradaMin"],
