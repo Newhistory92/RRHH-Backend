@@ -21,6 +21,9 @@ from app.database.consumo_inicial_permisos import (
     ensure_table as consumo_inicial_ensure_table,
     total_de_empleado,
 )
+from app.database.extension_tolerancia import (
+    ensure_table as extension_tolerancia_ensure_table,
+)
 
 _tablas_listas = False
 
@@ -207,6 +210,9 @@ def ensure_tables(db: Session) -> None:
     # que existir antes de ese primer SELECT y no depender de que alguien con
     # el permiso transitorio haya abierto el panel.
     consumo_inicial_ensure_table(db)
+    # recalcular_anio lee esta tabla en cada corrida, no solo cuando alguien
+    # entra al tablero: tiene que existir antes del primer SELECT.
+    extension_tolerancia_ensure_table(db)
     _tablas_listas = True
 
 
