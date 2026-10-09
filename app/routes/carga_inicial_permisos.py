@@ -129,11 +129,16 @@ def delete_carga_inicial_permisos(employee_id: int, asiento_id: int,
     404 cuando el asiento no existe o no es de ese empleado -borrar_asiento
     filtra por employeeId, asi que el id de la URL no alcanza para borrarle
     uno a otra persona. Sin cambio no se recalcula nada.
+
+    Recalcula el anio DEL ASIENTO BORRADO, no el actual: hoy solo se puede
+    cargar el anio en curso, pero un asiento cargado en diciembre y borrado
+    ya en enero sigue siendo de diciembre, y es ese anio el que hay que
+    recalcular.
     """
     ensure_table(db)
-    if not borrar_asiento(db, employee_id, asiento_id):
+    anio = borrar_asiento(db, employee_id, asiento_id)
+    if anio is None:
         raise HTTPException(status_code=404,
                             detail="El asiento no existe o no es de este agente")
-    anio = date.today().year
     recalcular_anio(db, employee_id, anio)
     return {"ok": True, "anio": anio}

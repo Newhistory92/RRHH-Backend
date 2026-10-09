@@ -123,9 +123,17 @@ def agregar_asiento(db: Session, employee_id: int, anio: int,
     db.commit()
 
 
-def borrar_asiento(db: Session, employee_id: int, asiento_id: int) -> bool:
+def borrar_asiento(db: Session, employee_id: int,
+                   asiento_id: int) -> int | None:
     """
-    Borra un asiento. Devuelve False si no existe o no es de ese empleado.
+    Borra un asiento y devuelve el anio al que pertenecia, o None si no
+    existia o no era de ese empleado.
+
+    Devuelve el anio -no solo si se borro- porque es lo que el caller
+    necesita para recalcular el anio correcto: un asiento cargado en un
+    anio anterior y borrado mas tarde tiene que recalcular SU anio, no el
+    actual. OUTPUT trae ese dato en la misma sentencia, sin un SELECT
+    aparte antes del DELETE que dejaria una ventana entre leer y borrar.
 
     El filtro por employeeId no es redundante con el id: sin el, el id que
     viene en la URL alcanzaria para borrarle un asiento a cualquier otra
@@ -134,9 +142,10 @@ def borrar_asiento(db: Session, employee_id: int, asiento_id: int) -> bool:
     resultado = db.execute(
         text("""
             DELETE FROM ConsumoInicialPermiso
+            OUTPUT deleted.anio
             WHERE id = :asientoId AND employeeId = :empId
         """),
         {"empId": employee_id, "asientoId": asiento_id},
-    )
+    ).mappings().first()
     db.commit()
-    return resultado.rowcount > 0
+    return int(resultado["anio"]) if resultado else None

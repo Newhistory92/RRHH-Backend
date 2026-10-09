@@ -74,17 +74,26 @@ def test_borrar_un_asiento_exige_que_sea_del_empleado():
     Sin el filtro por employeeId, el id de la URL alcanzaria para borrarle
     un asiento a cualquier otra persona.
     """
-    db = FakeSession({"DELETE FROM ConsumoInicialPermiso": [{"id": 1}]})
-    assert borrar_asiento(db, 8, 1) is True
+    db = FakeSession({"DELETE FROM ConsumoInicialPermiso": [{"anio": 2026}]})
+    assert borrar_asiento(db, 8, 1) == 2026
     sql, params = db.ejecutadas[0]
     assert "employeeId = :empId" in sql
     assert params == {"empId": 8, "asientoId": 1}
 
 
-def test_borrar_un_asiento_que_no_es_del_empleado_devuelve_false():
-    """rowcount 0: el DELETE no encontro nada que borrar."""
+def test_borrar_un_asiento_que_no_es_del_empleado_devuelve_none():
+    """Sin fila devuelta por el OUTPUT, el DELETE no encontro nada que borrar."""
     db = FakeSession({"DELETE FROM ConsumoInicialPermiso": []})
-    assert borrar_asiento(db, 8, 1) is False
+    assert borrar_asiento(db, 8, 1) is None
+
+
+def test_borrar_devuelve_el_anio_del_asiento_y_no_el_actual():
+    """
+    Un asiento cargado en un anio anterior y borrado despues tiene que
+    recalcular SU anio, no el que corre hoy.
+    """
+    db = FakeSession({"DELETE FROM ConsumoInicialPermiso": [{"anio": 2024}]})
+    assert borrar_asiento(db, 8, 1) == 2024
 
 
 # -- El permiso ----------------------------------------------------------------

@@ -13,11 +13,13 @@ from app.routes import carga_inicial_permisos as m
 from tests.fakes import FakeSession
 
 
-def _db(asientos=None, total=None, cupo=12.0, borrado=True):
+def _db(asientos=None, total=None, cupo=12.0, borrado=True, anio_borrado=2026):
     return FakeSession({
         "SUM(horasConsumidas)": [{"total": total}],
         "ORDER BY cargadoEn DESC": asientos if asientos is not None else [],
-        "DELETE FROM ConsumoInicialPermiso": [{"id": 1}] if borrado else [],
+        "DELETE FROM ConsumoInicialPermiso": (
+            [{"anio": anio_borrado}] if borrado else []
+        ),
         "FROM Employee e": [{"cupo": cupo}],
     })
 
@@ -140,3 +142,20 @@ def test_el_delete_que_no_borro_nada_no_recalcula(monkeypatch):
     with pytest.raises(HTTPException):
         m.delete_carga_inicial_permisos(8, 999, _user={}, db=_db(borrado=False))
     assert recalculos == []
+
+
+def test_el_delete_recalcula_el_anio_del_asiento_y_no_el_actual(monkeypatch):
+    """
+    Un asiento cargado en un anio anterior y borrado despues tiene que
+    recalcular SU anio: hoy solo se puede cargar el anio en curso, pero un
+    asiento ya cargado sigue siendo de cuando se cargo.
+    """
+    recalculos = []
+    monkeypatch.setattr(m, "recalcular_anio",
+                        lambda db, eid, anio: recalculos.append((eid, anio)))
+
+    db = _db(borrado=True, anio_borrado=2024)
+    r = m.delete_carga_inicial_permisos(8, 1, _user={}, db=db)
+
+    assert r["anio"] == 2024
+    assert recalculos == [(8, 2024)]
