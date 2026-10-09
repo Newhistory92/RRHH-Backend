@@ -31,6 +31,7 @@ from app.database.asistencia_auditoria import (
 from app.database.asistencia_justificaciones import dias_justificados
 from app.database.bajas import bajas_de_empleado
 from app.database.consumo_inicial_permisos import total_de_empleado
+from app.database.extension_tolerancia import extensiones_por_fecha
 from app.services.asistencia_calc import (
     EntradaDia, Permiso, ResultadoDia, Tolerancias, calcular_anio,
 )
@@ -50,6 +51,7 @@ def _rango_dias(desde: date, hasta: date):
 def _datos_empleado(db: Session, employee_id: int) -> Optional[dict]:
     fila = db.execute(text("""
         SELECT e.id, e.biometricoId,
+               e.fueraAnilloCircunvalacion,
                h.horaInicio, h.horaFin, h.horasTrabajo,
                c.fechaIngreso,
                j.horasPermisoAnual
@@ -310,12 +312,36 @@ def recalcular_anio(db: Session, employee_id: int, anio: int,
     # entero.
     consumo_inicial = total_de_empleado(db, employee_id, anio) or 0.0
     banco_anual = max(banco_anual - consumo_inicial, 0.0)
-    resultados = calcular_anio(entradas, Tolerancias(
+    tolerancias_base = Tolerancias(
         entradaMin=cfg["toleranciaEntradaMin"],
         salidaMin=cfg["toleranciaSalidaMin"],
         estrictaEntradaMin=cfg["toleranciaEstrictaEntradaMin"],
         estrictaSalidaMin=cfg["toleranciaEstrictaSalidaMin"],
-    ), banco_anual)
+    )
+    # Las extensiones aplican SOLO a quien vive fuera del anillo. Al resto se
+    # le pasa un diccionario vacio y su calculo queda identico al de siempre.
+    #
+    # El margen estricto se iguala al margen otorgado a proposito: la formula
+    # del abuso es "uso la tolerancia Y el desvio supero el estricto", asi que
+    # igualandolos el abuso no se dispara dentro de lo concedido. Sin esto, el
+    # dia que RRHH otorga 30 minutos quedaria marcado como abuso todo el que
+    # llego 8:08 -justo la gente que uso el permiso que le dieron.
+    #
+    # La salida que no se extendio conserva SU margen estricto: ahi no hubo
+    # concesion, asi que el abuso tiene que poder marcarse como siempre.
+    por_fecha = {}
+    if emp.get("fueraAnilloCircunvalacion"):
+        for fecha, ext in extensiones_por_fecha(db, desde, hasta).items():
+            salida = ext["toleranciaSalidaMin"]
+            por_fecha[fecha] = Tolerancias(
+                entradaMin=ext["toleranciaEntradaMin"],
+                salidaMin=salida if salida is not None else cfg["toleranciaSalidaMin"],
+                estrictaEntradaMin=ext["toleranciaEntradaMin"],
+                estrictaSalidaMin=(salida if salida is not None
+                                   else cfg["toleranciaEstrictaSalidaMin"]),
+            )
+
+    resultados = calcular_anio(entradas, tolerancias_base, banco_anual, por_fecha)
     filas_count = reemplazar_jornadas(
         db, employee_id, desde, hasta,
         [_a_fila(r) for r in resultados], _a_incidencias(resultados),

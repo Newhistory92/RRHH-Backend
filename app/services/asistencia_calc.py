@@ -246,7 +246,8 @@ def calcular_dia(entrada_dia: EntradaDia, tolerancias: Tolerancias,
 
 
 def calcular_anio(dias: list[EntradaDia], tolerancias: Tolerancias,
-                  banco_anual: float) -> list[ResultadoDia]:
+                  banco_anual: float,
+                  tolerancias_por_fecha: Optional[dict] = None) -> list[ResultadoDia]:
     """
     Recorre los dias en orden cronologico arrastrando el consumo del banco de
     permisos. Es el unico lugar donde el banco cambia de valor.
@@ -255,11 +256,19 @@ def calcular_anio(dias: list[EntradaDia], tolerancias: Tolerancias,
     tiene el suyo, y un empleado sin jornada asignada recibe 0.0. Quien lo
     resuelve es asistencia_recalc, que es el que habla con la base; aca se
     recibe ya decidido para que esta funcion siga siendo pura.
+
+    tolerancias_por_fecha permite que un dia rija una tolerancia distinta de
+    la del resto del anio. Esta funcion no sabe POR QUE: recibe
+    {fecha: Tolerancias} ya resuelto y aplica el que corresponda. Quien decide
+    que dia lleva cual -y con que margen estricto- es asistencia_recalc. Sin
+    diccionario, o con uno vacio, el calculo es identico al de siempre.
     """
+    por_fecha = tolerancias_por_fecha or {}
     consumido = 0.0
     resultados: list[ResultadoDia] = []
     for d in sorted(dias, key=lambda x: x.fecha):
-        r = calcular_dia(d, tolerancias, banco_anual - consumido)
+        r = calcular_dia(d, por_fecha.get(d.fecha, tolerancias),
+                         banco_anual - consumido)
         if r is None:
             continue
         consumido += r.permisoBanco

@@ -48,7 +48,7 @@ def _banco_usado(monkeypatch, db):
     """Corre recalcular_anio y devuelve el banco que recibio el motor."""
     capturado = {}
 
-    def fake_calcular_anio(dias, tolerancias, banco_anual):
+    def fake_calcular_anio(dias, tolerancias, banco_anual, tolerancias_por_fecha=None):
         capturado["banco"] = banco_anual
         return []
 
