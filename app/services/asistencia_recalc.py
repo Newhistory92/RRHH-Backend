@@ -88,8 +88,7 @@ def _feriados(db: Session, desde: date, hasta: date) -> set[date]:
         SELECT fecha FROM Feriado
         WHERE activo = 1 AND fecha >= :desde AND fecha <= :hasta
     """), {"desde": desde, "hasta": hasta}).mappings().all()
-    return {f["fecha"] if isinstance(f["fecha"], date) else f["fecha"].date()
-            for f in filas}
+    return {_a_date(f["fecha"]) for f in filas}
 
 
 def _dias_con_licencia(db: Session, employee_id: int,
@@ -101,8 +100,8 @@ def _dias_con_licencia(db: Session, employee_id: int,
     """), {"emp": employee_id, "desde": desde, "hasta": hasta}).mappings().all()
     dias: set[date] = set()
     for f in filas:
-        ini = f["startDate"] if isinstance(f["startDate"], date) else f["startDate"].date()
-        fin = f["endDate"] if isinstance(f["endDate"], date) else f["endDate"].date()
+        ini = _a_date(f["startDate"])
+        fin = _a_date(f["endDate"])
         for d in _rango_dias(max(ini, desde), min(fin, hasta)):
             dias.add(d)
     return dias
@@ -116,7 +115,7 @@ def _permisos_por_dia(db: Session, employee_id: int,
     """), {"emp": employee_id, "desde": desde, "hasta": hasta}).mappings().all()
     por_dia: dict[date, list[Permiso]] = {}
     for f in filas:
-        d = f["date"] if isinstance(f["date"], date) else f["date"].date()
+        d = _a_date(f["date"])
         por_dia.setdefault(d, []).append(
             Permiso(horas=float(f["hours"] or 0), oficial=bool(f["oficial"]))
         )

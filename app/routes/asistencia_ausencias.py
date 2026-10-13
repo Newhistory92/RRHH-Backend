@@ -26,6 +26,7 @@ from app.services.asistencia_justificaciones import (
     VENTANA_JUSTIFICACION_DIAS, validar_fecha_justificable,
 )
 from app.services.asistencia_recalc import recalcular_anio
+from app.services.bajas import a_date
 
 router = APIRouter(prefix="/asistencia", tags=["Asistencia"])
 
@@ -83,10 +84,11 @@ def _licencias_sin_aprobar(db: Session, employee_id: int,
 
 def _licencia_que_cubre(licencias: list[dict], dia: date) -> dict | None:
     for lic in licencias:
-        ini = lic["startDate"]
-        fin = lic["endDate"]
-        ini = ini if isinstance(ini, date) else ini.date()
-        fin = fin if isinstance(fin, date) else fin.date()
+        # License.startDate/endDate son datetime2: hay que normalizar antes de
+        # comparar contra un date. datetime hereda de date, asi que el guard
+        # invertido que habia aca nunca convertia y la comparacion explotaba.
+        ini = a_date(lic["startDate"])
+        fin = a_date(lic["endDate"])
         if ini <= dia <= fin:
             return {"id": int(lic["id"]), "type": lic["type"],
                     "status": lic["status"]}
@@ -123,7 +125,7 @@ def get_ausencias(employee_id: int, desde: str | None = None,
 
     ausencias = []
     for f in filas:
-        dia = f["fecha"] if isinstance(f["fecha"], date) else f["fecha"].date()
+        dia = a_date(f["fecha"])
         justificada = f["estado"] == ESTADO_JUSTIFICADA
         puede = True
         try:
