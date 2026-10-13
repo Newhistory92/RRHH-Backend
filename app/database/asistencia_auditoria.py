@@ -17,6 +17,7 @@ from typing import Optional
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.services.bajas import a_date
 from app.services.marcaciones_norm import Correccion
 
 CREATE_CORRECCION_SQL = """
@@ -93,7 +94,7 @@ def correcciones_por_dia(db: Session, employee_id: int, desde: date,
     """), {"emp": employee_id, "desde": desde, "hasta": hasta}).mappings().all()
     out: dict[date, Correccion] = {}
     for f in filas:
-        d = f["fecha"] if isinstance(f["fecha"], date) else f["fecha"].date()
+        d = a_date(f["fecha"])
         out[d] = Correccion(entrada=f["entrada"], salida=f["salida"])
     return out
 

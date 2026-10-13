@@ -17,6 +17,8 @@ que ningun permiso llegaba nunca al calculo del dia.
 
 from datetime import date, datetime
 
+from app.database.asistencia_auditoria import correcciones_por_dia
+from app.database.extension_tolerancia import borrar, extensiones_por_fecha
 from app.routes.asistencia_ausencias import _licencia_que_cubre
 from app.services.asistencia_recalc import (
     _dias_con_licencia, _feriados, _permisos_por_dia,
@@ -104,3 +106,39 @@ def test_una_licencia_que_no_cubre_el_dia_sigue_devolviendo_none():
         "endDate": datetime(2026, 10, 14, 3, 0),
     }]
     assert _licencia_que_cubre(licencias, date(2026, 10, 20)) is None
+
+
+# -- Los call sites que hoy leen columnas DATE ---------------------------------
+#
+# Ninguno sufre la trampa ahora mismo -JornadaDiaria.fecha, CorreccionJornada
+# .fecha y ExtensionTolerancia.fecha son DATE-, pero todos tenian el mismo
+# guard invertido. Estos tests fijan el contrato en date para que el dia que
+# alguna de esas columnas pase a datetime no se rompa en silencio.
+
+def test_las_correcciones_quedan_indexadas_por_date():
+    db = FakeSession({"FROM JornadaCorreccion": [
+        {"fecha": datetime(2026, 3, 2, 0, 0), "entrada": None, "salida": None},
+    ]})
+    out = correcciones_por_dia(db, 3, date(2026, 1, 1), date(2026, 12, 31))
+    assert list(out) == [date(2026, 3, 2)]
+
+
+def test_las_extensiones_quedan_indexadas_por_date():
+    db = FakeSession({"FROM ExtensionTolerancia": [
+        {"fecha": datetime(2026, 10, 9, 0, 0), "toleranciaEntradaMin": 60,
+         "toleranciaSalidaMin": None},
+    ]})
+    out = extensiones_por_fecha(db, date(2026, 1, 1), date(2026, 12, 31))
+    assert list(out) == [date(2026, 10, 9)]
+
+
+def test_borrar_una_extension_devuelve_un_date():
+    """
+    El caller usa el anio de este valor para decidir que recalcular: si
+    volviera un datetime, .year sigue andando, pero el tipo que promete la
+    firma -date | None- dejaria de cumplirse.
+    """
+    db = FakeSession({"DELETE FROM ExtensionTolerancia": [
+        {"fecha": datetime(2024, 5, 2, 0, 0)},
+    ]})
+    assert borrar(db, 1) == date(2024, 5, 2)

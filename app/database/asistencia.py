@@ -24,6 +24,7 @@ from app.database.consumo_inicial_permisos import (
 from app.database.extension_tolerancia import (
     ensure_table as extension_tolerancia_ensure_table,
 )
+from app.services.bajas import a_date
 
 _tablas_listas = False
 
@@ -383,12 +384,12 @@ def jornadas_de(db: Session, employee_id: int, desde: date, hasta: date) -> list
     """), {"emp": employee_id, "desde": desde, "hasta": hasta}).mappings().all()
     por_dia: dict[date, list[str]] = {}
     for i in incidencias:
-        d = i["fecha"] if isinstance(i["fecha"], date) else i["fecha"].date()
+        d = a_date(i["fecha"])
         por_dia.setdefault(d, []).append(i["tipo"])
 
     salida = []
     for f in filas:
-        d = f["fecha"] if isinstance(f["fecha"], date) else f["fecha"].date()
+        d = a_date(f["fecha"])
         salida.append({**dict(f), "incidencias": por_dia.get(d, [])})
     return salida
 
@@ -498,9 +499,8 @@ def get_jornada(db: Session, jornada_id: int) -> Optional[dict]:
 
 def _a_dia_abuso(fila) -> "DiaAbuso":
     from app.services.asistencia_alertas import DiaAbuso
-    f = fila["fecha"]
     return DiaAbuso(
-        fecha=f if isinstance(f, date) else f.date(),
+        fecha=a_date(fila["fecha"]),
         estado=fila["estado"],
         abuso=bool(fila["abusoEntrada"]) or bool(fila["abusoSalida"]),
     )
@@ -549,7 +549,7 @@ def jornadas_abuso_todos(db: Session, desde: date,
     """), {"desde": desde, "hasta": hasta}).mappings().all()
     por_empleado: dict[int, list[dict]] = {}
     for f in filas:
-        d = f["fecha"] if isinstance(f["fecha"], date) else f["fecha"].date()
+        d = a_date(f["fecha"])
         por_empleado.setdefault(int(f["employeeId"]), []).append({
             "fecha": d.isoformat(),
             "entrada": f["entrada"].isoformat() if f["entrada"] else None,

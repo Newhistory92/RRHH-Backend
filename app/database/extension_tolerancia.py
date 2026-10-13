@@ -22,6 +22,8 @@ from datetime import date
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.services.bajas import a_date
+
 CREATE_TABLE_SQL = """
 IF OBJECT_ID('ExtensionTolerancia', 'U') IS NULL
 CREATE TABLE ExtensionTolerancia (
@@ -68,7 +70,7 @@ def extensiones_por_fecha(db: Session, desde: date,
         WHERE fecha >= :desde AND fecha <= :hasta
     """), {"desde": desde, "hasta": hasta}).mappings().all()
     return {
-        (f["fecha"] if isinstance(f["fecha"], date) else f["fecha"].date()): {
+        a_date(f["fecha"]): {
             "toleranciaEntradaMin": int(f["toleranciaEntradaMin"]),
             "toleranciaSalidaMin": (None if f["toleranciaSalidaMin"] is None
                                     else int(f["toleranciaSalidaMin"])),
@@ -115,5 +117,4 @@ def borrar(db: Session, extension_id: int) -> date | None:
     db.commit()
     if fila is None:
         return None
-    f = fila["fecha"]
-    return f if isinstance(f, date) else f.date()
+    return a_date(fila["fecha"])

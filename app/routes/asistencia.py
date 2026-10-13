@@ -22,6 +22,7 @@ from app.database.asistencia import (
     tablero, update_config,
 )
 from app.services.asistencia_alertas import resumir, validar_umbrales
+from app.services.bajas import a_date
 from app.database.asistencia_auditoria import (
     borrar_correccion, incidencias_abiertas, ultimos_recalculos, upsert_correccion,
 )
@@ -158,8 +159,7 @@ def post_correccion_jornada(jornada_id: int, data: dict = Body(...),
         raise HTTPException(status_code=403,
                             detail="Tu usuario no tiene legajo vinculado para registrar la correccion")
     corregido_por = int(usuario["employeeId"])
-    fecha = jornada["fecha"]
-    fecha_date = fecha if isinstance(fecha, date) else fecha.date()
+    fecha_date = a_date(jornada["fecha"])
     upsert_correccion(db, jornada["employeeId"], fecha_date, entrada, salida,
                       corregido_por, data.get("observacion"))
 
@@ -179,8 +179,7 @@ def delete_correccion_jornada(jornada_id: int, db: Session = Depends(get_db)):
     jornada = get_jornada(db, jornada_id)
     if not jornada:
         raise HTTPException(status_code=404, detail="Jornada no encontrada")
-    fecha = jornada["fecha"]
-    fecha = fecha if isinstance(fecha, date) else fecha.date()
+    fecha = a_date(jornada["fecha"])
     existia = borrar_correccion(db, jornada["employeeId"], fecha)
     if not existia:
         raise HTTPException(status_code=404, detail="No hay correccion para esta jornada")

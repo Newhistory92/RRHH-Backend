@@ -19,6 +19,7 @@ from app.database.extension_tolerancia import (
     agregar, borrar, ensure_table, existe_para_fecha, listar,
 )
 from app.services.asistencia_recalc import recalcular_marcados_fuera_del_anillo
+from app.services.bajas import a_date
 
 log = logging.getLogger(__name__)
 
@@ -115,8 +116,7 @@ def get_extensiones(_user: dict = PERMISO, db: Session = Depends(get_db)):
     return {
         "extensiones": [{
             "id": int(e["id"]),
-            "fecha": (e["fecha"] if isinstance(e["fecha"], date)
-                      else e["fecha"].date()).isoformat(),
+            "fecha": a_date(e["fecha"]).isoformat(),
             "toleranciaEntradaMin": int(e["toleranciaEntradaMin"]),
             "toleranciaSalidaMin": (None if e["toleranciaSalidaMin"] is None
                                     else int(e["toleranciaSalidaMin"])),
