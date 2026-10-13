@@ -24,7 +24,8 @@ from app.database.asistencia import (
 from app.services.asistencia_alertas import resumir, validar_umbrales
 from app.services.bajas import a_date
 from app.database.asistencia_auditoria import (
-    borrar_correccion, incidencias_abiertas, ultimos_recalculos, upsert_correccion,
+    borrar_correccion, errores_del_ultimo_barrido, incidencias_abiertas,
+    ultimos_recalculos, upsert_correccion,
 )
 from app.database.database import SessionLocal
 from app.services.asistencia_recalc import recalcular_anio, recalcular_todos
@@ -111,6 +112,25 @@ def get_biometricos_huerfanos(db: Session = Depends(get_db)):
     """IDs del reloj con marcaciones recientes que no estan vinculados a ningun empleado."""
     ensure_tables(db)
     return {"huerfanos": biometricos_huerfanos(db)}
+
+
+@router.get("/recalculos/errores", dependencies=[GESTIONAR_ASISTENCIA])
+def get_errores_de_recalculo(db: Session = Depends(get_db)):
+    """
+    Los empleados que la ultima corrida masiva no pudo calcular.
+
+    Devuelve ultimoBarrido en null cuando la ultima salio limpia: el tablero
+    usa eso para no dibujar el panel.
+    """
+    ensure_tables(db)
+    barrido = errores_del_ultimo_barrido(db)
+    if barrido is None:
+        return {"ultimoBarrido": None}
+    return {"ultimoBarrido": {
+        **barrido,
+        "finalizadoAt": (barrido["finalizadoAt"].isoformat()
+                         if barrido["finalizadoAt"] else None),
+    }}
 
 
 @router.post("/reset-inicio", dependencies=[GESTIONAR_ASISTENCIA])

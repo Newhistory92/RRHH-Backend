@@ -220,3 +220,77 @@ def ultimos_recalculos(db: Session, limite: int = 50) -> list[dict]:
         FROM RecalculoLog ORDER BY id DESC
     """), {"limite": int(limite)}).mappings().all()
     return [dict(f) for f in filas]
+
+
+# Los tres origenes con los que se registra recalcular_todos, que es la unica
+# funcion que barre toda la nomina. cupo_permiso y extension_tolerancia son
+# barridos parciales y quedan afuera a proposito: los dos filtran sobre la
+# misma nomina que el nocturno recorre entera cada noche, asi que un empleado
+# que falle ahi vuelve a fallar en el nocturno siguiente, dentro de las 24 hs.
+ORIGENES_MASIVOS = ("nocturno", "manual", "arranque")
+
+
+def errores_del_ultimo_barrido(db: Session) -> Optional[dict]:
+    """
+    Los errores que dejo la ultima corrida masiva terminada, o None.
+
+    El recalculo masivo registra al empleado que falla y sigue, para que un
+    legajo roto no deje sin asistencia a toda la planta. El precio es que el
+    fallo queda guardado y nadie lo mira: paso de verdad, cuatro corridas
+    nocturnas seguidas con el mismo TypeError. Esta funcion es la que lo saca
+    a la superficie.
+
+    Devuelve None cuando la ultima masiva salio limpia, asi el aviso se apaga
+    solo en cuanto el problema se corrige, sin que nadie marque nada.
+    """
+    fila = db.execute(text(f"""
+        SELECT TOP 1 id, origen, procesados, errores, finalizadoAt
+        FROM RecalculoLog
+        WHERE origen IN ({", ".join(f"'{o}'" for o in ORIGENES_MASIVOS)})
+          AND finalizadoAt IS NOT NULL
+        ORDER BY id DESC
+    """)).mappings().first()
+    if fila is None or not fila["errores"]:
+        return None
+
+    crudos = _parsear_errores(fila["errores"])
+    nombres = _nombres_de(db, [e["employeeId"] for e in crudos
+                              if e["employeeId"] is not None])
+    return {
+        "id": int(fila["id"]),
+        "origen": fila["origen"],
+        "finalizadoAt": fila["finalizadoAt"],
+        "procesados": int(fila["procesados"] or 0),
+        "errores": [{**e, "nombre": nombres.get(e["employeeId"])}
+                    for e in crudos],
+    }
+
+
+def _parsear_errores(crudo: str) -> list[dict]:
+    """
+    El JSON que escribio cerrar_recalculo, normalizado.
+
+    Si el texto no es JSON valido se devuelve tal cual como una sola entrada:
+    esta pantalla existe para mostrar fallas y no puede fallar ella misma
+    porque el registro de auditoria quedo corrupto.
+    """
+    try:
+        datos = json.loads(crudo)
+    except (ValueError, TypeError):
+        return [{"employeeId": None, "error": str(crudo)}]
+    if not isinstance(datos, list):
+        return [{"employeeId": None, "error": str(crudo)}]
+    return [{"employeeId": d.get("employeeId"), "error": str(d.get("error"))}
+            for d in datos if isinstance(d, dict)]
+
+
+def _nombres_de(db: Session, employee_ids: list) -> dict:
+    """Los nombres de esos legajos, en una sola consulta."""
+    ids = {int(i) for i in employee_ids}
+    if not ids:
+        return {}
+    filas = db.execute(text(
+        "SELECT id, name FROM Employee WHERE id IN (%s)"
+        % ", ".join(str(i) for i in sorted(ids))
+    )).mappings().all()
+    return {int(f["id"]): f["name"] for f in filas}
